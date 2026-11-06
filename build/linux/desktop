@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=GitVela
+Comment=A gitvela application
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/gitvela.exe %u
+Terminal=false
+Type=Application
+Icon=gitvela.exe
+Categories=Utility;
+StartupWMClass=gitvela.exe
+
+ 

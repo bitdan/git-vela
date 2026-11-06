@@ -8,6 +8,7 @@ import { useWorkspace } from '../../stores/workspace'
 import { LatestRequest } from '../../stores/latestRequest'
 
 const props = defineProps<{ path: string }>()
+const emit = defineEmits<{ open: [path: string] }>()
 const busy = defineModel<boolean>('busy', { required: true })
 const store = useWorkspace()
 const trees = ref<Worktree[]>([])
@@ -177,7 +178,7 @@ function description(tree: Worktree) {
       <div v-for="tree in trees" :key="tree.path" class="worktree-row">
         <button class="side-item ellipsis" :class="{ active: tree.path === path }" :title="tree.path"
                 :disabled="busy || store.opening || tree.path === path || tree.bare || tree.prunable"
-                @click="store.open(tree.path)">{{ tree.path }}</button>
+                @click="emit('open', tree.path)">{{ tree.path }}</button>
         <button v-if="canRemove(tree)" class="switch-branch" :disabled="busy || store.opening" :aria-label="'Remove ' + tree.path"
                 @click="requestRemoval(tree)">Remove…</button>
         <small class="muted ellipsis" :title="description(tree)">{{ description(tree) }}</small>

@@ -50,6 +50,10 @@ export function Diff(path: string, commit: string, parent: number, file: number)
     return $Call.ByID(2296331547, path, commit, parent, file);
 }
 
+export function EditableFiles(path: string): $CancellablePromise<string[] | null> {
+    return $Call.ByID(3244581999, path);
+}
+
 export function FetchRemote(path: string, remote: string): $CancellablePromise<void> {
     return $Call.ByID(3902937218, path, remote);
 }
@@ -76,6 +80,10 @@ export function Initialize(path: string): $CancellablePromise<git$0.Repository> 
 
 export function Open(path: string): $CancellablePromise<git$0.Repository> {
     return $Call.ByID(2498616652, path);
+}
+
+export function OpenTextFile(path: string, file: string): $CancellablePromise<git$0.TextFile> {
+    return $Call.ByID(108209189, path, file);
 }
 
 export function PrepareAmend(path: string): $CancellablePromise<git$0.AmendTarget> {
@@ -112,6 +120,10 @@ export function RenameBranch(path: string, oldName: string, newName: string): $C
 
 export function SaveStash(path: string, message: string, untracked: boolean): $CancellablePromise<void> {
     return $Call.ByID(3099866534, path, message, untracked);
+}
+
+export function SaveTextFile(path: string, file: string, revision: string, content: string): $CancellablePromise<string> {
+    return $Call.ByID(2407009324, path, file, revision, content);
 }
 
 export function SearchHistory(path: string, filter: git$0.HistoryFilter, cursor: git$0.Cursor): $CancellablePromise<git$0.Page> {

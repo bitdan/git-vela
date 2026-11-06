@@ -122,6 +122,13 @@ export interface SyncState {
     "upstreamBranch": string;
 }
 
+export interface TextFile {
+    "content": string;
+    "revision": string;
+    "lineEnding": string;
+    "bom": boolean;
+}
+
 export interface WorkingFile {
     "path": string;
     "oldPath": string;

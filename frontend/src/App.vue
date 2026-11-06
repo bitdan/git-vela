@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
@@ -9,15 +9,17 @@ import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
+import RepositoryFiles from './components/editor/RepositoryFiles.vue'
 import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
-import type { AmendTarget, FilePreview, Ref as GitRef, WorkingFile } from '../bindings/gitvela/internal/git'
+import type { AmendTarget, FilePreview, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
 import './styles.css'
 
 const TextDiff = defineAsyncComponent(() => import('./components/diff/TextDiff.vue'))
+const WorkspaceEditor = defineAsyncComponent(() => import('./components/editor/WorkspaceEditor.vue'))
 const store = useWorkspace()
 const log = useTemplateRef<InstanceType<typeof CommitLog>>('log')
 const content = useTemplateRef<HTMLElement>('content')
@@ -35,10 +37,11 @@ const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
 const branchActions = useTemplateRef<HTMLElement>('branch-actions')
 const branchMenu = ref<{ item: GitRef; trigger: HTMLElement; x: number; y: number }>()
-type Sidebar = 'changes' | 'branches' | 'worktrees'
+type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
 const sidebar = ref<Sidebar>('changes')
 const historyVisible = ref(true)
 const sidebarTabs: { id: Sidebar; label: string }[] = [
+  { id: 'files', label: 'Files' },
   { id: 'changes', label: 'Changes' },
   { id: 'branches', label: 'Branches' },
   { id: 'worktrees', label: 'Worktrees' },
@@ -81,7 +84,20 @@ const preview = ref<FilePreview>()
 const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
-const view = ref<FileView | 'commit'>('working')
+const view = ref<FileView | 'commit' | 'editor'>('working')
+const editor = shallowRef<TextFile>()
+const editorPath = ref('')
+const editorDraft = ref('')
+const editorError = ref('')
+const editorLoading = ref(false)
+const editorSaving = ref(false)
+const editorKey = ref(0)
+const editorRequest = new LatestRequest()
+const editorDirty = computed(() => !!editor.value && editorDraft.value !== editor.value.content)
+const pendingEditorAction = shallowRef<() => void>()
+const pendingEditorLabel = ref('')
+const previewPath = computed(() => view.value === 'editor' ? editorPath.value : view.value === 'commit' ? store.file?.path : workingSelection.value?.path)
+const workingView = computed(() => view.value === 'working' || view.value === 'staged' || view.value === 'unstaged' ? view.value : undefined)
 const diffExpanded = ref(false)
 const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
@@ -115,6 +131,7 @@ const previewRequest = new LatestRequest()
 let timer: ReturnType<typeof setInterval>
 
 watch(view, value => { if (value !== 'commit') diffExpanded.value = false })
+watch(editorDirty, dirty => { if (!dirty) pendingEditorAction.value = undefined })
 watch(() => store.repository?.path, repo => {
   if (repo) {
     path.value = repo
@@ -132,6 +149,7 @@ watch(() => store.repository?.path, repo => {
   refKind.value = 'branches'
   statusRequest.clear()
   previewRequest.clear()
+  clearEditor()
   workingFiles.value = []
   workingSelection.value = undefined
   commitMessage.value = ''
@@ -163,8 +181,8 @@ async function refreshExternalChanges() {
   if (workingLoading.value) return
   const repo = store.repository?.path
   await loadWorking()
-  if (repo === store.repository?.path && workingSelection.value && view.value !== 'commit' && !previewLoading.value) {
-    void selectView(view.value, true)
+  if (repo === store.repository?.path && workingSelection.value && workingView.value && !previewLoading.value) {
+    void selectView(workingView.value, true)
   }
 }
 
@@ -228,6 +246,104 @@ async function selectView(next: FileView | 'commit', background = false) {
   }
 }
 
+function clearEditor() {
+  editorRequest.clear()
+  editor.value = undefined
+  editorDraft.value = ''
+  editorError.value = ''
+  editorPath.value = ''
+  editorLoading.value = false
+  pendingEditorAction.value = undefined
+  if (view.value === 'editor') view.value = 'working'
+}
+
+function withSavedEditor(label: string, action: () => void) {
+  if (editorSaving.value) return
+  if (!editorDirty.value) {
+    action()
+    return
+  }
+  pendingEditorLabel.value = label
+  pendingEditorAction.value = action
+}
+
+function discardEditorChanges() {
+  const action = pendingEditorAction.value
+  clearEditor()
+  action?.()
+}
+
+function openRepository(folder: string) {
+  if (!folder || indexBusy.value || store.opening) return
+  if (folder === store.repository?.path) {
+    void store.open(folder, true)
+    return
+  }
+  withSavedEditor('opening another repository', () => { void store.open(folder) })
+}
+
+function openEditorFile(file: string) {
+  if (!file || store.opening || editorSaving.value) return
+  if (editor.value && editorPath.value === file) {
+    view.value = 'editor'
+    return
+  }
+  withSavedEditor('opening another file', () => { void loadEditor(file) })
+}
+
+function reloadEditor() {
+  const file = editorPath.value
+  if (file) withSavedEditor('reloading the file', () => { void loadEditor(file) })
+}
+
+async function loadEditor(file: string) {
+  const repo = store.repository?.path
+  if (!repo || editorSaving.value) return
+  editorLoading.value = true
+  editorError.value = ''
+  view.value = 'editor'
+  const call = api.OpenTextFile(repo, file)
+  const current = editorRequest.replace(call)
+  try {
+    const text = await call
+    if (!current()) return
+    editor.value = text
+    editorPath.value = file
+    editorDraft.value = text.content
+    editorKey.value++
+  } catch (cause) {
+    if (current()) editorError.value = String(cause)
+  } finally {
+    if (current()) editorLoading.value = false
+    editorRequest.finish(call)
+  }
+}
+
+async function saveEditor() {
+  const repo = store.repository?.path
+  const text = editor.value
+  if (!repo || !text || !editorDirty.value || editorLoading.value || indexBusy.value || store.opening) return
+  const file = editorPath.value
+  const content = editorDraft.value
+  editorSaving.value = true
+  indexBusy.value = true
+  editorError.value = ''
+  try {
+    const revision = await api.SaveTextFile(repo, file, text.revision, content)
+    editor.value = { ...text, revision, content }
+    await loadWorking()
+  } catch (cause) {
+    editorError.value = String(cause)
+  } finally {
+    editorSaving.value = false
+    indexBusy.value = false
+  }
+}
+
+function preventDiscard(event: BeforeUnloadEvent) {
+  if (editorDirty.value || editorSaving.value) event.preventDefault()
+}
+
 async function updateIndex(staged: boolean) {
   const repo = store.repository?.path
   const file = currentWorkingFile.value
@@ -279,8 +395,8 @@ async function refreshAfterDailyOperation() {
   const repo = store.repository?.path
   if (!repo) return
   await Promise.all([store.open(repo, true), loadWorking()])
-  if (repo === store.repository?.path && workingSelection.value && view.value !== 'commit') {
-    await selectView(view.value, true)
+  if (repo === store.repository?.path && workingSelection.value && workingView.value) {
+    await selectView(workingView.value, true)
   }
 }
 
@@ -333,7 +449,7 @@ async function stageAll() {
   } finally {
     try {
       await loadWorking()
-      if (workingSelection.value && view.value !== 'commit') await selectView(view.value, true)
+      if (workingSelection.value && workingView.value) await selectView(workingView.value, true)
     } finally {
       indexBusy.value = false
     }
@@ -369,6 +485,7 @@ async function commitChanges() {
 
 onMounted(() => {
   document.addEventListener('pointerdown', outsideMenus)
+  window.addEventListener('beforeunload', preventDiscard)
   void store.detectGit()
   unsubscribeChanges = Events.On(GitvelaRepositoryChanged, event => {
     if (event.data === store.repository?.path) void refreshExternalChanges()
@@ -377,6 +494,8 @@ onMounted(() => {
 })
 onUnmounted(() => {
   document.removeEventListener('pointerdown', outsideMenus)
+  window.removeEventListener('beforeunload', preventDiscard)
+  editorRequest.clear()
   clearInterval(timer)
   unsubscribeChanges?.()
   watchRequest.clear()
@@ -387,13 +506,13 @@ onUnmounted(() => {
 async function choose() {
   if (picking.value) return
   picking.value = true
-  try { await store.choose() } finally { picking.value = false }
+  try { await store.choose(openRepository) } finally { picking.value = false }
 }
 
 function refresh() {
   if (store.repository) void store.open(store.repository.path, true)
   void loadWorking()
-  if (workingSelection.value && view.value !== 'commit') void selectView(view.value)
+  if (workingSelection.value && workingView.value) void selectView(workingView.value)
 }
 
 async function updateBranch(operation: 'create' | 'switch' | 'rename' | 'delete', name: string) {
@@ -545,7 +664,7 @@ function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'dele
   switch (action) {
     case 'history': void jump(item.hash); break
     case 'create': openBranchForm('create', name, item.hash); break
-    case 'switch': void updateBranch('switch', name); break
+    case 'switch': withSavedEditor('switching branches', () => { void updateBranch('switch', name) }); break
     case 'rename': case 'delete': openBranchForm(action, name); break
     default: openSync(action)
   }
@@ -608,12 +727,12 @@ function resizeWithKey(event: KeyboardEvent) {
           </template>
         </div>
       </details>
-      <form class="repo-form" @submit.prevent="!indexBusy && store.open(path.trim())">
+      <form class="repo-form" @submit.prevent="openRepository(path.trim())">
         <input v-model="path" aria-label="Repository path" placeholder="Enter a local repository path" spellcheck="false" />
         <button type="submit" :disabled="!path.trim() || store.opening || indexBusy">Open path</button>
       </form>
       <select v-if="store.recent.length" class="recent-repos" aria-label="Recent repositories" :disabled="indexBusy || store.opening"
-              value="" @change="store.open(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
+              value="" @change="openRepository(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
         <option value="" disabled>Recent</option>
         <option v-for="repo in store.recent" :key="repo" :value="repo">{{ repo.split(/[\\/]/).at(-1) || repo }}</option>
       </select>
@@ -634,7 +753,7 @@ function resizeWithKey(event: KeyboardEvent) {
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
     <p v-if="watchError" class="notice top-error" role="status" :title="watchError">File notifications unavailable. Checking for Git changes every 5 seconds.</p>
     <section v-if="dailyPanel === 'init'" class="daily-panel" aria-label="Initialize project">
-      <form class="daily-controls" @submit.prevent="initializeProject">
+      <form class="daily-controls" @submit.prevent="withSavedEditor('initializing another project', () => { void initializeProject() })">
         <h2>Initialize project</h2>
         <label>Project folder <input v-model="projectPath" placeholder="Absolute folder path" :disabled="indexBusy" /></label>
         <button type="button" :disabled="indexBusy || picking" @click="pickProject">Browse…</button>
@@ -652,6 +771,11 @@ function resizeWithKey(event: KeyboardEvent) {
                 :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
                :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <div v-if="pendingEditorAction" class="daily-panel daily-confirm" role="group" aria-label="Unsaved file changes">
+      <span>Discard unsaved changes in <strong>{{ editorPath }}</strong> before {{ pendingEditorLabel }}?</span>
+      <button @click="pendingEditorAction = undefined">Keep editing</button>
+      <button class="danger-button" @click="discardEditorChanges">Discard changes</button>
+    </div>
     <div class="workspace">
       <main v-if="store.repository" class="content" :class="{ 'preview-only': diffExpanded }">
         <aside v-show="!diffExpanded" class="panel workspace-sidebar" aria-label="Repository workspace">
@@ -663,13 +787,15 @@ function resizeWithKey(event: KeyboardEvent) {
             <button v-for="tab in sidebarTabs" :key="tab.id" :aria-pressed="sidebar === tab.id"
                     :disabled="indexBusy" @click="openSidebar(tab.id)">{{ tab.label }}</button>
           </nav>
-          <WorkingChanges v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="view !== 'commit' ? workingSelection?.path : undefined"
+          <RepositoryFiles v-show="sidebar === 'files'" :key="store.repository.path" :path="store.repository.path"
+                           :active="sidebar === 'files' && !diffExpanded" :selected="editorPath" @open="openEditorFile" />
+          <WorkingChanges v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
-                          :can-stage="view !== 'commit' && currentWorkingFile?.canStage" :can-unstage="view !== 'commit' && currentWorkingFile?.canUnstage"
+                          :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
                           @select="selectWorking" @update-index="updateIndex" @commit="commitChanges"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll" />
-          <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" />
+          <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
           <aside v-show="sidebar === 'branches'" class="panel branch-panel" aria-label="Branches and tags">
             <header class="panel-header">
               <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
@@ -721,15 +847,25 @@ function resizeWithKey(event: KeyboardEvent) {
               <header class="preview-tabs">
                 <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
                 <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
-                <span class="ellipsis muted" :title="view !== 'commit' ? workingSelection?.path : store.file?.path">
-                  {{ view !== 'commit' ? workingSelection?.path : store.file?.path }}
-                </span>
+                <button v-if="!diffExpanded && (editor || editorLoading || editorError)" :aria-pressed="view === 'editor'"
+                        @click="view = 'editor'">Editor{{ editorDirty ? ' •' : '' }}</button>
+                <span class="ellipsis muted" :title="previewPath">{{ previewPath }}</span>
+                <button v-if="view === 'working' && workingSelection && preview?.kind === 'text'"
+                        @click="openEditorFile(workingSelection.path)">Edit file</button>
                 <button v-if="!diffExpanded" class="history-toggle" aria-controls="history-dock" :aria-pressed="historyVisible"
                         @click="historyVisible = !historyVisible">History</button>
                 <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
                 <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
               </header>
-              <template v-if="view !== 'commit'">
+              <p v-if="view === 'editor' && editorError" class="notice error" role="alert">{{ editorError }}</p>
+              <p v-if="view === 'editor' && editorLoading" class="notice" role="status">Opening text file…</p>
+              <WorkspaceEditor v-if="editor" v-show="view === 'editor' && !editorLoading" :key="editorKey" :path="editorPath"
+                               :initial-content="editor.content" :dark="dark" :line-ending="editor.lineEnding" :bom="editor.bom"
+                               :dirty="editorDirty" :saving="editorSaving" :loading="editorLoading" :blocked="indexBusy || store.opening"
+                               @change="editorDraft = $event" @save="saveEditor" @reload="reloadEditor"
+                               @close="withSavedEditor('closing the editor', clearEditor)" />
+              <button v-else-if="view === 'editor' && !editorLoading" class="close-empty-editor" @click="clearEditor">Close editor</button>
+              <template v-if="workingView">
                 <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
                 <p v-else-if="previewError" class="notice error" role="alert">{{ previewError }}</p>
                 <pre v-else-if="preview?.kind === 'text' && view === 'working'" class="working-preview" tabindex="0"><code>{{ preview.content }}</code></pre>
@@ -741,7 +877,7 @@ function resizeWithKey(event: KeyboardEvent) {
                 <p v-else-if="preview?.kind === 'special'" class="notice">This path is not a regular file.</p>
                 <p v-else class="notice">Select a working change to preview its current contents.</p>
               </template>
-              <template v-else>
+              <template v-else-if="view === 'commit'">
                 <p v-if="store.loadingDiff" class="notice" role="status">Loading file comparison…</p>
                 <p v-else-if="store.diffError" class="notice error" role="alert">{{ store.diffError }}</p>
                 <p v-else-if="!store.comparison" class="notice">Select a file from the commit changes below.</p>

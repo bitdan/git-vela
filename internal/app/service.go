@@ -280,3 +280,21 @@ func (s *RepositoryService) PublishGitHub(ctx context.Context, path string, requ
 	})
 	return result, err
 }
+
+func (*RepositoryService) EditableFiles(ctx context.Context, path string) ([]string, error) {
+	return discardCancelled(git.EditableFilePaths(ctx, path))
+}
+
+func (*RepositoryService) OpenTextFile(ctx context.Context, path, file string) (git.TextFile, error) {
+	return discardCancelled(git.OpenTextFile(ctx, path, file))
+}
+
+func (s *RepositoryService) SaveTextFile(ctx context.Context, path, file, revision, content string) (string, error) {
+	var updated string
+	err := s.write(ctx, func() error {
+		var err error
+		updated, err = git.SaveTextFile(ctx, path, file, revision, content)
+		return err
+	})
+	return updated, err
+}

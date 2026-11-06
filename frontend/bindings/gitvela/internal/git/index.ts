@@ -20,6 +20,7 @@ export type {
     Repository,
     StashEntry,
     SyncState,
+    TextFile,
     WorkingFile,
     Worktree
 } from "./models.js";

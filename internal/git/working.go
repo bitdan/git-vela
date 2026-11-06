@@ -122,64 +122,74 @@ func WorkingDiff(ctx context.Context, dir, path string, staged bool) (FilePrevie
 	return FilePreview{Kind: "text", Content: string(data)}, nil
 }
 func WorkingPreview(dir, path string) (FilePreview, error) {
-	local, err := filepath.Localize(path)
-	if err != nil || local == "." {
-		return FilePreview{}, errors.New("invalid working file path")
-	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return FilePreview{}, err
 	}
 	defer root.Close()
+	preview, _, err := readWorkingPreview(root, path)
+	return preview, err
+}
+
+func readWorkingPreview(root *os.Root, path string) (FilePreview, os.FileInfo, error) {
+	local, err := filepath.Localize(path)
+	if err != nil || local == "." {
+		return FilePreview{}, nil, errors.New("invalid working file path")
+	}
 
 	// Walk without following symlinks or exposing repository metadata.
+	gitEntry, _ := root.Lstat(".git")
 	prefix := ""
+	var info os.FileInfo
 	for _, part := range strings.Split(path, "/") {
-		if strings.EqualFold(part, ".git") {
-			return FilePreview{}, errors.New("Git metadata cannot be previewed")
+		if strings.EqualFold(strings.TrimRight(part, " ."), ".git") {
+			return FilePreview{}, nil, errors.New("Git metadata cannot be previewed")
 		}
 		prefix = filepath.Join(prefix, part)
-		info, err := root.Lstat(prefix)
+		info, err = root.Lstat(prefix)
 		if errors.Is(err, os.ErrNotExist) {
-			return FilePreview{Kind: "missing"}, nil
+			return FilePreview{Kind: "missing"}, nil, nil
 		}
 		if err != nil {
-			return FilePreview{}, err
+			return FilePreview{}, nil, err
+		}
+		if gitEntry != nil && os.SameFile(info, gitEntry) {
+			return FilePreview{}, nil, errors.New("Git metadata cannot be previewed")
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return FilePreview{Kind: "special"}, nil
+			return FilePreview{Kind: "special"}, nil, nil
 		}
 	}
-	info, err := root.Stat(local)
-	if errors.Is(err, os.ErrNotExist) {
-		return FilePreview{Kind: "missing"}, nil
-	}
-	if err != nil {
-		return FilePreview{}, err
-	}
 	if !info.Mode().IsRegular() {
-		return FilePreview{Kind: "special"}, nil
+		return FilePreview{Kind: "special"}, nil, nil
 	}
 	if info.Size() > previewBytes {
-		return FilePreview{Kind: "large"}, nil
+		return FilePreview{Kind: "large"}, nil, nil
 	}
 	file, err := root.Open(local)
 	if errors.Is(err, os.ErrNotExist) {
-		return FilePreview{Kind: "missing"}, nil
+		return FilePreview{Kind: "missing"}, nil, nil
 	}
 	if err != nil {
-		return FilePreview{}, err
+		return FilePreview{}, nil, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return FilePreview{}, nil, err
+	}
+	if !os.SameFile(info, opened) {
+		return FilePreview{}, nil, errors.New("the working file changed while opening it")
+	}
 	data, err := io.ReadAll(io.LimitReader(file, previewBytes+1))
 	if err != nil {
-		return FilePreview{}, err
+		return FilePreview{}, nil, err
 	}
 	if len(data) > previewBytes || bytes.Count(data, []byte{'\n'}) > previewLines || bytes.Count(data, []byte{'\r'}) > previewLines {
-		return FilePreview{Kind: "large"}, nil
+		return FilePreview{Kind: "large"}, nil, nil
 	}
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
-		return FilePreview{Kind: "binary"}, nil
+		return FilePreview{Kind: "binary"}, nil, nil
 	}
-	return FilePreview{Kind: "text", Content: string(data)}, nil
+	return FilePreview{Kind: "text", Content: string(data)}, opened, nil
 }

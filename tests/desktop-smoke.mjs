@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, unlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -14,6 +14,7 @@ const dailyRemote = process.env.GITVELA_SMOKE_M2_REMOTE
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
 const testCommit = process.argv[5] === '--commit'
+const testEditor = process.env.GITVELA_SMOKE_EDITOR === '1'
 const testProject = process.env.GITVELA_SMOKE_PROJECT === '1'
 const githubLogin = process.env.GITVELA_SMOKE_GITHUB_LOGIN
 const testBranch = process.argv[5] === '--branch' || process.env.GITVELA_SMOKE_BRANCH === '1'
@@ -384,6 +385,76 @@ try {
     await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit from smoke peer')
   }
+  if (testEditor) {
+    const file = 'greetservice.go'
+    const target = join(repo, file)
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
+    const editContent = "package main\n\n// Edited in GitVela\n"
+    const original = await readFile(target, 'utf8')
+    const keyboard = async (key, code, windowsVirtualKeyCode, modifiers) => {
+      for (const type of ['keyDown', 'keyUp']) {
+        await cdp('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode, modifiers })
+      }
+    }
+    const editorStatus = (text) =>
+      until(() => evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText.includes(${JSON.stringify(text)})`), text)
+    const enterText = async (text) => {
+      await evaluate("document.querySelector('.editor-host .cm-content').focus()")
+      await keyboard('a', 'KeyA', 65, 2)
+      await cdp('Input.insertText', { text })
+    }
+    const selectFile = async (path) => {
+      await inputValue('[aria-label="Filter repository files"]', path)
+      await clickButton('.repository-files .file-scroll', path)
+    }
+
+    await clickButton('.sidebar-segments', 'Files')
+    await selectFile(file)
+    await editorStatus('Saved')
+    await clickButton('.editor-tools', 'Find / Replace')
+    await until(() => evaluate("!!document.querySelector('.editor-host .cm-search')"), 'find and replace panel')
+    await keyboard('Escape', 'Escape', 27, 0)
+    await enterText(editContent)
+    await editorStatus('Unsaved changes')
+    await keyboard('z', 'KeyZ', 90, 2)
+    await editorStatus('Saved')
+    await enterText(editContent)
+    await keyboard('s', 'KeyS', 83, 2)
+    await editorStatus('Saved')
+    const savedContent = original.includes('\r\n') ? editContent.replaceAll('\n', '\r\n') : editContent
+    assert.equal(await readFile(target, 'utf8'), savedContent)
+    assert.equal(git('diff', '--cached', '--name-only', '--', file), '')
+
+    await clickButton('.sidebar-segments', 'Changes')
+    await until(() => evaluate(`(() => {
+      const row = document.querySelector('.working-row[title="greetservice.go"]')
+      if (!row) return false
+      row.click()
+      return true
+    })()`), 'edited file in Working Changes')
+    await clickButton('.preview-tabs', 'Unstaged diff')
+    await until(() => evaluate("document.querySelector('.patch')?.textContent.includes('Edited in GitVela')"), 'saved edit in Git diff')
+    await clickButton('.index-actions', 'Stage')
+    await until(() => git('diff', '--cached', '--name-only', '--', file) === file, 'edited file staged')
+
+    await clickButton('.preview-tabs', 'Editor')
+    await enterText('unsaved draft')
+    await editorStatus('Unsaved changes')
+    await writeFile(target, 'external update')
+    await clickButton('.editor-tools', 'Save')
+    await until(() => evaluate("document.querySelector('.preview-panel [role=alert]')?.innerText.includes('changed on disk')"), 'external change blocked save')
+    assert.equal(await readFile(target, 'utf8'), 'external update')
+
+    await clickButton('.sidebar-segments', 'Files')
+    await selectFile('README.md')
+    await clickButton('[aria-label="Unsaved file changes"]', 'Keep editing')
+    assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'unsaved draft')
+    await clickButton('.editor-tools', 'Close')
+    await clickButton('[aria-label="Unsaved file changes"]', 'Discard changes')
+    await until(() => evaluate("!document.querySelector('.workspace-editor')"), 'editor closed after discard confirmation')
+    git('restore', '--source=HEAD', '--staged', '--worktree', '--', file)
+    assert.equal(await readFile(target, 'utf8'), original)
+  }
   if (testProject) {
     const project = await mkdtemp(join(tmpdir(), 'gitvela-project-'))
     const git = (...args) => execFileSync('git', ['-C', project, ...args], { encoding: 'utf8' }).trim()
@@ -434,6 +505,7 @@ try {
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
   }
   console.log('Desktop smoke passed: Go bindings, repository, history canvas, changed files, and read-only Diff.')
+  if (testEditor) console.log('File editing, undo, search, save, staging, and external-change protection passed.')
   if (testProject) console.log('Project initialization, first commit, remote management, and GitHub publication controls passed.')
   if (dailyRemote) console.log('Amend, stash save and pop, and remote push, fetch, and pull passed.')
   if (worktreeTarget) console.log('Worktree creation, switching, and removal passed.')

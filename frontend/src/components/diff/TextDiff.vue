@@ -1,13 +1,9 @@
 <script setup lang="ts">
 import { ref, useTemplateRef, watchPostEffect } from 'vue'
-import { EditorState, type Extension } from '@codemirror/state'
+import { EditorState } from '@codemirror/state'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { MergeView, getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView } from '@codemirror/merge'
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { tags } from '@lezer/highlight'
-import { javascript } from '@codemirror/lang-javascript'
-import { go } from '@codemirror/lang-go'
-import { json } from '@codemirror/lang-json'
+import { textHighlighting, textLanguage } from '../editor/textLanguage'
 import type { Comparison } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ comparison: Comparison; path: string; dark: boolean }>()
@@ -16,27 +12,6 @@ const unified = ref(false)
 const changes = ref(0)
 let editor: EditorView | undefined
 
-const diffHighlighting = syntaxHighlighting(HighlightStyle.define([
-  { tag: [tags.keyword, tags.modifier], color: 'var(--syntax-keyword)' },
-  { tag: [tags.string, tags.regexp], color: 'var(--syntax-string)' },
-  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: 'var(--syntax-literal)' },
-  { tag: [tags.typeName, tags.className, tags.namespace], color: 'var(--syntax-type)' },
-  { tag: tags.function(tags.variableName), color: 'var(--syntax-function)' },
-  { tag: tags.propertyName, color: 'var(--syntax-property)' },
-  { tag: [tags.comment, tags.meta], color: 'var(--muted)' },
-  { tag: tags.invalid, color: 'var(--error)' },
-]))
-
-function language(path: string): Extension {
-  const ext = path.split('.').at(-1)?.toLowerCase()
-  if (ext === 'go') return go()
-  if (ext === 'json') return json()
-  if (ext === 'ts' || ext === 'tsx' || ext === 'js' || ext === 'jsx' || ext === 'mjs' || ext === 'cjs') {
-    return javascript({ typescript: ext.startsWith('ts'), jsx: ext.endsWith('x') })
-  }
-  return []
-}
-
 watchPostEffect(onCleanup => {
   if (!host.value) return
   const { before, after } = props.comparison
@@ -44,8 +19,8 @@ watchPostEffect(onCleanup => {
   const extensions = [
     lineNumbers(), EditorState.readOnly.of(true), EditorView.editable.of(false),
     EditorView.contentAttributes.of({ tabindex: '0' }),
-    diffHighlighting,
-    EditorView.theme({}, { dark: props.dark }), language(props.path),
+    textHighlighting,
+    EditorView.theme({}, { dark: props.dark }), textLanguage(props.path),
   ]
   const collapseUnchanged = { margin: 4, minSize: 10 }
   if (unified.value) {

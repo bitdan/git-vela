@@ -93,10 +93,10 @@ export const useWorkspace = defineStore('workspace', () => {
     }
   }
 
-  async function choose() {
+  async function choose(openSelected: (path: string) => void | Promise<void> = open) {
     try {
       const path = await api.ChooseDirectory()
-      if (path) await open(path)
+      if (path) await openSelected(path)
     } catch (error) {
       repoError.value = String(error)
     }

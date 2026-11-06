@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Events } from '@wailsio/runtime'
+import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
 import type { Worktree } from '../../../bindings/gitvela/internal/git'
@@ -24,6 +26,7 @@ const branches = computed(() => store.branchRefs
   .map(item => item.name.slice('refs/heads/'.length))
   .filter(name => !trees.value.some(tree => tree.branch === name)))
 let timer: ReturnType<typeof setInterval>
+let unsubscribeChanges: (() => void) | undefined
 
 async function load() {
   const call = api.Worktrees(props.path)
@@ -45,12 +48,16 @@ async function load() {
 
 onMounted(() => {
   void load()
+  unsubscribeChanges = Events.On(GitvelaRepositoryChanged, event => {
+    if (event.data === props.path && !document.hidden && !busy.value && !loading.value) void load()
+  })
   timer = setInterval(() => {
     if (!document.hidden && !busy.value && !loading.value) void load()
   }, 5000)
 })
 onUnmounted(() => {
   clearInterval(timer)
+  unsubscribeChanges?.()
   requests.clear()
 })
 

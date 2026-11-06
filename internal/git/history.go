@@ -52,6 +52,10 @@ func objectID(id string) bool {
 }
 
 func History(ctx context.Context, dir string, cursor Cursor) (Page, error) {
+	return readHistory(ctx, dir, cursor, nil)
+}
+
+func readHistory(ctx context.Context, dir string, cursor Cursor, filter *HistoryFilter) (Page, error) {
 	page := Page{Commits: []Commit{}, Refs: []Ref{}}
 	if cursor.Offset < 0 || len(cursor.Lanes) > 4096 {
 		return page, errors.New("invalid history cursor")
@@ -60,9 +64,12 @@ func History(ctx context.Context, dir string, cursor Cursor) (Page, error) {
 	if err != nil {
 		return page, err
 	}
+	if filter != nil {
+		snapshot = filter.snapshot(snapshot)
+	}
 	page.Next.Snapshot = snapshot
 	if cursor.Snapshot != "" && cursor.Snapshot != snapshot {
-		return page, errors.New("repository references changed; refresh the history")
+		return page, errors.New("repository references or search filters changed; refresh the history")
 	}
 	labels := make(map[string][]string)
 	var tips strings.Builder
@@ -89,11 +96,41 @@ func History(ctx context.Context, dir string, cursor Cursor) (Page, error) {
 			add(fields[0], fields[4])
 		}
 	}
-	if tips.Len() == 0 {
+	revisions := tips.String()
+	format := "--format=%H%x00%P%x00%an%x00%at%x00%s"
+	args := []string{"log", "--topo-order", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "-z"}
+	if filter != nil {
+		format = "--format=%H%x00%P%x00%an%x00%ct%x00%s"
+		options, err := filter.options()
+		if err != nil {
+			return page, err
+		}
+		args = append(args, options...)
+		if filter.Branch != "" {
+			revisions = ""
+			for _, ref := range page.Refs {
+				if ref.Name == filter.Branch && (strings.HasPrefix(ref.Name, "refs/heads/") || strings.HasPrefix(ref.Name, "refs/remotes/")) {
+					revisions = ref.Hash + "\n"
+					break
+				}
+			}
+			if revisions == "" {
+				return page, errors.New("the selected branch is no longer available")
+			}
+		}
+		if filter.Hash != "" {
+			revisions, err = filter.hashTip(ctx, dir)
+			if err != nil {
+				return page, err
+			}
+			args = append(args, "--no-walk")
+		}
+	}
+	if revisions == "" {
 		return page, nil
 	}
-	data, err = run(ctx, dir, []byte(tips.String()), 8<<20, "log", "--topo-order", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "-z",
-		"--format=%H%x00%P%x00%an%x00%at%x00%s", "--skip="+strconv.Itoa(cursor.Offset), "-n", strconv.Itoa(pageSize+1), "--stdin", "--")
+	args = append(args, format, "--skip="+strconv.Itoa(cursor.Offset), "-n", strconv.Itoa(pageSize+1), "--stdin", "--")
+	data, err = run(ctx, dir, []byte(revisions), 8<<20, args...)
 	if err != nil {
 		return page, err
 	}
@@ -119,7 +156,9 @@ func History(ctx context.Context, dir string, cursor Cursor) (Page, error) {
 		})
 	}
 	page.Next.Offset = cursor.Offset + len(page.Commits)
-	page.Next.Lanes = layout(page.Commits, cursor.Lanes)
+	if filter == nil {
+		page.Next.Lanes = layout(page.Commits, cursor.Lanes)
+	}
 	return page, nil
 }
 

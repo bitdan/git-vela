@@ -1,18 +1,43 @@
 <script setup lang="ts">
-import { computed, useTemplateRef, watch } from 'vue'
+import { computed, ref, useTemplateRef, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import { storeToRefs } from 'pinia'
+import { usePreferences } from '../../stores/preferences'
 import { useWorkspace } from '../../stores/workspace'
+import { fileTreeRows } from './fileTree'
+import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: [] }>()
+const emit = defineEmits<{ select: []; maximize: [] }>()
 const list = useTemplateRef<HTMLElement>('list')
+const { fileTree: tree } = storeToRefs(usePreferences())
+const collapsed = ref(new Set<string>())
+const rows = computed(() => tree.value
+  ? fileTreeRows(store.files, collapsed.value)
+  : store.files.map(file => ({ path: file.path, name: file.path, depth: 0, file })))
+
+function toggleFolder(path: string) {
+  if (collapsed.value.has(path)) collapsed.value.delete(path)
+  else collapsed.value.add(path)
+}
+
+function select(file: Change) {
+  emit('select')
+  if (store.file?.index !== file.index || store.diffError) void store.selectFile(file)
+}
 const virtual = useVirtualizer(computed(() => ({
-  count: store.files.length,
+  count: rows.value.length,
   getScrollElement: () => list.value,
   estimateSize: () => 34,
+  getItemKey: index => rows.value[index]?.file ? 'file:' + rows.value[index]?.file?.index : 'folder:' + rows.value[index]?.path,
   overscan: 8,
 })))
-watch(() => [store.selected?.hash, store.parent], () => {
+const visibleRows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
+  const row = rows.value[item.index]
+  return row ? [{ item, row }] : []
+}))
+watch([() => store.selected?.hash, () => store.parent], () => collapsed.value.clear())
+watch([() => store.selected?.hash, () => store.parent, tree], () => {
   if (list.value) list.value.scrollTop = 0
 })
 </script>
@@ -21,6 +46,7 @@ watch(() => [store.selected?.hash, store.parent], () => {
   <section class="panel files-panel" aria-label="Changed Files">
     <header class="panel-header">
       <div><span class="eyebrow">COMMIT DETAILS</span><h2>Changed Files <small>{{ store.files.length }}</small></h2></div>
+      <button :aria-pressed="tree" @click="tree = !tree">{{ tree ? 'Tree' : 'Flat' }}</button>
     </header>
     <div v-if="store.selected" class="commit-summary">
       <strong class="ellipsis" :title="store.selected.subject">{{ store.selected.subject }}</strong>
@@ -38,14 +64,22 @@ watch(() => [store.selected?.hash, store.parent], () => {
     <p v-else-if="!store.files.length" class="notice">{{ store.selected ? 'No changed files.' : 'Select a commit.' }}</p>
     <div ref="list" class="file-scroll">
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
-        <button v-for="item in virtual.getVirtualItems()" :key="item.index" class="file-row"
-                :class="{ active: store.file?.index === item.index }" :aria-pressed="store.file?.index === item.index"
-                :style="{ transform: 'translateY(' + item.start + 'px)' }"
-                :title="store.files[item.index].oldPath ? store.files[item.index].oldPath + ' → ' + store.files[item.index].path : store.files[item.index].path"
-                @click="emit('select'); store.selectFile(store.files[item.index])">
-          <code class="file-status" :data-status="store.files[item.index].status">{{ store.files[item.index].status }}</code>
-          <span class="ellipsis">{{ store.files[item.index].oldPath ? store.files[item.index].oldPath + ' → ' : '' }}{{ store.files[item.index].path }}</span>
-        </button>
+        <template v-for="{ item, row } in visibleRows" :key="String(item.key)">
+          <button v-if="row.file" class="file-row"
+                  :class="{ active: store.file?.index === row.file.index }" :aria-pressed="store.file?.index === row.file.index"
+                  :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 8 + row.depth * 12 + 'px' }"
+                  :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
+                  @click="select(row.file)" @dblclick="emit('maximize')">
+            <code class="file-status" :data-status="row.file.status">{{ row.file.status }}</code>
+            <span class="ellipsis">{{ row.file.oldPath ? row.file.oldPath + ' → ' : '' }}{{ row.name }}</span>
+          </button>
+          <button v-else class="file-row folder-row" :aria-expanded="!collapsed.has(row.path)" :title="row.path"
+                  :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 8 + row.depth * 12 + 'px' }"
+                  @click="toggleFolder(row.path)">
+            <span aria-hidden="true">{{ collapsed.has(row.path) ? '▸' : '▾' }}</span>
+            <span class="ellipsis">{{ row.name }}</span>
+          </button>
+        </template>
       </div>
     </div>
   </section>

@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { Events } from '@wailsio/runtime'
+import { GitvelaRepositoryChanged } from '../bindings/events'
+import { storeToRefs } from 'pinia'
+import { usePreferences } from './stores/preferences'
 import { useWorkspace } from './stores/workspace'
 import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
@@ -43,8 +47,13 @@ function openBranchForm(form?: BranchForm, branch = '') {
   branchNotice.value = ''
 }
 const picking = ref(false)
-const dark = ref(localStorage.getItem('gitvela.theme') === 'dark')
-const previewHeight = ref(Math.min(70, Math.max(28, Number(localStorage.getItem('gitvela.previewHeight')) || 46)))
+const { dark, previewHeight, fileTree } = storeToRefs(usePreferences())
+const workspaceError = ref('')
+onErrorCaptured((error, _component, info) => {
+  console.error('GitVela workspace error', info, error)
+  workspaceError.value = String(error)
+  return false
+})
 const workingFiles = ref<WorkingFile[]>([])
 const workingError = ref('')
 const workingLoading = ref(false)
@@ -57,6 +66,8 @@ const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
 const view = ref<FileView | 'commit'>('working')
+const diffExpanded = ref(false)
+const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
 const commitNotice = ref('')
 const patchLines = computed(() => preview.value?.content.replace(/\n$/, '').split('\n') ?? [])
@@ -72,13 +83,18 @@ function patchClass(line: string) {
   if (line.startsWith('-') && !line.startsWith('---')) return 'patch-removed'
 }
 const statusRequest = new LatestRequest()
+const watchRequest = new LatestRequest()
+const watchError = ref('')
+let unsubscribeChanges: (() => void) | undefined
 const previewRequest = new LatestRequest()
 let timer: ReturnType<typeof setInterval>
 
-watch(dark, value => localStorage.setItem('gitvela.theme', value ? 'dark' : 'light'))
-watch(previewHeight, value => localStorage.setItem('gitvela.previewHeight', String(value)))
+watch(view, value => { if (value !== 'commit') diffExpanded.value = false })
 watch(() => store.repository?.path, repo => {
-  if (repo) path.value = repo
+  if (repo) {
+    path.value = repo
+    watchRepository(repo)
+  }
   navigation.value = ''
   branchError.value = ''
   branchNotice.value = ''
@@ -101,6 +117,26 @@ watch(() => store.repository?.path, repo => {
   void loadWorking()
 })
 
+
+function watchRepository(repo: string) {
+  watchError.value = ''
+  const call = api.WatchRepository(repo)
+  const current = watchRequest.replace(call)
+  void call.catch(error => {
+    if (current()) watchError.value = String(error)
+  }).finally(() => watchRequest.finish(call))
+}
+
+async function refreshExternalChanges() {
+  if (document.hidden || indexBusy.value) return
+  void store.checkForChanges()
+  if (workingLoading.value) return
+  const repo = store.repository?.path
+  await loadWorking()
+  if (repo === store.repository?.path && workingSelection.value && view.value !== 'commit' && !previewLoading.value) {
+    void selectView(view.value, true)
+  }
+}
 
 async function loadWorking() {
   const repo = store.repository?.path
@@ -128,26 +164,32 @@ function selectWorking(file: WorkingFile) {
   void selectView('working')
 }
 
-async function selectView(next: FileView | 'commit') {
+async function selectView(next: FileView | 'commit', background = false) {
   view.value = next
   if (next === 'commit') return
   const repo = store.repository?.path
   const file = workingSelection.value
   if (!repo || !file) return
-  preview.value = undefined
-  previewError.value = ''
+  if (!background) {
+    preview.value = undefined
+    previewError.value = ''
+  }
   if (next !== 'working' && !currentWorkingFile.value) {
     previewRequest.clear()
     previewLoading.value = false
     preview.value = { kind: 'text', content: '' }
+    previewError.value = ''
     return
   }
-  previewLoading.value = true
+  previewLoading.value = !background
   const call = next === 'working' ? api.WorkingPreview(repo, file.path) : api.WorkingDiff(repo, file.path, next === 'staged')
   const current = previewRequest.replace(call)
   try {
     const result = await call
-    if (current()) preview.value = result
+    if (current()) {
+      preview.value = result
+      previewError.value = ''
+    }
   } catch (error) {
     if (current()) previewError.value = String(error)
   } finally {
@@ -200,15 +242,15 @@ async function commitChanges() {
 
 onMounted(() => {
   void store.detectGit()
-  timer = setInterval(() => {
-    if (!document.hidden && !indexBusy.value) {
-      void store.checkForChanges()
-      if (!workingLoading.value) void loadWorking()
-    }
-  }, 5000)
+  unsubscribeChanges = Events.On(GitvelaRepositoryChanged, event => {
+    if (event.data === store.repository?.path) void refreshExternalChanges()
+  })
+  timer = setInterval(() => { void refreshExternalChanges() }, 5000)
 })
 onUnmounted(() => {
   clearInterval(timer)
+  unsubscribeChanges?.()
+  watchRequest.clear()
   statusRequest.clear()
   previewRequest.clear()
 })
@@ -285,6 +327,23 @@ async function jump(hash: string) {
   }
 }
 
+function maximizeDiff() {
+  view.value = 'commit'
+  diffExpanded.value = true
+  void nextTick(() => restoreDiff.value?.focus())
+}
+
+function restoreDiffLayout() {
+  diffExpanded.value = false
+  void nextTick(() => content.value?.querySelector<HTMLButtonElement>('.file-row.active')?.focus())
+}
+
+function createBranchFromCommit() {
+  if (indexBusy.value) return
+  showWorktrees.value = false
+  openBranchForm('create')
+}
+
 function split(event: PointerEvent) {
   if (!content.value || !(event.currentTarget instanceof HTMLElement)) return
   event.currentTarget.setPointerCapture(event.pointerId)
@@ -319,23 +378,37 @@ function resizeWithKey(event: KeyboardEvent) {
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
       <button :disabled="!store.repository || store.opening || indexBusy" @click="refresh">Refresh</button>
       <button v-if="store.repository" :disabled="indexBusy" :aria-pressed="showWorktrees" @click="showWorktrees = !showWorktrees">Worktrees</button>
-      <button @click="dark = !dark">{{ dark ? 'Light' : 'Dark' }}</button>
+      <details class="preferences">
+        <summary>Settings</summary>
+        <div class="preferences-panel">
+          <label><input v-model="dark" type="checkbox" /> Dark theme</label>
+          <label><input v-model="fileTree" type="checkbox" /> Show Changed Files as a tree</label>
+          <button @click="previewHeight = 46">Reset panel sizes</button>
+        </div>
+      </details>
     </header>
+    <div v-if="workspaceError" class="notice error top-error" role="alert">
+      {{ workspaceError }}
+      <button @click="workspaceError = ''; refresh()">Reload workspace</button>
+    </div>
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
+    <p v-if="watchError" class="notice top-error" role="status" :title="watchError">File notifications unavailable. Checking for Git changes every 5 seconds.</p>
     <div class="workspace">
       <main v-if="store.repository" ref="content" class="content">
-        <div class="upper" :style="{ flexBasis: previewHeight + '%' }">
-          <WorkingChanges v-model:message="commitMessage" :files="workingFiles" :active="view !== 'commit' ? workingSelection?.path : undefined"
+        <div class="upper" :class="{ 'diff-expanded': diffExpanded }" :style="{ flexBasis: diffExpanded ? '100%' : previewHeight + '%' }">
+          <WorkingChanges v-show="!diffExpanded" v-model:message="commitMessage" :files="workingFiles" :active="view !== 'commit' ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="view !== 'commit' && currentWorkingFile?.canStage" :can-unstage="view !== 'commit' && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy" :notice="commitNotice" @select="selectWorking" @update-index="updateIndex" @commit="commitChanges" />
-          <section class="panel preview-panel" aria-label="File Preview">
+          <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
             <header class="preview-tabs">
-              <button v-for="tab in workingTabs" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
-              <button :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
+              <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
+              <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
               <span class="ellipsis muted" :title="view !== 'commit' ? workingSelection?.path : store.file?.path">
                 {{ view !== 'commit' ? workingSelection?.path : store.file?.path }}
               </span>
+              <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
+              <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
             </header>
             <template v-if="view !== 'commit'">
               <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
@@ -367,10 +440,10 @@ function resizeWithKey(event: KeyboardEvent) {
             </template>
           </section>
         </div>
-        <div class="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
+        <div v-show="!diffExpanded" class="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
              :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
              @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
-        <div class="lower">
+        <div v-show="!diffExpanded" class="lower">
           <WorktreePanel v-if="showWorktrees" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" />
           <aside v-else class="panel branch-panel" aria-label="Branches and tags">
             <header class="panel-header">
@@ -425,8 +498,8 @@ function resizeWithKey(event: KeyboardEvent) {
               </div>
             </div>
           </aside>
-          <CommitLog ref="log" @select="view = 'commit'" />
-          <ChangedFiles @select="view = 'commit'" />
+          <CommitLog ref="log" @select="view = 'commit'" @create-branch="createBranchFromCommit" />
+          <ChangedFiles @select="view = 'commit'" @maximize="maximizeDiff" />
         </div>
       </main>
       <main v-else class="empty">

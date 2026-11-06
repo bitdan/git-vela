@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -6,6 +7,7 @@ const endpoint = process.env.GITVELA_CDP_URL ?? 'http://127.0.0.1:9331'
 const repo = process.argv[2] ?? process.cwd()
 const screenshot = process.argv[3]
 const workingFile = process.argv[4]
+const testMvp = process.env.GITVELA_SMOKE_MVP === '1'
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
 const testCommit = process.argv[5] === '--commit'
@@ -217,6 +219,42 @@ try {
       editors[1].textContent.includes('GitVela') && editors[1].getAttribute('contenteditable') !== 'true'
   })()`), 'read-only side-by-side Diff with the real root blob')
 
+  if (testMvp) {
+    if (worktreeTarget) {
+      await evaluate("[...document.querySelectorAll('.topbar button')].find(button => button.innerText === 'Worktrees' && button.getAttribute('aria-pressed') === 'true')?.click()")
+      execFileSync('git', ['-C', repo, 'branch', 'smoke/external-metadata'])
+      await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/smoke/external-metadata\"]')"), 'external branch refresh')
+    }
+    const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
+    await click('.log-tools button[aria-expanded="false"]')
+    await evaluate(`(() => {
+      const form = document.querySelector('.history-search')
+      const message = [...form.querySelectorAll('label')].find(label => label.textContent.trim() === 'Message').querySelector('input')
+      message.value = 'Initialize GitVela'
+      message.dispatchEvent(new Event('input', { bubbles: true }))
+      form.requestSubmit()
+    })()`)
+    await until(() => evaluate("document.querySelector('.search-results .commit-row')?.innerText.includes('Initialize GitVela')"), 'history search result')
+    await evaluate("document.querySelector('.search-results .commit-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
+    await until(() => evaluate("document.querySelector('[aria-label=\"Commit actions\"]')?.innerText.includes('Copy message')"), 'commit context actions')
+    await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText === 'Copy hash').click()")
+    await until(() => evaluate("document.querySelector('.log-panel [role=status]')?.innerText === 'Hash copied.'"), 'copy hash')
+    await click('.log-tools button[aria-expanded="true"]')
+    await until(() => evaluate("!!document.querySelector('.commit-row canvas')"), 'return to history graph')
+    await click('.preferences summary')
+    await click('.preferences-panel label:first-child input')
+    await until(() => evaluate("document.querySelector('.shell').dataset.theme === 'dark'"), 'dark theme from Settings')
+    await click('.preferences-panel label:first-child input')
+    await click('.preferences-panel label:nth-child(2) input')
+    await until(() => evaluate("!!document.querySelector('.files-panel .folder-row')"), 'file tree from Settings')
+    await click('.preferences-panel label:nth-child(2) input')
+    await click('.preferences summary')
+    await until(() => evaluate("!!document.querySelector('.diff-host .cm-editor')"), 'commit diff available')
+    await click('.preview-tabs .diff-size')
+    await until(() => evaluate("document.querySelector('.upper').classList.contains('diff-expanded') && getComputedStyle(document.querySelector('.lower')).display === 'none'"), 'maximized diff')
+    await evaluate("document.querySelector('.preview-tabs .diff-size').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await until(() => evaluate("!document.querySelector('.upper').classList.contains('diff-expanded')"), 'restored workspace')
+  }
   await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Unified').click()")
   await until(() => evaluate("document.querySelectorAll('.diff-host .cm-editor').length === 1"), 'unified Diff')
   await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Side by side').click()")
@@ -228,6 +266,8 @@ try {
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
   }
   console.log('Desktop smoke passed: Go bindings, repository, history canvas, changed files, and read-only Diff.')
+  if (worktreeTarget) console.log('Worktree creation, switching, and removal passed.')
+  if (testMvp) console.log('History search, commit actions, settings, file tree, and diff maximization passed.')
 } finally {
   socket.close()
 }

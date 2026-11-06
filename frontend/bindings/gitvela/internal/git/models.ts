@@ -50,6 +50,15 @@ export interface GraphRow {
     "width": number;
 }
 
+export interface HistoryFilter {
+    "message": string;
+    "author": string;
+    "branch": string;
+    "from": string;
+    "through": string;
+    "hash": string;
+}
+
 export interface Lane {
     "hash": string;
     "color": number;

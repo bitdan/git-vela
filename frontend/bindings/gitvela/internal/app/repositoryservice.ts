@@ -26,6 +26,10 @@ export function CommitIndex(path: string, message: string): $CancellablePromise<
     return $Call.ByID(685745999, path, message);
 }
 
+export function CommitMessage(path: string, hash: string): $CancellablePromise<string> {
+    return $Call.ByID(1965106864, path, hash);
+}
+
 export function CreateBranch(path: string, name: string, commit: string): $CancellablePromise<void> {
     return $Call.ByID(2196385032, path, name, commit);
 }
@@ -62,6 +66,10 @@ export function RenameBranch(path: string, oldName: string, newName: string): $C
     return $Call.ByID(2220009630, path, oldName, newName);
 }
 
+export function SearchHistory(path: string, filter: git$0.HistoryFilter, cursor: git$0.Cursor): $CancellablePromise<git$0.Page> {
+    return $Call.ByID(3379203592, path, filter, cursor);
+}
+
 export function SetStaged(path: string, file: string, staged: boolean): $CancellablePromise<void> {
     return $Call.ByID(2927749698, path, file, staged);
 }
@@ -72,6 +80,10 @@ export function Snapshot(path: string): $CancellablePromise<string> {
 
 export function SwitchBranch(path: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(3487777736, path, name);
+}
+
+export function WatchRepository(path: string): $CancellablePromise<void> {
+    return $Call.ByID(1853780131, path);
 }
 
 export function WorkingChanges(path: string): $CancellablePromise<git$0.WorkingFile[] | null> {

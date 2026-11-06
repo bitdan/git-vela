@@ -10,7 +10,53 @@ import (
 )
 
 // RepositoryService exposes Git operations to the desktop frontend.
-type RepositoryService struct{ indexWrite sync.Mutex }
+type RepositoryService struct {
+	indexWrite sync.Mutex
+	watchMu    sync.Mutex
+	stopWatch  func()
+}
+
+const repositoryChanged = "gitvela:repository-changed"
+
+func init() {
+	application.RegisterEvent[string](repositoryChanged)
+}
+
+func (s *RepositoryService) WatchRepository(ctx context.Context, path string) error {
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if s.stopWatch != nil {
+		s.stopWatch()
+		s.stopWatch = nil
+	}
+	stop, err := git.WatchRepository(ctx, path, func() {
+		application.Get().Event.Emit(repositoryChanged, path)
+	})
+	if ctx.Err() != nil {
+		if stop != nil {
+			stop()
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	s.stopWatch = stop
+	return nil
+}
+
+func (s *RepositoryService) ServiceShutdown() error {
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	if s.stopWatch != nil {
+		s.stopWatch()
+		s.stopWatch = nil
+	}
+	return nil
+}
 
 // Wails discards successful replies for cancelled calls, but reports late
 // rejections as unhandled. A cancelled Git command has no result to deliver.
@@ -136,4 +182,12 @@ func (s *RepositoryService) RemoveWorktree(ctx context.Context, path, target str
 		return err
 	}
 	return git.RemoveWorktree(ctx, path, target)
+}
+
+func (*RepositoryService) SearchHistory(ctx context.Context, path string, filter git.HistoryFilter, cursor git.Cursor) (git.Page, error) {
+	return discardCancelled(git.SearchHistory(ctx, path, filter, cursor))
+}
+
+func (*RepositoryService) CommitMessage(ctx context.Context, path, hash string) (string, error) {
+	return discardCancelled(git.ReadCommitMessage(ctx, path, hash))
 }

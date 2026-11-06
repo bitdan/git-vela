@@ -2,7 +2,10 @@ module gitvela
 
 go 1.27.3
 
-require github.com/wailsapp/wails/v3 v3.1.0
+require (
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/wailsapp/wails/v3 v3.1.0
+)
 
 require (
 	github.com/coder/websocket v1.8.14 // indirect

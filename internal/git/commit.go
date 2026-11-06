@@ -18,3 +18,12 @@ func CommitIndex(ctx context.Context, dir, message string) error {
 	_, err := runWithTimeout(ctx, 2*time.Minute, dir, []byte(message), 1<<20, "commit", "-F", "-", "--cleanup=verbatim")
 	return err
 }
+
+func ReadCommitMessage(ctx context.Context, dir, hash string) (string, error) {
+	if !objectID(hash) {
+		return "", errors.New("invalid commit hash")
+	}
+	data, err := run(ctx, dir, nil, 512<<10, "show", "--no-patch", "--no-notes",
+		"--no-show-signature", "--encoding=UTF-8", "--format=format:%B", hash+"^{commit}", "--")
+	return string(data), err
+}

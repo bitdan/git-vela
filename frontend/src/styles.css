@@ -182,3 +182,76 @@ button.primary:hover:not(:disabled) { background: var(--accent); filter: brightn
   grid-column: 1 / -1;
   padding: 0 8px 5px;
 }
+
+.history-search {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  flex: none;
+  gap: 6px 8px;
+  padding: 6px 8px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+}
+
+.history-search label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.history-search input,
+.history-search select {
+  min-width: 0;
+}
+
+.history-search .search {
+  grid-column: 1 / -1;
+}
+
+.search-results .log-grid > :first-child {
+  padding: 0;
+}
+
+.commit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 5px 8px;
+}
+
+.upper.diff-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.diff-size {
+  margin-inline-start: auto;
+  white-space: nowrap;
+}
+
+.preferences {
+  position: relative;
+}
+
+.preferences summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.preferences-panel {
+  position: absolute;
+  z-index: 3;
+  inset-inline-end: 0;
+  top: calc(100% + 8px);
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.preferences-panel label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

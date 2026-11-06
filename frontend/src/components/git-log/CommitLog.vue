@@ -1,39 +1,62 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { Clipboard } from '@wailsio/runtime'
+import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
+import type { Commit, Cursor, HistoryFilter } from '../../../bindings/gitvela/internal/git'
+import { LatestRequest } from '../../stores/latestRequest'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useWorkspace } from '../../stores/workspace'
 import GraphCell from './GraphCell.vue'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: [] }>()
+const emit = defineEmits<{ select: []; createBranch: [] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
-const query = ref('')
-const notice = ref('')
-const graphPixels = computed(() => Math.max(52, store.graphWidth * 13 + 14))
+const emptyFilter = (): HistoryFilter => ({ message: '', author: '', branch: '', from: '', through: '', hash: '' })
+const draft = ref(emptyFilter())
+const hashMode = ref(false)
+const showSearch = ref(false)
+const filter = shallowRef<HistoryFilter>()
+const matches = shallowRef<Commit[]>([])
+const cursor = shallowRef<Cursor>()
+const searchMore = ref(false)
+const searching = ref(false)
+const searchError = ref('')
+const requests = new LatestRequest()
+let historyScroll = 0
+const menu = ref<Commit>()
+const copyStatus = ref('')
+const menuButtons = useTemplateRef<HTMLElement>('commit-actions')
+const commits = computed(() => filter.value ? matches.value : store.commits)
+const graphPixels = computed(() => filter.value ? 8 : Math.max(52, store.graphWidth * 13 + 14))
 const columns = computed(() => ({ '--graph-width': graphPixels.value + 'px' }))
 const virtual = useVirtualizer(computed(() => ({
-  count: store.commits.length,
+  count: commits.value.length,
   getScrollElement: () => scroll.value,
   estimateSize: () => 34,
   overscan: 12,
 })))
-const rows = computed(() => virtual.value.getVirtualItems())
+const rows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
+  const commit = commits.value[item.index]
+  return commit ? [{ item, commit }] : []
+}))
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
 const tooltip = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-watch(() => rows.value.at(-1)?.index, index => {
-  if (index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
+watch(() => rows.value.at(-1)?.item.index, index => {
+  if (!filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
 })
 
 function select(index: number) {
-  const commit = store.commits[index]
+  const commit = commits.value[index]
   if (!commit) return
-  virtual.value.scrollToIndex(index, { align: 'auto' })
+  menu.value = undefined
+  void nextTick(() => virtual.value.scrollToIndex(index, { align: 'auto' }))
   emit('select')
   void store.selectCommit(commit)
 }
 
 function jump(hash: string) {
+  if (filter.value) clearSearch()
   const index = store.commits.findIndex(item => item.hash === hash)
   if (index >= 0) {
     select(index)
@@ -43,29 +66,129 @@ function jump(hash: string) {
 }
 
 function navigate(event: KeyboardEvent, direction: number) {
-  if (!store.commits.length) return
+  if (!commits.value.length) return
   event.preventDefault()
-  const index = store.commits.findIndex(item => item.hash === store.selected?.hash)
-  select(Math.max(0, Math.min(store.commits.length - 1, index + direction)))
+  const index = commits.value.findIndex(item => item.hash === store.selected?.hash)
+  select(Math.max(0, Math.min(commits.value.length - 1, index + direction)))
 }
 
-function search() {
-  const value = query.value.trim().toLocaleLowerCase()
-  if (!value) return
-  const index = store.commits.findIndex(item => item.hash === store.selected?.hash)
-  for (let i = 1; i <= store.commits.length; i++) {
-    const position = (index + i) % store.commits.length
-    const row = store.commits[position]
-    if ([row.subject, row.author, row.hash, ...(row.refs ?? [])].some(text => text.toLocaleLowerCase().includes(value))) {
-      select(position)
-      notice.value = ''
-      return
-    }
+function dateBoundary(day: string, end: boolean) {
+  if (!day) return ''
+  const date = new Date(day + (end ? 'T23:59:59' : 'T00:00:00'))
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
+}
+
+function startSearch() {
+  const input = draft.value
+  const query = hashMode.value
+    ? { ...emptyFilter(), hash: input.hash.trim() }
+    : { ...emptyFilter(), message: input.message.trim(), author: input.author.trim(),
+        branch: input.branch, from: dateBoundary(input.from, false), through: dateBoundary(input.through, true) }
+  if (!hashMode.value && ((input.from && !query.from) || (input.through && !query.through))) {
+    searchError.value = 'Enter a valid date range.'
+    return
   }
-  notice.value = 'No match in loaded commits.'
+  if (!Object.values(query).some(Boolean)) {
+    clearSearch()
+    return
+  }
+  if (!filter.value) historyScroll = scroll.value?.scrollTop ?? 0
+  filter.value = query
+  restartSearch()
 }
 
-watch(query, () => { notice.value = '' })
+function restartSearch() {
+  requests.clear()
+  matches.value = []
+  cursor.value = undefined
+  searchMore.value = false
+  menu.value = undefined
+  if (scroll.value) scroll.value.scrollTop = 0
+  void loadMatches()
+}
+
+async function loadMatches() {
+  const path = store.repository?.path
+  const query = filter.value
+  if (!path || !query) return
+  const call = api.SearchHistory(path, query, cursor.value ?? { offset: 0, snapshot: '', lanes: null })
+  const current = requests.replace(call)
+  searching.value = true
+  searchError.value = ''
+  try {
+    const page = await call
+    if (!current()) return
+    matches.value = [...matches.value, ...(page.commits ?? [])]
+    cursor.value = page.next
+    searchMore.value = page.more
+  } catch (error) {
+    if (current()) searchError.value = String(error)
+  } finally {
+    if (current()) searching.value = false
+    requests.finish(call)
+  }
+}
+
+function clearSearch(restoreScroll = true) {
+  const hadSearch = !!filter.value
+  requests.clear()
+  filter.value = undefined
+  searching.value = false
+  searchError.value = ''
+  matches.value = []
+  menu.value = undefined
+  if (hadSearch && restoreScroll) {
+    void nextTick(() => { if (scroll.value) scroll.value.scrollTop = historyScroll })
+  }
+}
+
+function closeSearch() {
+  clearSearch()
+  showSearch.value = false
+}
+
+watch(() => store.repository, (repo, previous) => {
+  menu.value = undefined
+  copyStatus.value = ''
+  if (repo?.path !== previous?.path) {
+    clearSearch(false)
+    draft.value = emptyFilter()
+    hashMode.value = false
+    if (scroll.value) scroll.value.scrollTop = 0
+  } else if (filter.value) {
+    restartSearch()
+  }
+})
+onUnmounted(() => requests.clear())
+
+function showCommitActions(index: number) {
+  const commit = commits.value[index]
+  if (!commit) return
+  select(index)
+  menu.value = commit
+  copyStatus.value = ''
+  void nextTick(() => menuButtons.value?.querySelector('button')?.focus())
+}
+
+function closeCommitActions() {
+  menu.value = undefined
+  scroll.value?.focus()
+}
+
+async function copyCommit(commit: Commit, message: boolean) {
+  const repo = store.repository
+  if (!repo) return
+  closeCommitActions()
+  try {
+    const value = message ? await api.CommitMessage(repo.path, commit.hash) : commit.hash
+    if (store.repository?.path !== repo.path) return
+    await Clipboard.SetText(value)
+    copyStatus.value = message ? 'Commit message copied.' : 'Hash copied.'
+  } catch (error) {
+    if (store.repository?.path === repo.path) copyStatus.value = String(error)
+  }
+}
+
 defineExpose({ jump })
 </script>
 
@@ -74,38 +197,79 @@ defineExpose({ jump })
     <header class="panel-header">
       <div><span class="eyebrow">HISTORY</span><h2>Git Log</h2></div>
       <div class="log-tools">
-        <span class="muted">{{ store.commits.length.toLocaleString() }} loaded</span>
-        <form class="search" @submit.prevent="search">
-          <input v-model="query" aria-label="Find in loaded commits" placeholder="Find in loaded commits" />
-          <button type="submit" :disabled="!query.trim()">Find next</button>
-        </form>
+        <span class="muted">{{ commits.length.toLocaleString() }} {{ filter ? 'matches loaded' : 'loaded' }}</span>
+        <button :aria-expanded="showSearch" @click="showSearch ? closeSearch() : showSearch = true">Search…</button>
       </div>
     </header>
-    <p v-if="notice" class="notice" role="status">{{ notice }}</p>
-    <p v-if="store.logError" class="notice error" role="alert">{{ store.logError }}</p>
-    <div ref="scroll" class="log-scroll" :style="columns" tabindex="0" aria-label="Commit history"
+    <form v-if="showSearch" class="history-search" @submit.prevent="startSearch">
+      <label>Search by
+        <select v-model="hashMode">
+          <option :value="false">History filters</option>
+          <option :value="true">Commit hash</option>
+        </select>
+      </label>
+      <label v-if="hashMode">Commit hash <input v-model="draft.hash" spellcheck="false" placeholder="7 or more hex digits" /></label>
+      <template v-else>
+        <label>Message <input v-model="draft.message" placeholder="Text in commit message" /></label>
+        <label>Author <input v-model="draft.author" placeholder="Name or email" /></label>
+        <label>Branch
+          <select v-model="draft.branch">
+            <option value="">All branches and tags</option>
+            <option v-for="branch in store.branchRefs" :key="branch.name" :value="branch.name">
+              {{ branch.name.replace(/^refs\/(heads|remotes)\//, '') }}
+            </option>
+          </select>
+        </label>
+        <label>Committed from <input v-model="draft.from" type="date" /></label>
+        <label>Committed through <input v-model="draft.through" type="date" /></label>
+      </template>
+      <div class="search">
+        <button type="submit">Search</button>
+        <button v-if="filter" type="button" @click="clearSearch()">Back to graph</button>
+      </div>
+    </form>
+    <div v-if="menu" ref="commit-actions" class="commit-actions" role="group" aria-label="Commit actions" @keydown.esc.stop="closeCommitActions">
+      <button @click="copyCommit(menu, false)">Copy hash</button>
+      <button @click="copyCommit(menu, true)">Copy message</button>
+      <button @click="menu = undefined; emit('createBranch')">Create branch…</button>
+      <button @click="closeCommitActions">Close</button>
+    </div>
+    <p v-if="copyStatus" class="notice" role="status">{{ copyStatus }}</p>
+    <p v-if="searchError" class="notice error" role="alert">{{ searchError }}</p>
+    <p v-if="!filter && store.logError" class="notice error" role="alert">{{ store.logError }}</p>
+    <div ref="scroll" class="log-scroll" :class="{ 'search-results': filter }" :style="columns" tabindex="0" aria-label="Commit history"
          @keydown.up="navigate($event, -1)" @keydown.down="navigate($event, 1)">
-      <div class="log-grid log-heading"><span>Graph</span><span>Commit message</span><span>Author</span><span>Date</span><span>Hash</span></div>
+      <div class="log-grid log-heading"><span>{{ filter ? '' : 'Graph' }}</span><span>Commit message</span><span>Author</span><span>{{ filter ? 'Commit date' : 'Date' }}</span><span>Hash</span></div>
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
-        <button v-for="item in rows" :key="store.commits[item.index].hash"
-                class="log-grid commit-row" :class="{ active: store.selected?.hash === store.commits[item.index].hash }"
-                :aria-pressed="store.selected?.hash === store.commits[item.index].hash"
-                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index)">
-          <GraphCell :row="store.commits[item.index].graph" :width="graphPixels" />
-          <span class="commit-title" :title="store.commits[item.index].subject">
-            <span v-for="label in store.commits[item.index].refs" :key="label" class="chip" :title="label">
+        <button v-for="{ item, commit } in rows" :key="commit.hash"
+                class="log-grid commit-row" :class="{ active: store.selected?.hash === commit.hash }"
+                :aria-pressed="store.selected?.hash === commit.hash"
+                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index)"
+                @contextmenu.prevent="showCommitActions(item.index)"
+                @keydown.shift.f10.prevent="showCommitActions(item.index)">
+          <span v-if="filter" aria-hidden="true"></span>
+          <GraphCell v-else :row="commit.graph" :width="graphPixels" />
+          <span class="commit-title" :title="commit.subject">
+            <span v-for="label in commit.refs" :key="label" class="chip" :title="label">
               {{ label.replace(/^refs\/(heads|remotes|tags)\//, '') }}
             </span>
-            <span class="ellipsis">{{ store.commits[item.index].subject || '(no subject)' }}</span>
+            <span class="ellipsis">{{ commit.subject || '(no subject)' }}</span>
           </span>
-          <span class="ellipsis muted">{{ store.commits[item.index].author }}</span>
-          <time class="muted" :title="tooltip.format(store.commits[item.index].time * 1000)">{{ date.format(store.commits[item.index].time * 1000) }}</time>
-          <code class="muted" :title="store.commits[item.index].hash">{{ store.commits[item.index].hash.slice(0, 8) }}</code>
+          <span class="ellipsis muted">{{ commit.author }}</span>
+          <time class="muted" :title="tooltip.format(commit.time * 1000)">{{ date.format(commit.time * 1000) }}</time>
+          <code class="muted" :title="commit.hash">{{ commit.hash.slice(0, 8) }}</code>
         </button>
       </div>
-      <p v-if="!store.commits.length && !store.loading && !store.logError" class="notice">This repository has no commits yet.</p>
-      <p v-if="store.loading" class="notice" role="status">Loading commits…</p>
-      <button v-else-if="store.more" class="load-more" @click="store.loadPage()">Load more commits</button>
+      <template v-if="filter">
+        <p v-if="searching" class="notice" role="status">Searching history…</p>
+        <p v-else-if="!matches.length && !searchError" class="notice">No matching commits.</p>
+        <button v-else-if="searchMore && !searchError" class="load-more" @click="loadMatches">Load more matches</button>
+      </template>
+      <template v-else>
+        <p v-if="!store.commits.length && !store.loading && !store.logError" class="notice">This repository has no commits yet.</p>
+        <p v-if="store.loading" class="notice" role="status">Loading commits…</p>
+        <button v-else-if="store.more" class="load-more" @click="store.loadPage()">Load more commits</button>
+      </template>
     </div>
   </section>
 </template>

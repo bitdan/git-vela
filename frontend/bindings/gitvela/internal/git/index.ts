@@ -9,6 +9,7 @@ export type {
     Edge,
     FilePreview,
     GraphRow,
+    HistoryFilter,
     Lane,
     Page,
     Ref,

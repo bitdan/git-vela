@@ -9,7 +9,8 @@ import { useWorkspace } from '../../stores/workspace'
 import GraphCell from './GraphCell.vue'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: []; createBranch: [] }>()
+const props = defineProps<{ pinned?: string; busy?: boolean }>()
+const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
 const emptyFilter = (): HistoryFilter => ({ message: '', author: '', branch: '', from: '', through: '', hash: '' })
 const draft = ref(emptyFilter())
@@ -232,6 +233,13 @@ defineExpose({ jump })
       <button @click="copyCommit(menu, false)">Copy hash</button>
       <button @click="copyCommit(menu, true)">Copy message</button>
       <button @click="menu = undefined; emit('createBranch')">Create branch…</button>
+      <button @click="emit('pin', menu); closeCommitActions()">{{ props.pinned === menu.hash ? 'Clear comparison base' : 'Use as comparison base' }}</button>
+      <button :disabled="store.opening || props.pinned === menu.hash" @click="emit('compare', menu); closeCommitActions()">
+        {{ props.pinned ? 'Compare with base' : 'Compare with HEAD' }}
+      </button>
+      <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
+      <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
+      <button :disabled="props.busy" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
       <button @click="closeCommitActions">Close</button>
     </div>
     <p v-if="copyStatus" class="notice" role="status">{{ copyStatus }}</p>

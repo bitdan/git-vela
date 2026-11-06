@@ -4,12 +4,15 @@ import { Events } from '@wailsio/runtime'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
+import { fileTreeRows } from '../changed-files/fileTree'
 import { LatestRequest } from '../../stores/latestRequest'
 
 const props = defineProps<{ path: string; active: boolean; selected?: string }>()
 const emit = defineEmits<{ open: [path: string] }>()
 const files = shallowRef<string[]>([])
 const query = ref('')
+const collapsed = ref(new Set<string>())
+const expanded = new Set<string>()
 const loading = ref(false)
 const error = ref('')
 const list = useTemplateRef<HTMLElement>('list')
@@ -19,12 +22,27 @@ const filtered = computed(() => {
   const text = query.value.trim().toLocaleLowerCase()
   return text ? files.value.filter(file => file.toLocaleLowerCase().includes(text)) : files.value
 })
+const rows = computed(() => fileTreeRows(filtered.value.map(path => ({ path })), query.value.trim() ? expanded : collapsed.value))
+function toggleFolder(path: string) {
+  if (collapsed.value.has(path)) collapsed.value.delete(path)
+  else collapsed.value.add(path)
+}
+
 const virtual = useVirtualizer(computed(() => ({
-  count: filtered.value.length,
+  count: rows.value.length,
   getScrollElement: () => props.active ? list.value : null,
   estimateSize: () => 28,
   overscan: 10,
+  getItemKey: index => {
+    const row = rows.value[index]
+    return row ? (row.file ? 'file:' : 'folder:') + row.path : index
+  },
 })))
+
+const visibleRows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
+  const row = rows.value[item.index]
+  return row ? [{ item, row }] : []
+}))
 
 async function load() {
   const call = api.EditableFiles(props.path)
@@ -65,11 +83,19 @@ onUnmounted(() => { unsubscribe?.(); requests.clear() })
     <p v-else-if="!filtered.length" class="notice">{{ query ? 'No matching files.' : 'No files in this repository.' }}</p>
     <div ref="list" class="file-scroll">
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
-        <button v-for="item in virtual.getVirtualItems()" :key="item.index" class="repository-file-row ellipsis"
-                :class="{ active: selected === filtered[item.index] }" :title="filtered[item.index]"
-                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="emit('open', filtered[item.index])">
-          {{ filtered[item.index] }}
-        </button>
+        <template v-for="{ item, row } in visibleRows" :key="String(item.key)">
+          <button v-if="row.file" class="repository-file-row ellipsis" :class="{ active: selected === row.path }"
+                  :title="row.path" :aria-pressed="selected === row.path"
+                  :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 10 + row.depth * 13 + 'px' }"
+                  @click="emit('open', row.path)">{{ row.name }}</button>
+          <button v-else class="repository-file-row folder-row ellipsis" :title="row.path" :disabled="!!query.trim()"
+                  :aria-expanded="!!query.trim() || !collapsed.has(row.path)"
+                  :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 10 + row.depth * 13 + 'px' }"
+                  @click="toggleFolder(row.path)">
+            <span aria-hidden="true">{{ !query.trim() && collapsed.has(row.path) ? '▸' : '▾' }}</span>
+            {{ row.name }}
+          </button>
+        </template>
       </div>
     </div>
   </section>

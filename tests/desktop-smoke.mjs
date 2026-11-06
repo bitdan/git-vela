@@ -14,6 +14,7 @@ const dailyRemote = process.env.GITVELA_SMOKE_M2_REMOTE
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
 const testCommit = process.argv[5] === '--commit'
+const testAdvanced = process.env.GITVELA_SMOKE_M3 === '1'
 const testEditor = process.env.GITVELA_SMOKE_EDITOR === '1'
 const testProject = process.env.GITVELA_SMOKE_PROJECT === '1'
 const githubLogin = process.env.GITVELA_SMOKE_GITHUB_LOGIN
@@ -283,9 +284,10 @@ try {
     await click('.preferences-panel label:first-child input')
     await until(() => evaluate("document.querySelector('.shell').dataset.theme === 'dark'"), 'dark theme from Settings')
     await click('.preferences-panel label:first-child input')
-    await click('.preferences-panel label:nth-child(2) input')
+    const treeWasOn = await evaluate("document.querySelector('.preferences-panel label:nth-child(2) input').checked")
+    if (!treeWasOn) await click('.preferences-panel label:nth-child(2) input')
     await until(() => evaluate("!!document.querySelector('.files-panel .folder-row')"), 'file tree from Settings')
-    await click('.preferences-panel label:nth-child(2) input')
+    if (!treeWasOn) await click('.preferences-panel label:nth-child(2) input')
     await click('.preferences summary')
     await until(() => evaluate("!!document.querySelector('.diff-host .cm-editor')"), 'commit diff available')
     await click('.preview-tabs .history-toggle')
@@ -455,6 +457,115 @@ try {
     git('restore', '--source=HEAD', '--staged', '--worktree', '--', file)
     assert.equal(await readFile(target, 'utf8'), original)
   }
+  if (testAdvanced) {
+    const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
+    const text = (selector, value) => until(() => evaluate(
+      `document.querySelector(${JSON.stringify(selector)})?.innerText.includes(${JSON.stringify(value)})`), value)
+    const target = join(repo, 'm3.txt')
+    git('config', 'user.name', 'GitVela Smoke')
+    git('config', 'user.email', 'smoke@example.invalid')
+    git('config', 'commit.gpgsign', 'false')
+    git('switch', '-c', 'smoke-m3')
+    await writeFile(target, 'base\n')
+    git('add', 'm3.txt')
+    git('commit', '-m', 'M3 base')
+    git('branch', 'smoke-m3-base')
+    await writeFile(join(repo, 'm3-one.txt'), 'one\n')
+    git('add', 'm3-one.txt')
+    git('commit', '-m', 'M3 first')
+    await writeFile(join(repo, 'm3-two.txt'), 'two\n')
+    git('add', 'm3-two.txt')
+    git('commit', '-m', 'M3 second')
+    await text('.statusbar', ' · smoke-m3')
+    await clickButton('.sidebar-segments', 'Branches')
+    await branchMenuAction('smoke-m3-base', 'Interactive rebase onto this…')
+    await text('.rebase-plan', 'M3 second')
+    await evaluate("document.querySelector('[aria-label=\"Move M3 second earlier\"]').click()")
+    await clickButton('.advanced-panel', 'Confirm Rebase')
+    await text('.advanced-panel [role=status]', 'Rebase complete.')
+    assert.equal(git('log', '-2', '--format=%s'), 'M3 first\nM3 second')
+
+    git('switch', '-c', 'smoke-m3-side', 'smoke-m3-base')
+    await writeFile(target, 'side\n')
+    git('add', 'm3.txt')
+    git('commit', '-m', 'M3 side')
+    git('switch', 'smoke-m3')
+    await writeFile(target, 'main\n')
+    git('add', 'm3.txt')
+    git('commit', '-m', 'M3 main')
+    await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('M3 side'))"), 'side commit visible')
+    await branchMenuAction('smoke-m3-side', 'Compare with HEAD')
+    await text('.files-panel .commit-summary', 'HEAD → smoke-m3-side')
+    await until(() => evaluate(`(() => {
+      const file = document.querySelector('.files-panel .file-row[title="m3.txt"]')
+      if (!file) return false
+      file.click()
+      return true
+    })()`), 'file in branch comparison')
+    try {
+      await until(() => evaluate("document.querySelector('.cm-merge-b .cm-content')?.textContent.includes('side')"), 'compared branch contents')
+    } catch (error) {
+      console.error(await evaluate("document.querySelector('.preview-panel')?.innerText"))
+      throw error
+    }
+    await evaluate(`[...document.querySelectorAll('.commit-row')].find(row => row.innerText.includes('M3 side'))
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`)
+    await clickButton('[aria-label="Commit actions"]', 'Cherry-pick…')
+    try {
+      await clickButton('.advanced-panel', 'Confirm Cherry-pick')
+    } catch (error) {
+      console.error(await evaluate("document.querySelector('.advanced-panel')?.innerText || document.querySelector('.statusbar')?.innerText"))
+      throw error
+    }
+    await text('.advanced-panel', '1 unmerged')
+    await until(() => evaluate(`(() => {
+      const row = document.querySelector('.working-row[title="m3.txt"]')
+      if (!row) return false
+      row.click()
+      return true
+    })()`), 'conflicted file in Changes')
+    await clickButton('.preview-tabs', 'Resolve conflict…')
+    await text('.conflict-grid', 'Theirs (stage 3)')
+    await until(() => evaluate("!!document.querySelector('.editor-host .cm-content')"), 'resolution editor')
+    await writeFile(target, 'resolved\n')
+    await clickButton('.editor-tools', 'Reload')
+    await until(() => evaluate("document.querySelector('.editor-host .cm-content')?.textContent.includes('resolved')"), 'resolution reloaded')
+    await clickButton('.conflict-panel', 'Mark resolved')
+    await text('.advanced-panel', '0 unmerged')
+    await clickButton('.advanced-panel', 'Continue')
+    await text('.advanced-panel [role=status]', 'Git operation continued.')
+    assert.equal(git('show', 'HEAD:m3.txt'), 'resolved')
+
+    await writeFile(target, 'pending change\n')
+    await clickButton('.sidebar-segments', 'Files')
+    await until(() => evaluate("!!document.querySelector('.repository-files .folder-row[aria-expanded]')"), 'default repository tree')
+    await inputValue('[aria-label="Filter repository files"]', 'm3.txt')
+    await clickButton('.repository-files .file-scroll', 'm3.txt')
+    await clickButton('.preview-tabs', 'File History')
+    await text('.file-history-row', 'M3 side')
+    await clickButton('.file-inspection', 'Blame')
+    await text('.blame-row', 'Uncommitted')
+    await clickButton('.file-inspection', 'Close')
+
+    await clickButton('.sidebar-segments', 'Changes')
+    await until(() => evaluate(`(() => {
+      const row = document.querySelector('.working-row[title="m3.txt"]')
+      if (!row) return false
+      row.click()
+      return true
+    })()`), 'edited file in Changes')
+    await clickButton('.preview-tabs', 'Unstaged diff')
+    await clickButton('.preview-tabs', 'Hunks')
+    await clickButton('.hunk-panel', 'Stage hunk')
+    await text('.hunk-panel [role=status]', 'Selection staged.')
+    assert.equal(git('show', ':m3.txt'), 'pending change')
+    await clickButton('.preview-tabs', 'Staged diff')
+    await clickButton('.preview-tabs', 'Hunks')
+    await clickButton('.hunk-panel', 'Unstage hunk')
+    await text('.hunk-panel [role=status]', 'Index selection unstaged.')
+    assert.equal(git('show', ':m3.txt'), 'resolved')
+    git('restore', '--', 'm3.txt')
+  }
   if (testProject) {
     const project = await mkdtemp(join(tmpdir(), 'gitvela-project-'))
     const git = (...args) => execFileSync('git', ['-C', project, ...args], { encoding: 'utf8' }).trim()
@@ -505,6 +616,7 @@ try {
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
   }
   console.log('Desktop smoke passed: Go bindings, repository, history canvas, changed files, and read-only Diff.')
+  if (testAdvanced) console.log('Tree, history, blame, comparison, interactive rebase, conflict resolution, and hunk staging passed.')
   if (testEditor) console.log('File editing, undo, search, save, staging, and external-change protection passed.')
   if (testProject) console.log('Project initialization, first commit, remote management, and GitHub publication controls passed.')
   if (dailyRemote) console.log('Amend, stash save and pop, and remote push, fetch, and pull passed.')

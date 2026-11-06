@@ -4,6 +4,8 @@ import { RepositoryService as api } from '../../bindings/gitvela/internal/app'
 import type { Change, Commit, Comparison, Cursor, Ref, Repository } from '../../bindings/gitvela/internal/git'
 import { LatestRequest } from './latestRequest'
 
+type ComparisonRange = { before: string; after: string; label: string }
+
 const initialCursor: Cursor = { offset: 0, snapshot: '', lanes: null }
 
 function readRecent(): string[] {
@@ -27,6 +29,8 @@ export const useWorkspace = defineStore('workspace', () => {
   const files = shallowRef<Change[]>([])
   const file = shallowRef<Change>()
   const comparison = shallowRef<Comparison>()
+  const comparisonRange = shallowRef<ComparisonRange>()
+  const headHash = computed(() => refs.value.find(item => item.name === 'HEAD')?.hash)
   const recent = ref(readRecent())
   const gitVersion = ref('')
   const repoError = ref('')
@@ -64,6 +68,9 @@ export const useWorkspace = defineStore('workspace', () => {
       const previous = preserveSelection && selected.value
         ? { hash: selected.value.hash, parent: parent.value, path: file.value?.path }
         : undefined
+      const previousRange = preserveSelection && repo.path === repository.value?.path && comparisonRange.value
+        ? { ...comparisonRange.value, path: file.value?.path }
+        : undefined
       historyRequest.clear()
       filesRequest.clear()
       diffRequest.clear()
@@ -78,13 +85,14 @@ export const useWorkspace = defineStore('workspace', () => {
       files.value = []
       file.value = undefined
       comparison.value = undefined
+      comparisonRange.value = undefined
       loadingFiles.value = false
       loadingDiff.value = false
       filesError.value = ''
       diffError.value = ''
       recent.value = [repo.path, ...recent.value.filter(item => item !== repo.path)].slice(0, 8)
       try { localStorage.setItem('gitvela.recent', JSON.stringify(recent.value)) } catch { /* storage unavailable */ }
-      await loadPage(true, previous)
+      await loadPage(true, previous, previousRange)
     } catch (error) {
       if (current()) repoError.value = String(error)
     } finally {
@@ -102,7 +110,7 @@ export const useWorkspace = defineStore('workspace', () => {
     }
   }
 
-  async function loadPage(first = false, previous?: { hash: string; parent: number; path?: string }) {
+  async function loadPage(first = false, previous?: { hash: string; parent: number; path?: string }, previousRange?: ComparisonRange & { path?: string }) {
     if (!repository.value || (!first && (loading.value || !more.value))) return
     loading.value = true
     logError.value = ''
@@ -117,7 +125,9 @@ export const useWorkspace = defineStore('workspace', () => {
       refs.value = page.refs ?? []
       more.value = page.more
       cursor.value = page.next
-      if (first && rows.length) {
+      if (first && previousRange) {
+        void selectComparison(previousRange.before, previousRange.after, previousRange.label, previousRange.path)
+      } else if (first && rows.length) {
         const retained = previous && rows.find(row => row.hash === previous.hash)
         if (retained) void selectCommit(retained, previous.parent, previous.path)
         else void selectCommit(rows[0])
@@ -134,6 +144,17 @@ export const useWorkspace = defineStore('workspace', () => {
     if (!repository.value) return
     selected.value = commit
     parent.value = parentIndex
+    comparisonRange.value = undefined
+    await loadFiles(api.Files(repository.value.path, commit.hash, parentIndex), previousPath)
+  }
+
+  async function selectComparison(before: string, after: string, label: string, previousPath?: string) {
+    if (!repository.value) return
+    comparisonRange.value = { before, after, label }
+    await loadFiles(api.CompareFiles(repository.value.path, before, after), previousPath)
+  }
+
+  async function loadFiles(call: ReturnType<typeof api.Files>, previousPath?: string) {
     files.value = []
     file.value = undefined
     comparison.value = undefined
@@ -142,7 +163,6 @@ export const useWorkspace = defineStore('workspace', () => {
     diffRequest.clear()
     loadingDiff.value = false
     loadingFiles.value = true
-    const call = api.Files(repository.value.path, commit.hash, parentIndex)
     const current = filesRequest.replace(call)
     try {
       const list = await call
@@ -159,12 +179,15 @@ export const useWorkspace = defineStore('workspace', () => {
   }
 
   async function selectFile(change: Change) {
-    if (!repository.value || !selected.value) return
+    if (!repository.value || (!selected.value && !comparisonRange.value)) return
     file.value = change
     comparison.value = undefined
     diffError.value = ''
     loadingDiff.value = true
-    const call = api.Diff(repository.value.path, selected.value.hash, parent.value, change.index)
+    const range = comparisonRange.value
+    const call = range
+      ? api.CompareDiff(repository.value.path, range.before, range.after, change.index)
+      : api.Diff(repository.value.path, selected.value!.hash, parent.value, change.index)
     const current = diffRequest.replace(call)
     try {
       const result = await call
@@ -195,8 +218,8 @@ export const useWorkspace = defineStore('workspace', () => {
   }
 
   return {
-    repository, commits, branchRefs, tagRefs, graphWidth, more, selected, parent, files, file, comparison,
+    repository, commits, branchRefs, tagRefs, graphWidth, more, selected, parent, files, file, comparison, comparisonRange, headHash,
     recent, gitVersion, repoError, logError, filesError, diffError, opening, loading, loadingFiles, loadingDiff,
-    detectGit, open, choose, loadPage, selectCommit, selectFile, checkForChanges,
+    detectGit, open, choose, loadPage, selectCommit, selectComparison, selectFile, checkForChanges,
   }
 })

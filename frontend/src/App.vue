@@ -10,11 +10,14 @@ import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
 import RepositoryFiles from './components/editor/RepositoryFiles.vue'
+import FileInspection from './components/history/FileInspection.vue'
+import HunkPanel from './components/history/HunkPanel.vue'
+import ConflictPanel from './components/history/ConflictPanel.vue'
 import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
-import type { AmendTarget, FilePreview, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
+import type { AmendTarget, Commit, FilePreview, HeadState, OperationState, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
 import './styles.css'
 
@@ -84,7 +87,7 @@ const preview = ref<FilePreview>()
 const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
-const view = ref<FileView | 'commit' | 'editor'>('working')
+const view = ref<FileView | 'commit' | 'editor' | 'inspection' | 'conflict'>('working')
 const editor = shallowRef<TextFile>()
 const editorPath = ref('')
 const editorDraft = ref('')
@@ -96,7 +99,30 @@ const editorRequest = new LatestRequest()
 const editorDirty = computed(() => !!editor.value && editorDraft.value !== editor.value.content)
 const pendingEditorAction = shallowRef<() => void>()
 const pendingEditorLabel = ref('')
-const previewPath = computed(() => view.value === 'editor' ? editorPath.value : view.value === 'commit' ? store.file?.path : workingSelection.value?.path)
+const showHunks = ref(false)
+const conflictFile = ref('')
+const submoduleError = ref('')
+const inspection = shallowRef<{ file: string; mode: 'history' | 'blame'; previous: FileView | 'editor' }>()
+const pinnedCommit = shallowRef<Commit>()
+type AdvancedAction = 'cherry-pick' | 'revert' | 'reset' | 'merge' | 'rebase'
+const advancedLabels: Record<AdvancedAction, string> = {
+  'cherry-pick': 'Cherry-pick', revert: 'Revert', reset: 'Reset', merge: 'Merge', rebase: 'Rebase',
+}
+const advanced = shallowRef<{ action: AdvancedAction; hash: string; label: string; head: HeadState }>()
+type RebaseAction = 'pick' | 'squash' | 'fixup' | 'drop'
+const rebasePlan = ref<{ commit: Commit; action: RebaseAction }[]>([])
+const resetMode = ref<'soft' | 'mixed' | 'hard'>('mixed')
+const hardResetConfirmed = ref(false)
+const preparingOperation = ref(false)
+const operation = shallowRef<OperationState>()
+const operationError = ref('')
+const operationNotice = ref('')
+const confirmAbort = ref(false)
+const operationRequest = new LatestRequest()
+const headRequest = new LatestRequest()
+const inspectionPath = computed(() => view.value === 'editor' ? editorPath.value :
+  (view.value === 'working' || view.value === 'staged' || view.value === 'unstaged') ? workingSelection.value?.path : undefined)
+const previewPath = computed(() => view.value === 'conflict' ? conflictFile.value : view.value === 'inspection' ? inspection.value?.file : view.value === 'editor' ? editorPath.value : view.value === 'commit' ? store.file?.path : workingSelection.value?.path)
 const workingView = computed(() => view.value === 'working' || view.value === 'staged' || view.value === 'unstaged' ? view.value : undefined)
 const diffExpanded = ref(false)
 const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
@@ -130,7 +156,11 @@ let unsubscribeChanges: (() => void) | undefined
 const previewRequest = new LatestRequest()
 let timer: ReturnType<typeof setInterval>
 
-watch(view, value => { if (value !== 'commit') diffExpanded.value = false })
+watch(view, value => {
+  if (value !== 'commit') diffExpanded.value = false
+  showHunks.value = false
+})
+watch(() => store.file?.path, () => { submoduleError.value = '' })
 watch(editorDirty, dirty => { if (!dirty) pendingEditorAction.value = undefined })
 watch(() => store.repository?.path, repo => {
   if (repo) {
@@ -150,6 +180,19 @@ watch(() => store.repository?.path, repo => {
   statusRequest.clear()
   previewRequest.clear()
   clearEditor()
+  inspection.value = undefined
+  conflictFile.value = ''
+  rebasePlan.value = []
+  pinnedCommit.value = undefined
+  advanced.value = undefined
+  operation.value = undefined
+  operationError.value = ''
+  operationNotice.value = ''
+  confirmAbort.value = false
+  headRequest.clear()
+  preparingOperation.value = false
+  operationRequest.clear()
+  void loadOperationState()
   workingFiles.value = []
   workingSelection.value = undefined
   commitMessage.value = ''
@@ -178,6 +221,7 @@ function watchRepository(repo: string) {
 async function refreshExternalChanges() {
   if (document.hidden || indexBusy.value) return
   void store.checkForChanges()
+  void loadOperationState()
   if (workingLoading.value) return
   const repo = store.repository?.path
   await loadWorking()
@@ -208,6 +252,7 @@ async function loadWorking() {
 
 function selectWorking(file: WorkingFile) {
   workingSelection.value = file
+  showHunks.value = false
   indexError.value = ''
   void selectView('working')
 }
@@ -293,15 +338,17 @@ function openEditorFile(file: string) {
 
 function reloadEditor() {
   const file = editorPath.value
-  if (file) withSavedEditor('reloading the file', () => { void loadEditor(file) })
+  if (!file) return
+  const target = view.value === 'conflict' ? 'conflict' : 'editor'
+  withSavedEditor('reloading the file', () => { void loadEditor(file, target) })
 }
 
-async function loadEditor(file: string) {
+async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'editor') {
   const repo = store.repository?.path
   if (!repo || editorSaving.value) return
   editorLoading.value = true
   editorError.value = ''
-  view.value = 'editor'
+  view.value = targetView
   const call = api.OpenTextFile(repo, file)
   const current = editorRequest.replace(call)
   try {
@@ -342,6 +389,229 @@ async function saveEditor() {
 
 function preventDiscard(event: BeforeUnloadEvent) {
   if (editorDirty.value || editorSaving.value) event.preventDefault()
+}
+
+function openConflict(file: string) {
+  const open = () => {
+    conflictFile.value = file
+    if (editor.value && editorPath.value === file) view.value = 'conflict'
+    else void loadEditor(file, 'conflict')
+  }
+  if (editorPath.value === file) open()
+  else withSavedEditor('opening a conflict resolution', open)
+}
+
+function closeConflict() {
+  view.value = editor.value && editorPath.value === conflictFile.value ? 'editor' : 'working'
+}
+
+async function openSubmodule() {
+  const repo = store.repository?.path
+  const file = store.file?.path
+  if (!repo || !file || indexBusy.value) return
+  submoduleError.value = ''
+  try {
+    const path = await api.SubmodulePath(repo, file)
+    if (repo === store.repository?.path && file === store.file?.path) openRepository(path)
+  } catch (cause) {
+    if (repo === store.repository?.path && file === store.file?.path) submoduleError.value = String(cause)
+  }
+}
+
+function lfsPointer(content: string) {
+  const oid = /^oid sha256:([a-f0-9]{64})$/m.exec(content)?.[1]
+  const size = /^size (\d+)$/m.exec(content)?.[1]
+  return oid && size ? { oid, size } : undefined
+}
+
+function inspectFile(mode: 'history' | 'blame') {
+  const file = inspectionPath.value
+  const previous = view.value === 'editor' ? 'editor' : workingView.value
+  if (!file || !previous) return
+  inspection.value = { file, mode, previous }
+  view.value = 'inspection'
+}
+
+function closeInspection() {
+  const previous = inspection.value?.previous
+  inspection.value = undefined
+  view.value = previous === 'editor' && !editor.value ? 'working' : previous ?? 'working'
+}
+
+function openHistoricalCommit(commit: Commit) {
+  const path = inspection.value?.file
+  historyVisible.value = true
+  view.value = 'commit'
+  void store.selectCommit(commit, 0, path)
+}
+
+function compareRevisions(before: string | undefined, after: string, label: string) {
+  if (!before || store.opening) return
+  historyVisible.value = true
+  diffExpanded.value = false
+  view.value = 'commit'
+  void store.selectComparison(before, after, label)
+}
+
+function pinCommit(commit: Commit) {
+  pinnedCommit.value = pinnedCommit.value?.hash === commit.hash ? undefined : commit
+}
+
+function compareCommit(commit: Commit) {
+  const base = pinnedCommit.value
+  compareRevisions(base?.hash ?? store.headHash, commit.hash,
+    (base?.hash.slice(0, 8) ?? 'HEAD') + ' → ' + commit.hash.slice(0, 8))
+}
+
+async function loadOperationState() {
+  const repo = store.repository?.path
+  if (!repo) return
+  const call = api.OperationState(repo)
+  const current = operationRequest.replace(call)
+  try {
+    const state = await call
+    if (!current()) return
+    if (operation.value?.kind !== state.kind) confirmAbort.value = false
+    operation.value = state
+  } catch (cause) {
+    if (current()) operationError.value = String(cause)
+  } finally {
+    operationRequest.finish(call)
+  }
+}
+
+async function prepareOperation(action: AdvancedAction, hash: string, label: string) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || store.opening || preparingOperation.value) return
+  if (operation.value?.kind || operation.value?.conflicts?.length) {
+    operationError.value = 'Finish the current Git operation or resolve the unmerged files first.'
+    return
+  }
+  advanced.value = undefined
+  rebasePlan.value = []
+  resetMode.value = 'mixed'
+  hardResetConfirmed.value = false
+  operationError.value = ''
+  operationNotice.value = ''
+  preparingOperation.value = true
+  const call = api.ReadHead(repo)
+  const current = headRequest.replace(call)
+  try {
+    const head = await call
+    if (!current()) return
+    if (action === 'rebase') {
+      const commits = await api.RebasePlan(repo, hash, head)
+      if (!current()) return
+      rebasePlan.value = (commits ?? []).map(commit => ({ commit, action: 'pick' }))
+    }
+    advanced.value = { action, hash, label, head }
+  } catch (cause) {
+    if (current()) operationError.value = String(cause)
+  } finally {
+    if (current()) preparingOperation.value = false
+    headRequest.finish(call)
+  }
+}
+
+function moveRebaseStep(index: number, offset: number) {
+  const next = index + offset
+  if (next < 0 || next >= rebasePlan.value.length || indexBusy.value) return
+  const [step] = rebasePlan.value.splice(index, 1)
+  rebasePlan.value.splice(next, 0, step)
+}
+
+async function runAdvanced() {
+  const repo = store.repository?.path
+  const request = advanced.value
+  if (!repo || !request || indexBusy.value || store.opening ||
+      (request.action === 'reset' && resetMode.value === 'hard' && !hardResetConfirmed.value)) return
+  const mode = resetMode.value
+  advanced.value = undefined
+  indexBusy.value = true
+  operationError.value = ''
+  operationNotice.value = ''
+  try {
+    if (request.action === 'rebase') {
+      const steps = rebasePlan.value.map(step => ({ hash: step.commit.hash, action: step.action }))
+      await api.RunInteractiveRebase(repo, request.hash, request.head, steps)
+    } else {
+      await api.ApplyHistoryOperation(repo, request.action, request.hash, request.head, mode)
+    }
+    operationNotice.value = advancedLabels[request.action] + ' complete.'
+  } catch (cause) {
+    operationError.value = String(cause)
+  } finally {
+    try {
+      await Promise.all([refreshAfterDailyOperation(), loadOperationState()])
+      if (operation.value?.conflicts?.length) sidebar.value = 'changes'
+    } finally {
+      indexBusy.value = false
+    }
+  }
+}
+
+async function finishOperation(abort: boolean) {
+  const repo = store.repository?.path
+  const kind = operation.value?.kind
+  if (!repo || !kind || indexBusy.value || store.opening) return
+  confirmAbort.value = false
+  indexBusy.value = true
+  operationError.value = ''
+  operationNotice.value = ''
+  try {
+    await api.FinishHistoryOperation(repo, kind, abort)
+    operationNotice.value = abort ? 'Git operation aborted.' : 'Git operation continued.'
+  } catch (cause) {
+    operationError.value = String(cause)
+  } finally {
+    try {
+      await Promise.all([refreshAfterDailyOperation(), loadOperationState()])
+    } finally {
+      indexBusy.value = false
+    }
+  }
+}
+
+const selectedConflict = computed(() => currentWorkingFile.value?.path &&
+  operation.value?.conflicts?.includes(currentWorkingFile.value.path) ? currentWorkingFile.value.path : undefined)
+
+async function markResolved(file = selectedConflict.value) {
+  const repo = store.repository?.path
+  if (!repo || !file || indexBusy.value) return
+  if (editorDirty.value && editorPath.value === file) {
+    operationError.value = 'Save your edits before marking this file resolved.'
+    return
+  }
+  indexBusy.value = true
+  operationError.value = ''
+  try {
+    await api.ResolveConflict(repo, file)
+  } catch (cause) {
+    operationError.value = String(cause)
+  } finally {
+    try {
+      await Promise.all([loadWorking(), loadOperationState()])
+      if (workingSelection.value && workingView.value) await selectView(workingView.value, true)
+    } finally {
+      indexBusy.value = false
+    }
+  }
+}
+
+async function applyHunk(file: string, staged: boolean, revision: string, index: number, lines?: number[]) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || store.opening) return
+  indexBusy.value = true
+  try {
+    if (lines) await api.SetHunkLinesStaged(repo, file, staged, revision, index, lines)
+    else await api.SetHunkStaged(repo, file, staged, revision, index)
+  } finally {
+    try {
+      await loadWorking()
+    } finally {
+      indexBusy.value = false
+    }
+  }
 }
 
 async function updateIndex(staged: boolean) {
@@ -496,6 +766,8 @@ onUnmounted(() => {
   document.removeEventListener('pointerdown', outsideMenus)
   window.removeEventListener('beforeunload', preventDiscard)
   editorRequest.clear()
+  headRequest.clear()
+  operationRequest.clear()
   clearInterval(timer)
   unsubscribeChanges?.()
   watchRequest.clear()
@@ -656,13 +928,15 @@ function outsideMenus(event: PointerEvent) {
   if (!branchActions.value?.contains(event.target) && !branchMenu.value?.trigger.contains(event.target)) closeBranchMenu()
 }
 
-function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | SyncIntent) {
+function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase' | SyncIntent) {
   const item = branchMenu.value?.item
   if (!item) return
   closeBranchMenu()
   const name = refLabel(item.name)
   switch (action) {
     case 'history': void jump(item.hash); break
+    case 'compare': compareRevisions(store.headHash, item.hash, 'HEAD → ' + name); break
+    case 'merge': case 'rebase': void prepareOperation(action, item.hash, name); break
     case 'create': openBranchForm('create', name, item.hash); break
     case 'switch': withSavedEditor('switching branches', () => { void updateBranch('switch', name) }); break
     case 'rename': case 'delete': openBranchForm(action, name); break
@@ -776,6 +1050,59 @@ function resizeWithKey(event: KeyboardEvent) {
       <button @click="pendingEditorAction = undefined">Keep editing</button>
       <button class="danger-button" @click="discardEditorChanges">Discard changes</button>
     </div>
+    <section v-if="advanced || preparingOperation || operation?.kind || operation?.conflicts?.length || operationError || operationNotice"
+             class="daily-panel advanced-panel" aria-label="Git history operation">
+      <p v-if="preparingOperation" class="notice" role="status">Checking current HEAD…</p>
+      <div v-if="advanced" class="daily-controls">
+        <strong>{{ advancedLabels[advanced.action] }} {{ advanced.label }} ({{ advanced.hash.slice(0, 8) }})</strong>
+        <span class="muted">Current {{ refLabel(advanced.head.ref) || 'detached HEAD' }} · {{ advanced.head.hash.slice(0, 8) }}</span>
+        <label v-if="advanced.action === 'reset'">Mode
+          <select v-model="resetMode" @change="hardResetConfirmed = false">
+            <option value="soft">Soft — keep index and files</option>
+            <option value="mixed">Mixed — keep working files</option>
+            <option value="hard">Hard — discard tracked changes</option>
+          </select>
+        </label>
+        <label v-if="advanced.action === 'reset' && resetMode === 'hard'">
+          <input v-model="hardResetConfirmed" type="checkbox" /> Discard tracked changes
+        </label>
+        <span v-if="advanced.action === 'rebase'" class="notice">Rewrites the current branch's commits.</span>
+        <button :disabled="indexBusy" @click="advanced = undefined">Cancel</button>
+        <button :class="advanced.action === 'reset' && resetMode === 'hard' ? 'danger-button' : 'primary'"
+                :disabled="indexBusy || store.opening || (advanced.action === 'reset' && resetMode === 'hard' && !hardResetConfirmed)"
+                @click="withSavedEditor('changing Git history', () => { void runAdvanced() })">Confirm {{ advancedLabels[advanced.action] }}</button>
+      </div>
+      <div v-if="advanced?.action === 'rebase'" class="rebase-plan" aria-label="Interactive rebase plan">
+        <div v-for="(step, index) in rebasePlan" :key="step.commit.hash" class="rebase-step">
+          <code>{{ step.commit.hash.slice(0, 8) }}</code>
+          <span class="ellipsis" :title="step.commit.subject">{{ step.commit.subject }}</span>
+          <select v-model="step.action" :aria-label="'Action for ' + step.commit.hash.slice(0, 8)">
+            <option value="pick">Pick</option>
+            <option value="squash">Squash</option>
+            <option value="fixup">Fixup</option>
+            <option value="drop">Drop</option>
+          </select>
+          <button :disabled="index === 0" :aria-label="'Move ' + step.commit.subject + ' earlier'" @click="moveRebaseStep(index, -1)">↑</button>
+          <button :disabled="index === rebasePlan.length - 1" :aria-label="'Move ' + step.commit.subject + ' later'" @click="moveRebaseStep(index, 1)">↓</button>
+        </div>
+      </div>
+      <div v-if="operation?.kind || operation?.conflicts?.length" class="daily-controls">
+        <strong>{{ operation.kind ? operation.kind + ' in progress' : 'Unmerged files' }}</strong>
+        <span class="muted">{{ operation.conflicts?.length ?? 0 }} unmerged</span>
+        <button :disabled="indexBusy" @click="openSidebar('changes')">Show Changes</button>
+        <button v-if="operation.kind" :disabled="indexBusy || !!operation.conflicts?.length"
+                @click="withSavedEditor('continuing the Git operation', () => { void finishOperation(false) })">Continue</button>
+        <button v-if="operation.kind && !confirmAbort" :disabled="indexBusy" @click="confirmAbort = true">Abort…</button>
+        <template v-if="confirmAbort">
+          <span>Discard the in-progress operation and its resolutions?</span>
+          <button @click="confirmAbort = false">Keep operation</button>
+          <button class="danger-button" :disabled="indexBusy"
+                  @click="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })">Confirm abort</button>
+        </template>
+      </div>
+      <p v-if="operationError" class="notice error" role="alert">{{ operationError }} <button @click="operationError = ''">Dismiss</button></p>
+      <p v-if="operationNotice" class="notice" role="status">{{ operationNotice }} <button @click="operationNotice = ''">Dismiss</button></p>
+    </section>
     <div class="workspace">
       <main v-if="store.repository" class="content" :class="{ 'preview-only': diffExpanded }">
         <aside v-show="!diffExpanded" class="panel workspace-sidebar" aria-label="Repository workspace">
@@ -794,7 +1121,8 @@ function resizeWithKey(event: KeyboardEvent) {
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
                           @select="selectWorking" @update-index="updateIndex" @commit="commitChanges"
-                          @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll" />
+                          @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
+                          :can-resolve="!!selectedConflict" @resolve="markResolved()" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
           <aside v-show="sidebar === 'branches'" class="panel branch-panel" aria-label="Branches and tags">
             <header class="panel-header">
@@ -852,20 +1180,35 @@ function resizeWithKey(event: KeyboardEvent) {
                 <span class="ellipsis muted" :title="previewPath">{{ previewPath }}</span>
                 <button v-if="view === 'working' && workingSelection && preview?.kind === 'text'"
                         @click="openEditorFile(workingSelection.path)">Edit file</button>
+                <button v-if="(view === 'staged' || view === 'unstaged') && currentWorkingFile"
+                        :aria-pressed="showHunks" :disabled="indexBusy" @click="showHunks = !showHunks">Hunks</button>
+                <button v-if="inspectionPath" @click="inspectFile('history')">File History</button>
+                <button v-if="inspectionPath" @click="inspectFile('blame')">Blame</button>
+                <button v-if="inspectionPath && operation?.conflicts?.includes(inspectionPath)"
+                        @click="openConflict(inspectionPath)">Resolve conflict…</button>
                 <button v-if="!diffExpanded" class="history-toggle" aria-controls="history-dock" :aria-pressed="historyVisible"
                         @click="historyVisible = !historyVisible">History</button>
                 <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
                 <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
               </header>
-              <p v-if="view === 'editor' && editorError" class="notice error" role="alert">{{ editorError }}</p>
-              <p v-if="view === 'editor' && editorLoading" class="notice" role="status">Opening text file…</p>
-              <WorkspaceEditor v-if="editor" v-show="view === 'editor' && !editorLoading" :key="editorKey" :path="editorPath"
+              <p v-if="(view === 'editor' || view === 'conflict') && editorError" class="notice error" role="alert">{{ editorError }}</p>
+              <p v-if="(view === 'editor' || view === 'conflict') && editorLoading" class="notice" role="status">Opening text file…</p>
+              <ConflictPanel v-if="view === 'conflict'" :path="store.repository.path" :file="conflictFile"
+                             :unmerged="!!operation?.conflicts?.includes(conflictFile)" :busy="indexBusy"
+                             @resolve="markResolved(conflictFile)" @close="closeConflict" />
+              <WorkspaceEditor v-if="editor" v-show="(view === 'editor' || (view === 'conflict' && editorPath === conflictFile)) && !editorLoading" :key="editorKey" :path="editorPath"
                                :initial-content="editor.content" :dark="dark" :line-ending="editor.lineEnding" :bom="editor.bom"
                                :dirty="editorDirty" :saving="editorSaving" :loading="editorLoading" :blocked="indexBusy || store.opening"
                                @change="editorDraft = $event" @save="saveEditor" @reload="reloadEditor"
                                @close="withSavedEditor('closing the editor', clearEditor)" />
               <button v-else-if="view === 'editor' && !editorLoading" class="close-empty-editor" @click="clearEditor">Close editor</button>
-              <template v-if="workingView">
+              <FileInspection v-if="view === 'inspection' && inspection" :path="store.repository.path" :file="inspection.file"
+                              :mode="inspection.mode" @mode="inspection = { ...inspection, mode: $event }"
+                              @close="closeInspection" @commit="openHistoricalCommit" />
+              <HunkPanel v-if="showHunks && currentWorkingFile && (view === 'staged' || view === 'unstaged')"
+                         :path="store.repository.path" :file="currentWorkingFile.path" :staged="view === 'staged'"
+                         :apply-selection="applyHunk" :busy="indexBusy || store.opening" @close="showHunks = false; workingView && selectView(workingView)" />
+              <template v-else-if="workingView">
                 <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
                 <p v-else-if="previewError" class="notice error" role="alert">{{ previewError }}</p>
                 <pre v-else-if="preview?.kind === 'text' && view === 'working'" class="working-preview" tabindex="0"><code>{{ preview.content }}</code></pre>
@@ -882,13 +1225,24 @@ function resizeWithKey(event: KeyboardEvent) {
                 <p v-else-if="store.diffError" class="notice error" role="alert">{{ store.diffError }}</p>
                 <p v-else-if="!store.comparison" class="notice">Select a file from the commit changes below.</p>
                 <template v-else-if="store.comparison.kind === 'text' || store.comparison.kind === 'lfs'">
-                  <p v-if="store.comparison.kind === 'lfs'" class="notice">Showing the Git LFS pointer.</p>
+                  <div v-if="store.comparison.kind === 'lfs'" class="lfs-details notice">
+                    <strong>Git LFS pointer</strong>
+                    <div v-for="side in (['before', 'after'] as const)" :key="side">
+                      <template v-if="lfsPointer(store.comparison[side])">
+                        {{ side === 'before' ? 'Before' : 'After' }}
+                        <code>{{ lfsPointer(store.comparison[side])?.oid }}</code>
+                        · {{ lfsPointer(store.comparison[side])?.size }} bytes
+                      </template>
+                    </div>
+                  </div>
                   <TextDiff :comparison="store.comparison" :path="store.file?.path ?? ''" :dark="dark" />
                 </template>
                 <p v-else-if="store.comparison.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines per side).</p>
                 <p v-else-if="store.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
                 <div v-else-if="store.comparison.kind === 'submodule'" class="notice submodule">
                   <strong>Submodule update</strong>
+                  <button :disabled="indexBusy" @click="openSubmodule">Open submodule</button>
+                  <p v-if="submoduleError" class="error" role="alert">{{ submoduleError }}</p>
                   <div>Before <code>{{ store.comparison.before || '—' }}</code></div>
                   <div>After <code>{{ store.comparison.after || '—' }}</code></div>
                 </div>
@@ -899,7 +1253,9 @@ function resizeWithKey(event: KeyboardEvent) {
                :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
                @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
           <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower">
-            <CommitLog ref="log" @select="view = 'commit'" @create-branch="createBranchFromCommit" />
+            <CommitLog ref="log" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
+                       @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
+                       @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
             <ChangedFiles @select="view = 'commit'" @maximize="maximizeDiff" />
           </div>
         </div>
@@ -925,6 +1281,11 @@ function resizeWithKey(event: KeyboardEvent) {
       <strong class="ellipsis">{{ refLabel(branchMenu.item.name) }}</strong>
       <button @click="branchAction('history')">Show in Git Log</button>
       <button :disabled="indexBusy" @click="branchAction('create')">New Branch from Here…</button>
+      <button :disabled="store.opening || !store.headHash" @click="branchAction('compare')">Compare with HEAD</button>
+      <template v-if="branchMenu.item.hash !== store.headHash">
+        <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('merge')">Merge into current branch…</button>
+        <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('rebase')">Interactive rebase onto this…</button>
+      </template>
       <template v-if="branchMenu.item.name.startsWith('refs/heads/')">
         <template v-if="branchMenu.item.name === 'refs/heads/' + store.repository.head">
           <button :disabled="indexBusy" @click="branchAction('pull')">Pull…</button>

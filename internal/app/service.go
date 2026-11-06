@@ -298,3 +298,67 @@ func (s *RepositoryService) SaveTextFile(ctx context.Context, path, file, revisi
 	})
 	return updated, err
 }
+
+func (*RepositoryService) FileHistory(ctx context.Context, path, file string) (git.FileHistoryPage, error) {
+	return discardCancelled(git.FileHistory(ctx, path, file))
+}
+
+func (*RepositoryService) FileBlame(ctx context.Context, path, file string) ([]git.BlameLine, error) {
+	return discardCancelled(git.FileBlame(ctx, path, file))
+}
+
+func (*RepositoryService) CompareFiles(ctx context.Context, path, before, after string) ([]git.Change, error) {
+	return discardCancelled(git.CompareFiles(ctx, path, before, after))
+}
+
+func (*RepositoryService) CompareDiff(ctx context.Context, path, before, after string, index int) (git.Comparison, error) {
+	return discardCancelled(git.CompareDiff(ctx, path, before, after, index))
+}
+
+func (*RepositoryService) ReadHead(ctx context.Context, path string) (git.HeadState, error) {
+	return discardCancelled(git.ReadHead(ctx, path))
+}
+
+func (*RepositoryService) OperationState(ctx context.Context, path string) (git.OperationState, error) {
+	return discardCancelled(git.ReadOperationState(ctx, path))
+}
+
+func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, action, target string, expected git.HeadState, mode string) error {
+	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, target, expected, mode) })
+}
+
+func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, kind string, abort bool) error {
+	return s.write(ctx, func() error { return git.FinishHistoryOperation(ctx, path, kind, abort) })
+}
+
+func (s *RepositoryService) ResolveConflict(ctx context.Context, path, file string) error {
+	return s.write(ctx, func() error { return git.ResolveConflict(ctx, path, file) })
+}
+
+func (*RepositoryService) WorkingHunks(ctx context.Context, path, file string, staged bool) (git.HunkPatch, error) {
+	return discardCancelled(git.WorkingHunks(ctx, path, file, staged))
+}
+
+func (s *RepositoryService) SetHunkStaged(ctx context.Context, path, file string, staged bool, revision string, index int) error {
+	return s.write(ctx, func() error { return git.SetHunkStaged(ctx, path, file, staged, revision, index) })
+}
+
+func (s *RepositoryService) SetHunkLinesStaged(ctx context.Context, path, file string, staged bool, revision string, index int, lines []int) error {
+	return s.write(ctx, func() error { return git.SetHunkLinesStaged(ctx, path, file, staged, revision, index, lines) })
+}
+
+func (*RepositoryService) ConflictVersions(ctx context.Context, path, file string) ([]git.ConflictVersion, error) {
+	return discardCancelled(git.ConflictVersions(ctx, path, file))
+}
+
+func (*RepositoryService) RebasePlan(ctx context.Context, path, base string, expected git.HeadState) ([]git.Commit, error) {
+	return discardCancelled(git.ReadRebasePlan(ctx, path, base, expected))
+}
+
+func (s *RepositoryService) RunInteractiveRebase(ctx context.Context, path, base string, expected git.HeadState, steps []git.RebaseStep) error {
+	return s.write(ctx, func() error { return git.RunInteractiveRebase(ctx, path, base, expected, steps) })
+}
+
+func (*RepositoryService) SubmodulePath(ctx context.Context, path, file string) (string, error) {
+	return discardCancelled(git.SubmodulePath(ctx, path, file))
+}

@@ -33,6 +33,10 @@ func run(ctx context.Context, dir string, input []byte, limit int, args ...strin
 }
 
 func runWithTimeout(ctx context.Context, timeout time.Duration, dir string, input []byte, limit int, args ...string) ([]byte, error) {
+	return runWithEnvironment(ctx, timeout, dir, input, limit, nil, args...)
+}
+
+func runWithEnvironment(ctx context.Context, timeout time.Duration, dir string, input []byte, limit int, environment []string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "--no-replace-objects"}, args...)...)
@@ -48,6 +52,7 @@ func runWithTimeout(ctx context.Context, timeout time.Duration, dir string, inpu
 		cmd.Env = append(cmd.Env, entry)
 	}
 	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1", "LC_ALL=C")
+	cmd.Env = append(cmd.Env, environment...)
 	cmd.Stdin = bytes.NewReader(input)
 	out := &limitedBuffer{limit: limit}
 	stderr := &limitedBuffer{limit: 8192}

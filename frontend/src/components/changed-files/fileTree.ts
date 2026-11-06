@@ -1,15 +1,13 @@
-import type { Change } from '../../../bindings/gitvela/internal/git'
-
-interface FileTreeRow {
+interface FileTreeRow<T> {
   path: string
   name: string
   depth: number
-  file?: Change
+  file?: T
 }
 
-export function fileTreeRows(changes: Change[], collapsed: ReadonlySet<string>): FileTreeRow[] {
+export function fileTreeRows<T extends { path: string }>(changes: readonly T[], collapsed: ReadonlySet<string>): FileTreeRow<T>[] {
   const sorted = [...changes].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
-  const rows: FileTreeRow[] = []
+  const rows: FileTreeRow<T>[] = []
   const seen = new Set<string>()
   let hiddenPrefix = ''
   for (const file of sorted) {

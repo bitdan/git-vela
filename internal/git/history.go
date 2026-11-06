@@ -134,32 +134,40 @@ func readHistory(ctx context.Context, dir string, cursor Cursor, filter *History
 	if err != nil {
 		return page, err
 	}
-	if len(data) == 0 {
-		return page, nil
-	}
-	fields := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
-	if len(fields)%5 != 0 {
-		return page, errors.New("invalid Git log record")
-	}
-	for i := 0; i < len(fields); i += 5 {
-		if len(page.Commits) == pageSize {
-			page.More = true
-			break
-		}
-		ts, err := strconv.ParseInt(fields[i+3], 10, 64)
-		if err != nil {
-			return page, err
-		}
-		page.Commits = append(page.Commits, Commit{
-			Hash: fields[i], Parents: strings.Fields(fields[i+1]), Author: fields[i+2],
-			Time: ts, Subject: fields[i+4], Refs: labels[fields[i]],
-		})
+	page.Commits, page.More, err = parseCommitPage(data, labels)
+	if err != nil {
+		return page, err
 	}
 	page.Next.Offset = cursor.Offset + len(page.Commits)
 	if filter == nil {
 		page.Next.Lanes = layout(page.Commits, cursor.Lanes)
 	}
 	return page, nil
+}
+
+func parseCommitPage(data []byte, labels map[string][]string) ([]Commit, bool, error) {
+	commits := []Commit{}
+	if len(data) == 0 {
+		return commits, false, nil
+	}
+	fields := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
+	if len(fields)%5 != 0 {
+		return nil, false, errors.New("invalid Git log record")
+	}
+	for i := 0; i < len(fields); i += 5 {
+		if len(commits) == pageSize {
+			return commits, true, nil
+		}
+		ts, err := strconv.ParseInt(fields[i+3], 10, 64)
+		if err != nil {
+			return nil, false, err
+		}
+		commits = append(commits, Commit{
+			Hash: fields[i], Parents: strings.Fields(fields[i+1]), Author: fields[i+2],
+			Time: ts, Subject: fields[i+4], Refs: labels[fields[i]],
+		})
+	}
+	return commits, false, nil
 }
 
 func Snapshot(ctx context.Context, dir string) (string, error) {

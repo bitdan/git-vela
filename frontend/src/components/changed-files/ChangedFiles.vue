@@ -36,8 +36,8 @@ const visibleRows = computed(() => virtual.value.getVirtualItems().flatMap(item 
   const row = rows.value[item.index]
   return row ? [{ item, row }] : []
 }))
-watch([() => store.selected?.hash, () => store.parent], () => collapsed.value.clear())
-watch([() => store.selected?.hash, () => store.parent, tree], () => {
+watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange], () => collapsed.value.clear())
+watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange, tree], () => {
   if (list.value) list.value.scrollTop = 0
 })
 </script>
@@ -45,10 +45,14 @@ watch([() => store.selected?.hash, () => store.parent, tree], () => {
 <template>
   <section class="panel files-panel" aria-label="Changed Files">
     <header class="panel-header">
-      <div><span class="eyebrow">COMMIT DETAILS</span><h2>Changed Files <small>{{ store.files.length }}</small></h2></div>
+      <div><span class="eyebrow">{{ store.comparisonRange ? 'COMPARE REVISIONS' : 'COMMIT DETAILS' }}</span><h2>Changed Files <small>{{ store.files.length }}</small></h2></div>
       <button :aria-pressed="tree" @click="tree = !tree">{{ tree ? 'Tree' : 'Flat' }}</button>
     </header>
-    <div v-if="store.selected" class="commit-summary">
+    <div v-if="store.comparisonRange" class="commit-summary">
+      <strong class="ellipsis" :title="store.comparisonRange.label">{{ store.comparisonRange.label }}</strong>
+      <div class="meta"><code>{{ store.comparisonRange.before.slice(0, 10) }} → {{ store.comparisonRange.after.slice(0, 10) }}</code></div>
+    </div>
+    <div v-else-if="store.selected" class="commit-summary">
       <strong class="ellipsis" :title="store.selected.subject">{{ store.selected.subject }}</strong>
       <div class="meta"><code :title="store.selected.hash">{{ store.selected.hash.slice(0, 12) }}</code><span class="ellipsis">{{ store.selected.author }}</span></div>
       <label v-if="(store.selected.parents?.length ?? 0) > 1">
@@ -61,7 +65,7 @@ watch([() => store.selected?.hash, () => store.parent, tree], () => {
     </div>
     <p v-if="store.loadingFiles" class="notice" role="status">Loading changed files…</p>
     <p v-else-if="store.filesError" class="notice error" role="alert">{{ store.filesError }}</p>
-    <p v-else-if="!store.files.length" class="notice">{{ store.selected ? 'No changed files.' : 'Select a commit.' }}</p>
+    <p v-else-if="!store.files.length" class="notice">{{ (store.selected || store.comparisonRange) ? 'No changed files.' : 'Select a commit.' }}</p>
     <div ref="list" class="file-scroll">
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
         <template v-for="{ item, row } in visibleRows" :key="String(item.key)">

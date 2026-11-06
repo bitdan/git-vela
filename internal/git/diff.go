@@ -33,7 +33,7 @@ func Files(ctx context.Context, dir, commit string, parent int) ([]Change, error
 	if !objectID(commit) || parent < 0 {
 		return nil, errors.New("invalid commit or parent")
 	}
-	args := []string{"diff-tree", "--no-commit-id", "-r", "--raw", "-z", "--no-abbrev", "-M", "-C", "--no-ext-diff", "--no-textconv"}
+	args := diffTreeArgs()
 	if parent == 0 {
 		args = append(args, "--root", "--diff-merges=first-parent", commit+"^{commit}")
 	} else {
@@ -42,6 +42,21 @@ func Files(ctx context.Context, dir, commit string, parent int) ([]Change, error
 		}
 		args = append(args, commit+"^"+strconv.Itoa(parent+1), commit+"^{commit}")
 	}
+	return readTreeChanges(ctx, dir, args)
+}
+
+func diffTreeArgs() []string {
+	return []string{"diff-tree", "--no-commit-id", "-r", "--raw", "-z", "--no-abbrev", "-M", "-C", "--no-ext-diff", "--no-textconv"}
+}
+
+func CompareFiles(ctx context.Context, dir, before, after string) ([]Change, error) {
+	if !objectID(before) || !objectID(after) {
+		return nil, errors.New("select two valid commits")
+	}
+	return readTreeChanges(ctx, dir, append(diffTreeArgs(), before+"^{commit}", after+"^{commit}"))
+}
+
+func readTreeChanges(ctx context.Context, dir string, args []string) ([]Change, error) {
 	data, err := run(ctx, dir, nil, 16<<20, append(args, "--")...)
 	if err != nil {
 		return nil, err
@@ -78,10 +93,22 @@ func Diff(ctx context.Context, dir, commit string, parent int, selected Change) 
 	if err != nil {
 		return Comparison{}, err
 	}
-	if selected.Index < 0 || selected.Index >= len(files) {
+	return compareFile(ctx, dir, files, selected.Index)
+}
+
+func CompareDiff(ctx context.Context, dir, before, after string, index int) (Comparison, error) {
+	files, err := CompareFiles(ctx, dir, before, after)
+	if err != nil {
+		return Comparison{}, err
+	}
+	return compareFile(ctx, dir, files, index)
+}
+
+func compareFile(ctx context.Context, dir string, files []Change, index int) (Comparison, error) {
+	if index < 0 || index >= len(files) {
 		return Comparison{}, errors.New("file is unavailable in this commit comparison")
 	}
-	file := files[selected.Index]
+	file := files[index]
 	if file.oldMode == "160000" || file.newMode == "160000" {
 		return Comparison{Kind: "submodule", Before: gitlink(file.oldMode, file.oldID), After: gitlink(file.newMode, file.newID)}, nil
 	}

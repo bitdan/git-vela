@@ -7,6 +7,15 @@ export interface AmendTarget {
     "message": string;
 }
 
+export interface BlameLine {
+    "number": number;
+    "hash": string;
+    "author": string;
+    "subject": string;
+    "text": string;
+    "uncommitted": boolean;
+}
+
 export interface Change {
     "index": number;
     "path": string;
@@ -30,6 +39,12 @@ export interface Comparison {
     "after": string;
 }
 
+export interface ConflictVersion {
+    "stage": number;
+    "kind": string;
+    "content": string;
+}
+
 export interface Cursor {
     "offset": number;
     "snapshot": string;
@@ -40,6 +55,11 @@ export interface Edge {
     "from": number;
     "to": number;
     "color": number;
+}
+
+export interface FileHistoryPage {
+    "commits": Commit[] | null;
+    "more": boolean;
 }
 
 export interface FilePreview {
@@ -56,6 +76,11 @@ export interface GraphRow {
     "width": number;
 }
 
+export interface HeadState {
+    "hash": string;
+    "ref": string;
+}
+
 export interface HistoryFilter {
     "message": string;
     "author": string;
@@ -65,9 +90,20 @@ export interface HistoryFilter {
     "hash": string;
 }
 
+export interface HunkPatch {
+    "revision": string;
+    "hunks": string[] | null;
+    "reason": string;
+}
+
 export interface Lane {
     "hash": string;
     "color": number;
+}
+
+export interface OperationState {
+    "kind": string;
+    "conflicts": string[] | null;
 }
 
 export interface Page {
@@ -89,6 +125,11 @@ export interface PublishResult {
     "remoteAdded": boolean;
     "pushed": boolean;
     "failure": string;
+}
+
+export interface RebaseStep {
+    "hash": string;
+    "action": string;
 }
 
 export interface Ref {

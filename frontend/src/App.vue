@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { useWorkspace } from './stores/workspace'
 import CommitLog from './components/git-log/CommitLog.vue'
+import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
@@ -22,6 +23,7 @@ const branchFilter = ref('')
 type BranchForm = 'create' | 'manage' | 'rename' | 'delete'
 const branchForm = ref<BranchForm>()
 const managedBranch = ref('')
+const showWorktrees = ref(false)
 const refKind = ref<'branches' | 'tags'>('branches')
 const visibleRefs = computed(() => {
   const query = branchFilter.value.trim().toLowerCase()
@@ -305,17 +307,18 @@ function resizeWithKey(event: KeyboardEvent) {
   <div class="shell" :data-theme="dark ? 'dark' : 'light'">
     <header class="topbar">
       <div class="brand"><span class="brand-icon" aria-hidden="true">◇</span><strong>GitVela</strong></div>
-      <form class="repo-form" @submit.prevent="store.open(path.trim())">
+      <form class="repo-form" @submit.prevent="!indexBusy && store.open(path.trim())">
         <input v-model="path" aria-label="Repository path" placeholder="Enter a local repository path" spellcheck="false" />
-        <button type="submit" :disabled="!path.trim() || store.opening">Open path</button>
+        <button type="submit" :disabled="!path.trim() || store.opening || indexBusy">Open path</button>
       </form>
-      <select v-if="store.recent.length" class="recent-repos" aria-label="Recent repositories"
+      <select v-if="store.recent.length" class="recent-repos" aria-label="Recent repositories" :disabled="indexBusy || store.opening"
               value="" @change="store.open(($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
         <option value="" disabled>Recent</option>
         <option v-for="repo in store.recent" :key="repo" :value="repo">{{ repo.split(/[\\/]/).at(-1) || repo }}</option>
       </select>
-      <button class="primary" :disabled="picking || store.opening" @click="choose">Browse…</button>
-      <button :disabled="!store.repository || store.opening" @click="refresh">Refresh</button>
+      <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
+      <button :disabled="!store.repository || store.opening || indexBusy" @click="refresh">Refresh</button>
+      <button v-if="store.repository" :disabled="indexBusy" :aria-pressed="showWorktrees" @click="showWorktrees = !showWorktrees">Worktrees</button>
       <button @click="dark = !dark">{{ dark ? 'Light' : 'Dark' }}</button>
     </header>
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
@@ -368,7 +371,8 @@ function resizeWithKey(event: KeyboardEvent) {
              :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
              @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
         <div class="lower">
-          <aside class="panel branch-panel" aria-label="Branches and tags">
+          <WorktreePanel v-if="showWorktrees" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" />
+          <aside v-else class="panel branch-panel" aria-label="Branches and tags">
             <header class="panel-header">
               <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
               <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
@@ -421,7 +425,7 @@ function resizeWithKey(event: KeyboardEvent) {
               </div>
             </div>
           </aside>
-          <CommitLog ref="log" />
+          <CommitLog ref="log" @select="view = 'commit'" />
           <ChangedFiles @select="view = 'commit'" />
         </div>
       </main>
@@ -430,7 +434,7 @@ function resizeWithKey(event: KeyboardEvent) {
         <span class="eyebrow">LOCAL GIT WORKSPACE</span>
         <h1>Open a Git repository</h1>
         <p>Browse commits, inspect changed files, and compare versions side by side.</p>
-        <button class="primary" :disabled="picking || store.opening" @click="choose">Browse for a repository</button>
+        <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse for a repository</button>
       </main>
     </div>
     <footer class="statusbar">

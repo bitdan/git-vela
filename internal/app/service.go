@@ -115,3 +115,25 @@ func (s *RepositoryService) DeleteBranch(ctx context.Context, path, name string)
 	}
 	return git.DeleteBranch(ctx, path, name)
 }
+
+func (*RepositoryService) Worktrees(ctx context.Context, path string) ([]git.Worktree, error) {
+	return discardCancelled(git.Worktrees(ctx, path))
+}
+
+func (s *RepositoryService) AddWorktree(ctx context.Context, path, target, branch, commit string) error {
+	s.indexWrite.Lock()
+	defer s.indexWrite.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return git.AddWorktree(ctx, path, target, branch, commit)
+}
+
+func (s *RepositoryService) RemoveWorktree(ctx context.Context, path, target string) error {
+	s.indexWrite.Lock()
+	defer s.indexWrite.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return git.RemoveWorktree(ctx, path, target)
+}

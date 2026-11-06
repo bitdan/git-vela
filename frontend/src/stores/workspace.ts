@@ -61,7 +61,9 @@ export const useWorkspace = defineStore('workspace', () => {
     try {
       const repo = await call
       if (!current()) return
-      const previous = preserveSelection ? selected.value?.hash : undefined
+      const previous = preserveSelection && selected.value
+        ? { hash: selected.value.hash, parent: parent.value, path: file.value?.path }
+        : undefined
       historyRequest.clear()
       filesRequest.clear()
       diffRequest.clear()
@@ -100,7 +102,7 @@ export const useWorkspace = defineStore('workspace', () => {
     }
   }
 
-  async function loadPage(first = false, previous?: string) {
+  async function loadPage(first = false, previous?: { hash: string; parent: number; path?: string }) {
     if (!repository.value || (!first && (loading.value || !more.value))) return
     loading.value = true
     logError.value = ''
@@ -115,7 +117,11 @@ export const useWorkspace = defineStore('workspace', () => {
       refs.value = page.refs ?? []
       more.value = page.more
       cursor.value = page.next
-      if (first && rows.length) void selectCommit(rows.find(row => row.hash === previous) ?? rows[0])
+      if (first && rows.length) {
+        const retained = previous && rows.find(row => row.hash === previous.hash)
+        if (retained) void selectCommit(retained, previous.parent, previous.path)
+        else void selectCommit(rows[0])
+      }
     } catch (error) {
       if (current()) logError.value = String(error)
     } finally {
@@ -124,7 +130,7 @@ export const useWorkspace = defineStore('workspace', () => {
     }
   }
 
-  async function selectCommit(commit: Commit, parentIndex = 0) {
+  async function selectCommit(commit: Commit, parentIndex = 0, previousPath = file.value?.path) {
     if (!repository.value) return
     selected.value = commit
     parent.value = parentIndex
@@ -142,6 +148,8 @@ export const useWorkspace = defineStore('workspace', () => {
       const list = await call
       if (!current()) return
       files.value = list ?? []
+      const next = files.value.find(change => change.path === previousPath) ?? files.value[0]
+      if (next) void selectFile(next)
     } catch (error) {
       if (current()) filesError.value = String(error)
     } finally {

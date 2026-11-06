@@ -14,6 +14,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as git$0 from "../git/models.js";
 
+export function AddWorktree(path: string, target: string, branch: string, commit: string): $CancellablePromise<void> {
+    return $Call.ByID(2546006014, path, target, branch, commit);
+}
+
 export function ChooseDirectory(): $CancellablePromise<string> {
     return $Call.ByID(2085580384);
 }
@@ -50,6 +54,10 @@ export function Open(path: string): $CancellablePromise<git$0.Repository> {
     return $Call.ByID(2498616652, path);
 }
 
+export function RemoveWorktree(path: string, target: string): $CancellablePromise<void> {
+    return $Call.ByID(2563007137, path, target);
+}
+
 export function RenameBranch(path: string, oldName: string, newName: string): $CancellablePromise<void> {
     return $Call.ByID(2220009630, path, oldName, newName);
 }
@@ -76,4 +84,8 @@ export function WorkingDiff(path: string, file: string, staged: boolean): $Cance
 
 export function WorkingPreview(path: string, file: string): $CancellablePromise<git$0.FilePreview> {
     return $Call.ByID(4271850065, path, file);
+}
+
+export function Worktrees(path: string): $CancellablePromise<git$0.Worktree[] | null> {
+    return $Call.ByID(1107964198, path);
 }

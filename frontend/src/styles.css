@@ -144,3 +144,41 @@ button.primary:hover:not(:disabled) { background: var(--accent); filter: brightn
 .branch-row { display: flex; align-items: center; gap: 3px; }
 .branch-row .side-item { flex: 1; }
 .switch-branch { flex: none; font-size: 11px; padding: 2px 5px; }
+
+.worktree-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.worktree-form {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+
+.worktree-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.worktree-form input,
+.worktree-form select {
+  min-width: 0;
+}
+
+.worktree-form p {
+  margin: 0;
+}
+
+.worktree-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.worktree-row small {
+  grid-column: 1 / -1;
+  padding: 0 8px 5px;
+}

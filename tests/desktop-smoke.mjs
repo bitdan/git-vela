@@ -6,6 +6,7 @@ const endpoint = process.env.GITVELA_CDP_URL ?? 'http://127.0.0.1:9331'
 const repo = process.argv[2] ?? process.cwd()
 const screenshot = process.argv[3]
 const workingFile = process.argv[4]
+const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
 const testCommit = process.argv[5] === '--commit'
 const testBranch = process.argv[5] === '--branch'
@@ -161,6 +162,37 @@ try {
     await until(() => evaluate("!!document.querySelector('[title=\"refs/tags/v1.0\"]')"), 'repository tag listed')
     await click('[title="refs/tags/v1.0"]')
     await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('Initialize GitVela')"), 'tag commit selected')
+  }
+  if (worktreeTarget) {
+    const click = (selector) => until(() => evaluate(`(() => {
+      const button = document.querySelector(${JSON.stringify(selector)})
+      if (!button || button.disabled) return false
+      button.click()
+      return true
+    })()`), 'enabled worktree control ' + selector)
+    await click('.topbar button[aria-pressed="false"]')
+    await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'main worktree listed')
+    await click('[aria-label="Worktrees"] .panel-header button[aria-expanded="false"]')
+    await evaluate(`(() => {
+      const form = document.querySelector('.worktree-form')
+      const [directory, branch] = form.querySelectorAll('input')
+      for (const [input, value] of [[directory, ${JSON.stringify(worktreeTarget)}], [branch, 'feature/desktop-worktree']]) {
+        input.value = value
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+    })()`)
+    await until(() => evaluate("!document.querySelector('.worktree-form button[type=submit]')?.disabled"), 'worktree creation enabled')
+    await click('.worktree-form button[type=submit]')
+    await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 2"), 'linked worktree created')
+    await click('.worktree-row:nth-last-child(1) .side-item')
+    await until(() => evaluate("document.querySelector('.statusbar').innerText.includes('feature/desktop-worktree')"), 'linked worktree opened')
+    await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 2"), 'worktrees listed from linked checkout')
+    await click('.worktree-row:nth-last-child(2) .side-item')
+    await until(() => evaluate("document.querySelector('.statusbar').innerText.includes(' · main')"), 'main worktree opened again')
+    await until(() => evaluate("!!document.querySelector('.worktree-row .switch-branch')"), 'remove action available')
+    await click('.worktree-row .switch-branch')
+    await click('.worktree-form .danger-button')
+    await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'confirmed removal')
   }
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
   assert.deepEqual(alerts, [])

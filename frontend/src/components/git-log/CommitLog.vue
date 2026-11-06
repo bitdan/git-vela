@@ -5,6 +5,7 @@ import { useWorkspace } from '../../stores/workspace'
 import GraphCell from './GraphCell.vue'
 
 const store = useWorkspace()
+const emit = defineEmits<{ select: [] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
 const query = ref('')
 const notice = ref('')
@@ -28,6 +29,7 @@ function select(index: number) {
   const commit = store.commits[index]
   if (!commit) return
   virtual.value.scrollToIndex(index, { align: 'auto' })
+  emit('select')
   void store.selectCommit(commit)
 }
 

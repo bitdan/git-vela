@@ -13,5 +13,6 @@ export type {
     Page,
     Ref,
     Repository,
-    WorkingFile
+    WorkingFile,
+    Worktree
 } from "./models.js";

@@ -80,3 +80,14 @@ export interface WorkingFile {
     "canStage": boolean;
     "canUnstage": boolean;
 }
+
+export interface Worktree {
+    "path": string;
+    "head": string;
+    "branch": string;
+    "main": boolean;
+    "bare": boolean;
+    "detached": boolean;
+    "locked": boolean;
+    "prunable": boolean;
+}

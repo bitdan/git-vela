@@ -27,7 +27,7 @@ watch(() => [store.selected?.hash, store.parent], () => {
       <div class="meta"><code :title="store.selected.hash">{{ store.selected.hash.slice(0, 12) }}</code><span class="ellipsis">{{ store.selected.author }}</span></div>
       <label v-if="(store.selected.parents?.length ?? 0) > 1">
         Compare parent
-        <select :value="store.parent" @change="store.selectCommit(store.selected, Number(($event.target as HTMLSelectElement).value))">
+        <select :value="store.parent" @change="emit('select'); store.selectCommit(store.selected, Number(($event.target as HTMLSelectElement).value))">
           <option v-for="(hash, index) in store.selected.parents" :key="hash" :value="index">{{ index + 1 }} · {{ hash.slice(0, 10) }}</option>
         </select>
       </label>

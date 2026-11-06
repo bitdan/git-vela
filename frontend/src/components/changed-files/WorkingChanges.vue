@@ -3,8 +3,9 @@ import { computed } from 'vue'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; amendHash?: string }>()
-const emit = defineEmits<{ select: [file: WorkingFile]; updateIndex: [staged: boolean]; commit: []; startAmend: []; cancelAmend: [] }>()
+const emit = defineEmits<{ select: [file: WorkingFile]; updateIndex: [staged: boolean]; commit: []; startAmend: []; cancelAmend: []; stageAll: [] }>()
 const message = defineModel<string>('message', { required: true })
+const canStageAll = computed(() => props.files.some(file => file.canStage))
 const stagedCount = computed(() => props.files.filter(file => file.canUnstage).length)
 const canCommit = computed(() => !!message.value.trim() && (stagedCount.value > 0 || !!props.amendHash) && !props.indexBusy)
 const groups = computed(() => {
@@ -32,6 +33,7 @@ function state(status: string) {
       <div class="index-actions">
         <button :disabled="indexBusy || !canStage" title="Stage the selected file" @click="emit('updateIndex', true)">Stage</button>
         <button :disabled="indexBusy || !canUnstage" title="Unstage the selected file" @click="emit('updateIndex', false)">Unstage</button>
+        <button :disabled="indexBusy || !canStageAll" title="Stage all working changes" @click="emit('stageAll')">Stage all</button>
       </div>
     </header>
     <p v-if="indexBusy" class="notice" role="status">Running Git…</p>

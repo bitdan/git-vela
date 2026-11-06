@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const endpoint = process.env.GITVELA_CDP_URL ?? 'http://127.0.0.1:9331'
@@ -13,7 +14,9 @@ const dailyRemote = process.env.GITVELA_SMOKE_M2_REMOTE
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
 const testCommit = process.argv[5] === '--commit'
-const testBranch = process.argv[5] === '--branch'
+const testProject = process.env.GITVELA_SMOKE_PROJECT === '1'
+const githubLogin = process.env.GITVELA_SMOKE_GITHUB_LOGIN
+const testBranch = process.argv[5] === '--branch' || process.env.GITVELA_SMOKE_BRANCH === '1'
 
 async function until(action, description) {
   const deadline = Date.now() + 30000
@@ -68,6 +71,37 @@ async function evaluate(expression) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)
   return result.result.value
 }
+
+const clickButton = (scope, label) => until(() => evaluate(`(() => {
+  const button = [...document.querySelectorAll(${JSON.stringify(scope + ' button')})]
+    .find(item => item.innerText === ${JSON.stringify(label)})
+  if (!button || button.disabled) return false
+  button.click()
+  return true
+})()`), 'enabled button ' + label)
+
+async function gitMenuAction(label) {
+  await evaluate("if (!document.querySelector('.git-menu').open) document.querySelector('.git-menu summary').click()")
+  await clickButton('.git-menu', label)
+}
+
+async function branchMenuAction(branch, label) {
+  const selector = '[title="refs/heads/' + branch + '"]'
+  await until(() => evaluate(`(() => {
+    const row = document.querySelector(${JSON.stringify(selector)})
+    if (!row) return false
+    row.click()
+    return true
+  })()`), 'branch ' + branch)
+  await clickButton('[aria-label="Branch actions"]', label)
+}
+
+const inputValue = (selector, value) => evaluate(`(() => {
+  const field = document.querySelector(${JSON.stringify(selector)})
+  field.value = ${JSON.stringify(value)}
+  field.dispatchEvent(new Event('input', { bubbles: true }))
+  field.dispatchEvent(new Event('change', { bubbles: true }))
+})()`)
 
 try {
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
@@ -131,33 +165,30 @@ try {
       input.dispatchEvent(new Event('input', { bubbles: true }))
       input.form.requestSubmit()
     })()`)
-    await until(() => evaluate("!!document.querySelector('[title=\"Switch to feature/desktop\"]')"), 'new local branch')
+    await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/feature/desktop\"]')"), 'new local branch')
     assert.equal(await evaluate("document.querySelector('.branch-panel .active')?.textContent.trim()"), 'main')
-    await evaluate("document.querySelector('[title=\"Switch to feature/desktop\"]').click()")
+    await branchMenuAction('feature/desktop', 'Checkout')
     await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'feature/desktop'"), 'new active branch')
   }
   if (testBranch) {
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
     const action = (label) => evaluate(`[...document.querySelectorAll('.branch-panel .new-branch button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
-    await click('[title="Switch to main"]')
+    await branchMenuAction('main', 'Checkout')
     await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'main'"), 'main active again')
-    await click('[aria-label="Manage feature/desktop"]')
-    await action('Rename')
+    await branchMenuAction('feature/desktop', 'Rename…')
     await evaluate(`(() => {
       const input = document.querySelector('[aria-label="New branch name"]')
       input.value = 'feature/renamed'
       input.dispatchEvent(new Event('input', { bubbles: true }))
       input.form.requestSubmit()
     })()`)
-    await until(() => evaluate("!!document.querySelector('[aria-label=\"Manage feature/renamed\"]')"), 'renamed branch')
-    await click('[aria-label="Manage feature/renamed"]')
-    await action('Delete…')
+    await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/feature/renamed\"]')"), 'renamed branch')
+    await branchMenuAction('feature/renamed', 'Delete…')
     await action('Cancel')
-    assert.equal(await evaluate("!!document.querySelector('[aria-label=\"Manage feature/renamed\"]')"), true)
-    await click('[aria-label="Manage feature/renamed"]')
-    await action('Delete…')
+    assert.equal(await evaluate("!!document.querySelector('[title=\"refs/heads/feature/renamed\"]')"), true)
+    await branchMenuAction('feature/renamed', 'Delete…')
     await action('Delete branch')
-    await until(() => evaluate("!document.querySelector('[aria-label=\"Manage feature/renamed\"]')"), 'confirmed deletion')
+    await until(() => evaluate("!document.querySelector('[title=\"refs/heads/feature/renamed\"]')"), 'confirmed deletion')
     await evaluate(`(() => {
       const picker = document.querySelector('[aria-label="Reference type"]')
       picker.value = 'tags'
@@ -168,13 +199,14 @@ try {
     await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('Initialize GitVela')"), 'tag commit selected')
   }
   if (worktreeTarget) {
+    await gitMenuAction('Branches')
     const click = (selector) => until(() => evaluate(`(() => {
       const button = document.querySelector(${JSON.stringify(selector)})
       if (!button || button.disabled) return false
       button.click()
       return true
     })()`), 'enabled worktree control ' + selector)
-    await click('.topbar button[aria-pressed="false"]')
+    await gitMenuAction('Worktrees')
     await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'main worktree listed')
     await click('[aria-label="Worktrees"] .panel-header button[aria-expanded="false"]')
     await evaluate(`(() => {
@@ -223,7 +255,7 @@ try {
 
   if (testMvp) {
     if (worktreeTarget) {
-      await evaluate("[...document.querySelectorAll('.topbar button')].find(button => button.innerText === 'Worktrees' && button.getAttribute('aria-pressed') === 'true')?.click()")
+      await gitMenuAction('Branches')
       execFileSync('git', ['-C', repo, 'branch', 'smoke/external-metadata'])
       await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/smoke/external-metadata\"]')"), 'external branch refresh')
     }
@@ -299,7 +331,7 @@ try {
 
     const untracked = join(repo, 'gitvela-smoke-untracked.txt')
     await writeFile(untracked, 'saved by GitVela', { flag: 'wx' })
-    await click('.topbar', 'Stash…')
+    await gitMenuAction('Stash…')
     await evaluate("document.querySelector('[aria-label=Stashes] input[type=checkbox]').click()")
     await set('[aria-label="Stash message"]', 'desktop stash')
     await click('[aria-label=Stashes]', 'Save stash')
@@ -319,7 +351,7 @@ try {
 
     git(repo, 'init', '--bare', '-b', dailyBranch, dailyRemote)
     git(repo, 'remote', 'add', 'm2-smoke', dailyRemote)
-    await click('.topbar', 'Sync…')
+    await gitMenuAction('Push…')
     await until(() => evaluate("[...document.querySelectorAll('[aria-label=\"Remote synchronization\"] select option')].some(option => option.value === 'm2-smoke')"), 'local test remote listed')
     await set('[aria-label="Remote synchronization"] select', 'm2-smoke')
     await click('[aria-label="Remote synchronization"]', 'Push…')
@@ -335,13 +367,58 @@ try {
     git(peer, 'add', 'gitvela-smoke-peer.txt')
     git(peer, 'commit', '-m', 'Commit from smoke peer')
     git(peer, 'push', 'origin', dailyBranch)
+    await gitMenuAction('Fetch…')
     await click('[aria-label="Remote synchronization"]', 'Fetch')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Fetched m2-smoke.')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Amended through GitVela')
+    await gitMenuAction('Pull…')
     await click('[aria-label="Remote synchronization"]', 'Pull (fast-forward)')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit from smoke peer')
-    await click('.topbar', 'Sync…')
+  }
+  if (testProject) {
+    const project = await mkdtemp(join(tmpdir(), 'gitvela-project-'))
+    const git = (...args) => execFileSync('git', ['-C', project, ...args], { encoding: 'utf8' }).trim()
+    await writeFile(join(project, 'project.txt'), 'first project file')
+    await gitMenuAction('Initialize Project…')
+    await inputValue('[aria-label="Initialize project"] input', project)
+    await clickButton('[aria-label="Initialize project"]', 'Initialize Git')
+    await until(() => evaluate("document.querySelector('.working-row[title=\"project.txt\"]') !== null"), 'new project working file')
+    assert.equal(git('branch', '--show-current'), 'main')
+    git('config', 'user.name', 'GitVela Smoke')
+    git('config', 'user.email', 'smoke@example.invalid')
+    git('config', 'commit.gpgsign', 'false')
+    await clickButton('.index-actions', 'Stage all')
+    await inputValue('#commit-message', 'Initial project commit')
+    await gitMenuAction('Commit…')
+    await clickButton('.commit-form', 'Commit')
+    await until(() => evaluate("document.querySelector('.commit-row')?.innerText.includes('Initial project commit')"), 'first project commit')
+
+    await gitMenuAction('Manage Remotes…')
+    await clickButton('[aria-label="Manage remotes"]', 'Add remote…')
+    await inputValue('[aria-label="Manage remotes"] input[placeholder=origin]', 'example')
+    await inputValue('[aria-label="Manage remotes"] input[placeholder^=https]', 'https://example.invalid/project.git')
+    await clickButton('[aria-label="Manage remotes"]', 'Add')
+    await until(() => evaluate("document.querySelector('.remote-row')?.innerText.includes('example.invalid/project.git')"), 'remote added')
+    await clickButton('.remote-row', 'Edit URL…')
+    await inputValue('[aria-label="Manage remotes"] input[placeholder^=https]', 'https://example.invalid/updated.git')
+    await clickButton('[aria-label="Manage remotes"]', 'Save URL')
+    await until(() => evaluate("document.querySelector('.remote-row')?.innerText.includes('example.invalid/updated.git')"), 'remote edited')
+    await clickButton('.remote-row', 'Remove…')
+    await clickButton('[aria-label="Confirm remote removal"]', 'Remove remote')
+    await until(() => evaluate("document.querySelector('[aria-label=\"Manage remotes\"]').innerText.includes('No configured remotes.')"), 'remote removed')
+    assert.equal(git('remote'), '')
+
+    await gitMenuAction('Publish to GitHub…')
+    assert.equal(await evaluate("document.querySelector('[aria-label=\"Publish to GitHub\"] select').selectedIndex"), 0)
+    if (githubLogin) {
+      await clickButton('[aria-label="Publish to GitHub"]', 'Check GitHub account')
+      await until(() => evaluate(`document.querySelector('[aria-label="Publish to GitHub"]')?.innerText.includes(${JSON.stringify('Signed in as ' + githubLogin)})`), 'authenticated GitHub account')
+      await clickButton('[aria-label="Publish to GitHub"]', 'Review publication')
+      assert.match(await evaluate("document.querySelector('[aria-label=\"Confirm GitHub publication\"]').innerText"), /as private and push.*main/)
+      await clickButton('[aria-label="Confirm GitHub publication"]', 'Cancel')
+    }
+    assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
   assert.deepEqual(await evaluate("window.smokeRejections"), [])
   if (screenshot) {
@@ -349,6 +426,7 @@ try {
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
   }
   console.log('Desktop smoke passed: Go bindings, repository, history canvas, changed files, and read-only Diff.')
+  if (testProject) console.log('Project initialization, first commit, remote management, and GitHub publication controls passed.')
   if (dailyRemote) console.log('Amend, stash save and pop, and remote push, fetch, and pull passed.')
   if (worktreeTarget) console.log('Worktree creation, switching, and removal passed.')
   if (testMvp) console.log('History search, commit actions, settings, file tree, and diff maximization passed.')

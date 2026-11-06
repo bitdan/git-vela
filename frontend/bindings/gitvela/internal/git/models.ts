@@ -77,9 +77,29 @@ export interface Page {
     "next": Cursor;
 }
 
+export interface PublishRequest {
+    "account": string;
+    "name": string;
+    "branch": string;
+    "private": boolean;
+}
+
+export interface PublishResult {
+    "url": string;
+    "remoteAdded": boolean;
+    "pushed": boolean;
+    "failure": string;
+}
+
 export interface Ref {
     "name": string;
     "hash": string;
+}
+
+export interface RemoteInfo {
+    "name": string;
+    "fetchUrl": string;
+    "pushUrl": string;
 }
 
 export interface Repository {

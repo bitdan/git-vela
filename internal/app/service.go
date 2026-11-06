@@ -72,7 +72,7 @@ func (*RepositoryService) GitVersion(ctx context.Context) (string, error) {
 }
 
 func (*RepositoryService) ChooseDirectory() (string, error) {
-	return application.Get().Dialog.OpenFile().SetTitle("Open Git Repository").
+	return application.Get().Dialog.OpenFile().SetTitle("Select a Folder").
 		CanChooseDirectories(true).CanChooseFiles(false).PromptForSingleSelection()
 }
 
@@ -235,4 +235,48 @@ func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remo
 
 func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string) error {
 	return s.write(ctx, func() error { return git.PushBranch(ctx, path, branch, remote, target) })
+}
+
+func (s *RepositoryService) Initialize(ctx context.Context, path string) (git.Repository, error) {
+	var repo git.Repository
+	err := s.write(ctx, func() error {
+		var err error
+		repo, err = git.Initialize(ctx, path)
+		return err
+	})
+	return repo, err
+}
+
+func (s *RepositoryService) StageAll(ctx context.Context, path string) error {
+	return s.write(ctx, func() error { return git.StageAll(ctx, path) })
+}
+
+func (*RepositoryService) Remotes(ctx context.Context, path string) ([]git.RemoteInfo, error) {
+	return discardCancelled(git.ReadRemotes(ctx, path))
+}
+
+func (s *RepositoryService) AddRemote(ctx context.Context, path, name, address string) error {
+	return s.write(ctx, func() error { return git.AddRemote(ctx, path, name, address) })
+}
+
+func (s *RepositoryService) SetRemoteURL(ctx context.Context, path, name, address string) error {
+	return s.write(ctx, func() error { return git.SetRemoteURL(ctx, path, name, address) })
+}
+
+func (s *RepositoryService) RemoveRemote(ctx context.Context, path, name string) error {
+	return s.write(ctx, func() error { return git.RemoveRemote(ctx, path, name) })
+}
+
+func (*RepositoryService) GitHubLogin(ctx context.Context, path string) (string, error) {
+	return discardCancelled(git.GitHubLogin(ctx, path))
+}
+
+func (s *RepositoryService) PublishGitHub(ctx context.Context, path string, request git.PublishRequest) (git.PublishResult, error) {
+	var result git.PublishResult
+	err := s.write(ctx, func() error {
+		var err error
+		result, err = git.PublishGitHub(ctx, path, request)
+		return err
+	})
+	return result, err
 }

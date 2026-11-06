@@ -6,7 +6,7 @@ import { RepositoryService as api } from '../../../bindings/gitvela/internal/app
 import type { SyncState } from '../../../bindings/gitvela/internal/git'
 import { LatestRequest } from '../../stores/latestRequest'
 
-const props = defineProps<{ path: string; head: string; refresh: () => Promise<void> }>()
+const props = defineProps<{ path: string; head: string; intent: 'fetch' | 'pull' | 'push'; refresh: () => Promise<void> }>()
 const busy = defineModel<boolean>('busy', { required: true })
 const state = ref<SyncState>()
 const selectedRemote = ref('')
@@ -37,6 +37,7 @@ const destination = computed<Destination | undefined>(() => {
 })
 
 const confirmation = ref<Destination>()
+watch(() => props.intent, () => { confirmation.value = undefined })
 watch(selectedRemote, () => { confirmation.value = undefined })
 watch(() => props.head, () => {
   confirmation.value = undefined
@@ -113,16 +114,16 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
 <template>
   <section class="daily-panel" aria-label="Remote synchronization">
     <div class="daily-controls">
-      <h2>Remote synchronization</h2>
-      <label>Remote
+      <h2>{{ { fetch: 'Fetch', pull: 'Pull', push: 'Push' }[intent] }}</h2>
+      <label v-if="intent === 'fetch' || (intent === 'push' && !upstream)">Remote
         <select v-model="selectedRemote" :disabled="busy || loading || !state?.remotes?.length">
           <option v-if="!state?.remotes?.length" value="">No remotes</option>
           <option v-for="remote in state?.remotes" :key="remote">{{ remote }}</option>
         </select>
       </label>
-      <button :disabled="busy || loading || !!loadError || !selectedRemote" @click="run('fetch')">Fetch</button>
-      <button :disabled="busy || loading || !!loadError || !upstream" @click="run('pull')">Pull (fast-forward)</button>
-      <button :disabled="busy || loading || !!loadError || !destination" :aria-expanded="!!confirmation"
+      <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !selectedRemote" @click="run('fetch')">Fetch</button>
+      <button v-if="intent === 'pull'" :disabled="busy || loading || !!loadError || !upstream" @click="run('pull')">Pull (fast-forward)</button>
+      <button v-if="intent === 'push'" :disabled="busy || loading || !!loadError || !destination" :aria-expanded="!!confirmation"
               @click="confirmation = destination">Push…</button>
       <button :disabled="busy || loading" @click="load">Reload targets</button>
     </div>

@@ -309,3 +309,83 @@ button.primary:hover:not(:disabled) { background: var(--accent); filter: brightn
     max-width: 90px;
   }
 }
+
+.git-menu {
+  position: relative;
+  flex: none;
+}
+
+.git-menu summary {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 4px 7px;
+}
+
+.git-menu[open] summary,
+.git-menu summary:hover {
+  background: var(--select);
+}
+
+.command-menu {
+  z-index: 10;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  width: 234px;
+  max-height: calc(100vh - 70px);
+  overflow: auto;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 4px 16px #0003;
+}
+
+.git-menu .command-menu {
+  position: absolute;
+  inset-inline-start: 0;
+  top: calc(100% + 4px);
+}
+
+.branch-commands {
+  position: fixed;
+  max-height: min(240px, calc(100vh - 16px));
+}
+
+.command-menu button {
+  text-align: start;
+  border-color: transparent;
+  background: transparent;
+}
+
+.command-menu button:hover:not(:disabled),
+.command-menu button:focus-visible {
+  background: var(--select);
+}
+
+.command-menu strong {
+  padding: 4px 8px;
+}
+
+.command-divider {
+  border-top: 1px solid var(--border);
+  margin: 3px 1px;
+}
+
+.remote-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+}
+
+.remote-row span {
+  flex: 1;
+  min-width: 0;
+}
+
+.index-actions {
+  flex-wrap: wrap;
+}

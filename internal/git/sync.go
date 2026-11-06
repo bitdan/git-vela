@@ -113,6 +113,10 @@ func PullUpstream(ctx context.Context, dir, branch, remote, target string) error
 }
 
 func PushBranch(ctx context.Context, dir, branch, remote, target string) error {
+	return pushBranch(ctx, dir, branch, remote, target, "")
+}
+
+func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddress string) error {
 	state, err := ReadSyncState(ctx, dir)
 	if err != nil {
 		return err
@@ -135,6 +139,12 @@ func PushBranch(ctx context.Context, dir, branch, remote, target string) error {
 		args = append(args, "--set-upstream")
 	} else if state.UpstreamRemote != remote || state.UpstreamBranch != target || target == "" {
 		return errors.New("the push target changed; review the branch upstream")
+	}
+	if expectedAddress != "" {
+		effective, err := run(ctx, dir, nil, 32768, "remote", "get-url", "--push", "--all", "--", remote)
+		if err != nil || strings.TrimSuffix(strings.TrimSuffix(string(effective), "\n"), "\r") != expectedAddress {
+			return errors.New("the effective push destination changed; review the push URL in Manage remotes")
+		}
 	}
 	return runRemote(ctx, dir, append(args, "--", remote, "refs/heads/"+branch+":refs/heads/"+target)...)
 }

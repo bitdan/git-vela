@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick } from 'vue'
-import { eventShortcut, shortcutDefinitions, type ShortcutId } from '../../stores/shortcuts'
+import { recordingDecision, shortcutDefinitions, type ShortcutId } from '../../stores/shortcuts'
 import { useKeymap } from '../../stores/keymap'
 
 const keymap = useKeymap()
@@ -28,23 +28,34 @@ function cancel(id: ShortcutId) {
   }, 0)
 }
 
-function record(id: ShortcutId, event: KeyboardEvent) {
-  const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
-  if (plain && event.key === 'Escape') {
-    keymap.recording = undefined
-    keymap.error = ''
-    return
-  }
-  if (plain && (event.key === 'Backspace' || event.key === 'Delete')) {
-    keymap.clear(id)
-    keymap.recording = undefined
-    return
-  }
-  const combo = eventShortcut(event)
-  if (!combo) return
-  if (keymap.set(id, combo)) {
-    keymap.recording = undefined
-    void nextTick(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+function onShortcutKey(id: ShortcutId, event: KeyboardEvent) {
+  const decision = recordingDecision(keymap.recording, id, event)
+  switch (decision.action) {
+    case 'none':
+    case 'ignore':
+      // A focused but not-recording button keeps Enter, Space and Tab so the
+      // list stays reachable with the keyboard alone.
+      return
+    case 'cancel':
+      event.preventDefault()
+      if (!decision.moveFocus) event.stopPropagation()
+      keymap.recording = undefined
+      keymap.error = ''
+      return
+    case 'clear':
+      event.preventDefault()
+      event.stopPropagation()
+      keymap.clear(id)
+      keymap.recording = undefined
+      return
+    case 'assign':
+      event.preventDefault()
+      event.stopPropagation()
+      if (keymap.set(id, decision.combo)) {
+        keymap.recording = undefined
+        void nextTick(() => document.activeElement instanceof HTMLElement && document.activeElement.blur())
+      }
+      return
   }
 }
 </script>
@@ -58,7 +69,7 @@ function record(id: ShortcutId, event: KeyboardEvent) {
         <span>{{ item.label }}</span>
         <button :class="{ recording: keymap.recording === item.id }" :aria-label="'Change shortcut for ' + item.label"
                 @click="start(item.id)" @blur="cancel(item.id)"
-                @keydown.stop.prevent="record(item.id, $event)">
+                @keydown="onShortcutKey(item.id, $event)">
           {{ keymap.recording === item.id ? 'Press keys…' : (keymap.bindings[item.id] || 'Unbound') }}
         </button>
       </label>

@@ -24,6 +24,16 @@ function state(status: string) {
   const descriptions = [status[0] !== ' ' ? 'Index: ' + status[0] : '', status[1] !== ' ' ? 'Working tree: ' + status[1] : '']
   return descriptions.filter(Boolean).join(' · ')
 }
+
+/** Called by the global shortcut dispatcher when the commit shortcut fires
+ *  while the message field has focus. The keymap stays the single source of
+ *  truth for the binding, so a rebound or unbound shortcut can never create
+ *  an accidental commit here. */
+function submit() {
+  if (canCommit.value) emit('commit')
+}
+
+defineExpose({ submit })
 </script>
 
 <template>
@@ -57,7 +67,7 @@ function state(status: string) {
         Rewrites HEAD {{ amendHash.slice(0, 8) }} and includes staged changes. Check whether the commit has already been shared.
       </p>
       <textarea id="commit-message" v-model="message" placeholder="Describe the staged changes" rows="2"
-                :disabled="indexBusy" @keydown.ctrl.enter.prevent="canCommit && emit('commit')" />
+                :disabled="indexBusy" />
       <div class="commit-actions">
         <span role="status">{{ stagedCount }} staged<template v-if="notice"> · {{ notice }}</template></span>
         <button class="primary" type="submit" :disabled="!canCommit">{{ amendHash ? 'Amend commit' : 'Commit' }}</button>

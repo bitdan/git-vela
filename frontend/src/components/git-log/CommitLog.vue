@@ -78,6 +78,9 @@ function step(direction: number) {
 }
 
 function navigate(event: KeyboardEvent, direction: number) {
+  // Modifier combos such as Alt+Up/Down belong to the global dispatcher;
+  // handling them here too would dispatch one keypress twice.
+  if (event.altKey || event.ctrlKey || event.metaKey) return
   if (!commits.value.length) return
   event.preventDefault()
   step(direction)

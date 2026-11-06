@@ -635,6 +635,37 @@ try {
     await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+Shift+P'"), 'persisted custom shortcut')
     await clickButton('.shortcut-settings', 'Reset to defaults')
     await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
+
+    // Tab on a shortcut button moves focus instead of binding the Tab key.
+    await evaluate(`(() => {
+      const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
+      button.focus()
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    })()`)
+    await until(() => evaluate("(() => { const map = JSON.parse(localStorage.getItem('gitvela.keymap') || '{}'); return !Object.values(map).includes('Tab') && !document.querySelector('.shortcut-settings .recording') })()"), 'Tab moves focus without becoming a shortcut')
+
+    // The commit shortcut drives submission from the message field only:
+    // an unbound Ctrl+Enter can never create a commit, and the rebound key
+    // still reaches the message field through the global dispatcher.
+    await evaluate(`(() => {
+      const button = document.querySelector('[aria-label="Change shortcut for Focus commit message"]')
+      button.click()
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, shiftKey: true, bubbles: true }))
+    })()`)
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').commit === 'Ctrl+Shift+S'"), 'rebound commit shortcut persisted')
+    await inputValue('#commit-message', '')
+    await evaluate(`(() => {
+      const field = document.getElementById('commit-message')
+      field.focus()
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
+    })()`)
+    await delay(200)
+    assert.equal(await evaluate("document.activeElement && document.activeElement.id"), 'commit-message')
+    assert.ok(!await evaluate("document.body.innerText.includes('Commit created')"), 'unbound Ctrl+Enter must not commit')
+    await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, shiftKey: true, bubbles: true }))")
+    await until(() => evaluate("document.activeElement && document.activeElement.id === 'commit-message'"), 'rebound commit shortcut focuses the message field')
+    await clickButton('.shortcut-settings', 'Reset to defaults')
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').commit === 'Ctrl+Enter'"), 'commit shortcut restored')
     await evaluate("document.querySelector('.preferences').open = false")
 
     // Session state is persisted after opening a repository.

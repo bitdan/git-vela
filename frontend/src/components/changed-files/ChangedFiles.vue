@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { storeToRefs } from 'pinia'
 import { usePreferences } from '../../stores/preferences'
 import { useWorkspace } from '../../stores/workspace'
-import { fileTreeRows } from './fileTree'
+import { expandAncestors, fileTreeRows } from './fileTree'
 import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
@@ -36,8 +36,11 @@ function step(direction: number) {
   const next = files[Math.max(0, Math.min(files.length - 1, base + direction))]
   if (!next) return
   select(next)
+  // A collapsed folder hides the target row; expand its ancestors first so
+  // the file is visible and can be scrolled into view.
+  expandAncestors(collapsed.value, next.path)
   const row = rows.value.findIndex(item => item.file?.index === next.index)
-  if (row >= 0) virtual.value.scrollToIndex(row, { align: 'auto' })
+  if (row >= 0) void nextTick(() => virtual.value.scrollToIndex(row, { align: 'auto' }))
 }
 
 defineExpose({ step })

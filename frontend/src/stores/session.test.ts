@@ -24,13 +24,13 @@ describe('session validation', () => {
 
   it('keeps valid fields and discards malformed ones', () => {
     const result = normalizeSession({
-      path: 'F:/work/repo', hash, parent: 2, file: 'src/app.ts',
+      path: 'F:/work/repo', hash, parent: 2, file: 'src/app.ts', workingFile: 'src/main.go',
       range: { before, after: hash, label: 'main → HEAD' },
       sidebar: 'branches', view: 'commit', historyVisible: false,
       extra: 'ignored',
     })
     expect(result).toEqual({
-      path: 'F:/work/repo', hash, parent: 2, file: 'src/app.ts',
+      path: 'F:/work/repo', hash, parent: 2, file: 'src/app.ts', workingFile: 'src/main.go',
       range: { before, after: hash, label: 'main → HEAD' },
       sidebar: 'branches', view: 'commit', historyVisible: false,
     })
@@ -38,7 +38,7 @@ describe('session validation', () => {
 
   it('drops invalid revisions, parent indexes, sidebars and views', () => {
     const result = normalizeSession({
-      path: 'repo', hash: 'not-a-hash', parent: -1,
+      path: 'repo', hash: 'not-a-hash', parent: -1, workingFile: '',
       range: { before: 'short', after: hash, label: 'range' },
       sidebar: 'unknown', view: 'unknown', historyVisible: 'no',
     })
@@ -49,8 +49,8 @@ describe('session validation', () => {
 describe('session storage', () => {
   it('round-trips a saved session', () => {
     const storage = memory()
-    saveSession({ path: 'F:/work/repo', hash, parent: 1, sidebar: 'files', view: 'working' }, storage)
-    expect(readSession(storage)).toEqual({ path: 'F:/work/repo', hash, parent: 1, sidebar: 'files', view: 'working' })
+    saveSession({ path: 'F:/work/repo', hash, parent: 1, sidebar: 'files', view: 'working', workingFile: 'src/app.ts' }, storage)
+    expect(readSession(storage)).toEqual({ path: 'F:/work/repo', hash, parent: 1, sidebar: 'files', view: 'working', workingFile: 'src/app.ts' })
   })
 
   it('ignores corrupt JSON and missing storage', () => {

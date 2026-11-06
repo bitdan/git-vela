@@ -20,6 +20,7 @@ export interface SessionState {
   hash?: string
   parent?: number
   file?: string
+  workingFile?: string
   range?: SessionRange
   sidebar?: SessionSidebar
   view?: SessionView
@@ -51,6 +52,8 @@ export function normalizeSession(raw: unknown): SessionState | undefined {
   }
   const file = text(value.file)
   if (file) session.file = file
+  const workingFile = text(value.workingFile)
+  if (workingFile) session.workingFile = workingFile
   if (value.range && typeof value.range === 'object' && !Array.isArray(value.range)) {
     const range = value.range as Record<string, unknown>
     const before = revision(range.before)

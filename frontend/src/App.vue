@@ -5,7 +5,7 @@ import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
 import { defaultPreviewHeight, usePreferences } from './stores/preferences'
 import { useKeymap } from './stores/keymap'
-import { isTextEntry, type ShortcutId } from './stores/shortcuts'
+import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
 import { clearSession, readSession, saveSession } from './stores/session'
 import { useWorkspace } from './stores/workspace'
 import CommandPalette from './components/layout/CommandPalette.vue'
@@ -35,6 +35,7 @@ const keymap = useKeymap()
 const preferences = usePreferences()
 const log = useTemplateRef<InstanceType<typeof CommitLog>>('log')
 const filesPanel = useTemplateRef<{ step: (direction: number) => void }>('filesPanel')
+const changesPanel = useTemplateRef<InstanceType<typeof WorkingChanges>>('changes-panel')
 const settings = useTemplateRef<HTMLDetailsElement>('settings')
 const paletteTrigger = useTemplateRef<HTMLButtonElement>('paletteTrigger')
 const content = useTemplateRef<HTMLElement>('content')
@@ -1003,16 +1004,13 @@ function resize(event: PointerEvent) {
 }
 
 function resizeWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
   if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
   event.preventDefault()
   previewHeight.value = Math.min(70, Math.max(28, previewHeight.value + (event.key === 'ArrowUp' ? -3 : 3)))
 }
 
 /* ---- Keyboard commands, command palette, session restore ---- */
-
-const navigationShortcuts = new Set<ShortcutId>([
-  'previousCommit', 'nextCommit', 'previousChange', 'nextChange', 'previousHunk', 'nextHunk',
-])
 
 function stepChange(direction: number) {
   if (!store.repository || !store.files.length) return
@@ -1060,14 +1058,28 @@ function runShortcut(id: ShortcutId) {
   }
 }
 
+function isCodeEditor(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest('.cm-editor')
+}
+
+function isCommitField(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.id === 'commit-message'
+}
+
 function onGlobalKeydown(event: KeyboardEvent) {
   if (keymap.recording || paletteOpen.value || event.isComposing) return
   const id = keymap.resolve(event)
   if (!id) return
+  // CodeMirror panes own keys like Ctrl+F and Ctrl+Enter; the global
+  // dispatcher must not also run the workspace command for the same press.
+  if (editorScopeShortcuts.has(id) && isCodeEditor(event.target)) return
   // Navigation keys belong to text fields, but modifier shortcuts still work.
   if (navigationShortcuts.has(id) && isTextEntry(event.target)) return
   event.preventDefault()
-  runShortcut(id)
+  // Submitting happens only through the commit message field itself, so a
+  // rebound or duplicated dispatch can never fire Git a second time.
+  if (id === 'commit' && isCommitField(event.target)) changesPanel.value?.submit()
+  else runShortcut(id)
 }
 
 function closePalette() {
@@ -1119,7 +1131,18 @@ async function restoreSession() {
     view.value = 'commit'
     return
   }
-  view.value = saved.view && ['working', 'unstaged', 'staged'].includes(saved.view) ? saved.view as FileView : 'working'
+  const nextView = saved.view && ['working', 'unstaged', 'staged'].includes(saved.view) ? saved.view as FileView : 'working'
+  view.value = nextView
+  // Restore the working file selection behind the working, staged and
+  // unstaged views; without it the preview would only show the empty prompt.
+  if (saved.workingFile) {
+    await loadWorking()
+    const file = workingFiles.value.find(item => item.path === saved.workingFile || item.oldPath === saved.workingFile)
+    if (file && store.repository?.path === saved.path) {
+      workingSelection.value = file
+      await selectView(nextView)
+    }
+  }
 }
 
 let sessionTimer: ReturnType<typeof setTimeout> | undefined
@@ -1137,6 +1160,7 @@ function scheduleSessionSave(attempt = 0) {
       hash: store.selected?.hash,
       parent: store.parent,
       file: store.file?.path,
+      workingFile: workingSelection.value?.path,
       range: store.comparisonRange ? { ...store.comparisonRange } : undefined,
       sidebar: sidebar.value,
       view: view.value,
@@ -1146,7 +1170,8 @@ function scheduleSessionSave(attempt = 0) {
 }
 watch([
   () => store.repository?.path, () => store.selected?.hash, () => store.parent,
-  () => store.file?.path, () => store.comparisonRange, sidebar, view, historyVisible,
+  () => store.file?.path, () => workingSelection.value?.path, () => store.comparisonRange,
+  sidebar, view, historyVisible,
 ], () => scheduleSessionSave())
 
 const paletteCommands = computed<PaletteCommand[]>(() => {
@@ -1376,7 +1401,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           </nav>
           <RepositoryFiles v-show="sidebar === 'files'" :key="store.repository.path" :path="store.repository.path"
                            :active="sidebar === 'files' && !diffExpanded" :selected="editorPath" @open="openEditorFile" />
-          <WorkingChanges v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
+          <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"

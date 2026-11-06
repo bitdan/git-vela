@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  assignBinding, defaultBindings, eventShortcut, parseShortcut, persistBindings,
-  readBindings, resolveShortcut, shortcutDefinitions, type StorageLike,
+  assignBinding, defaultBindings, editorScopeShortcuts, eventShortcut, navigationShortcuts,
+  parseShortcut, persistBindings, readBindings, recordingDecision, resolveShortcut,
+  shortcutDefinitions, type StorageLike,
 } from './shortcuts'
 
 function memory(initial: Record<string, string> = {}): StorageLike & { data: Record<string, string> } {
@@ -81,5 +82,48 @@ describe('assignment and resolution', () => {
     expect(resolveShortcut(keyEvent('p', { ctrlKey: true, shiftKey: true }), bindings)).toBe('palette')
     expect(resolveShortcut(keyEvent('k', { ctrlKey: true }), bindings)).toBeUndefined()
     expect(assignBinding(bindings, 'palette', '').bindings?.palette).toBe('')
+  })
+})
+
+describe('shortcut scopes', () => {
+  it('keeps list navigation out of plain text fields', () => {
+    for (const id of ['previousCommit', 'nextCommit', 'previousChange', 'nextChange', 'previousHunk', 'nextHunk'] as const) {
+      expect(navigationShortcuts.has(id)).toBe(true)
+    }
+    expect(navigationShortcuts.has('refresh')).toBe(false)
+    expect(navigationShortcuts.has('toggleTheme')).toBe(false)
+  })
+
+  it('marks editor-owned commands so the global dispatcher skips them', () => {
+    expect(editorScopeShortcuts.has('searchHistory')).toBe(true)
+    expect(editorScopeShortcuts.has('commit')).toBe(true)
+    expect(editorScopeShortcuts.has('palette')).toBe(false)
+    expect(editorScopeShortcuts.has('openRepository')).toBe(false)
+    for (const id of editorScopeShortcuts) {
+      expect(shortcutDefinitions.some(item => item.id === id)).toBe(true)
+    }
+  })
+})
+
+describe('recording decisions', () => {
+  it('ignores keys when the command is not being recorded', () => {
+    expect(recordingDecision('palette', 'refresh', keyEvent('Tab'))).toEqual({ action: 'none' })
+    expect(recordingDecision(undefined, 'refresh', keyEvent('Enter'))).toEqual({ action: 'none' })
+  })
+
+  it('cancels on Escape and Tab, and clears on Backspace or Delete', () => {
+    expect(recordingDecision('palette', 'palette', keyEvent('Escape'))).toEqual({ action: 'cancel', moveFocus: false })
+    expect(recordingDecision('palette', 'palette', keyEvent('Tab'))).toEqual({ action: 'cancel', moveFocus: true })
+    expect(recordingDecision('palette', 'palette', keyEvent('Tab', { shiftKey: true }))).toEqual({ action: 'cancel', moveFocus: true })
+    expect(recordingDecision('palette', 'palette', keyEvent('Backspace'))).toEqual({ action: 'clear' })
+    expect(recordingDecision('palette', 'palette', keyEvent('Delete'))).toEqual({ action: 'clear' })
+  })
+
+  it('assigns the pressed combo and ignores bare modifiers', () => {
+    expect(recordingDecision('palette', 'palette', keyEvent('p', { ctrlKey: true, shiftKey: true })))
+      .toEqual({ action: 'assign', combo: 'Ctrl+Shift+P' })
+    expect(recordingDecision('palette', 'palette', keyEvent('Delete', { shiftKey: true })))
+      .toEqual({ action: 'assign', combo: 'Shift+Delete' })
+    expect(recordingDecision('palette', 'palette', keyEvent('Control'))).toEqual({ action: 'ignore' })
   })
 })

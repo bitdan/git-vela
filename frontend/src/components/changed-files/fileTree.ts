@@ -34,3 +34,15 @@ export function fileTreeRows<T extends { path: string }>(changes: readonly T[], 
   }
   return rows
 }
+
+/** Removes the collapsed state from every ancestor of a path so keyboard
+ *  navigation can reveal a file that is currently hidden by its folders. */
+export function expandAncestors(collapsed: Set<string>, path: string): void {
+  const segments = path.split('/')
+  let folder = ''
+  for (let depth = 0; depth < segments.length - 1; depth++) {
+    folder += segments[depth]
+    collapsed.delete(folder)
+    folder += '/'
+  }
+}

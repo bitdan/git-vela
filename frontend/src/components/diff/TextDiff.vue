@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onUnmounted, ref, useTemplateRef, watchPostEffect } from 'vue'
+import { computed, onUnmounted, ref, useTemplateRef, watchPostEffect } from 'vue'
 import { EditorState } from '@codemirror/state'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { MergeView, getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView } from '@codemirror/merge'
 import { textHighlighting, textLanguage } from '../editor/textLanguage'
 import { useKeymap } from '../../stores/keymap'
 import { registerDiffNavigation } from './diffNavigation'
+import { exceedsRenderLimit, maxRenderLines } from './renderGuard'
 import type { Comparison } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ comparison: Comparison; path: string; dark: boolean }>()
@@ -14,9 +15,14 @@ const host = useTemplateRef<HTMLDivElement>('host')
 const unified = ref(false)
 const changes = ref(0)
 let editor: EditorView | undefined
+// Expanded diffs can reach 120k lines; never hand that much to the merge view.
+const oversized = computed(() => exceedsRenderLimit(props.comparison.before, props.comparison.after))
 
 watchPostEffect(onCleanup => {
-  if (!host.value) return
+  if (!host.value || oversized.value) {
+    changes.value = 0
+    return
+  }
   const { before, after } = props.comparison
   const parent = host.value
   const extensions = [
@@ -64,7 +70,11 @@ onUnmounted(registerDiffNavigation(navigate))
         <button :disabled="!changes" :title="'Next hunk (' + (keymap.bindings.nextHunk || 'unbound') + ')'" @click="navigate(1)">↓</button>
       </div>
     </div>
-    <div v-if="!unified" class="diff-labels"><span>Before</span><span>After</span></div>
-    <div ref="host" class="diff-host" />
+    <p v-if="oversized" class="notice" role="status">
+      This expanded diff is too large to render smoothly (over {{ maxRenderLines.toLocaleString() }} lines per side).
+      Restore the layout to browse it within the preview limit instead.
+    </p>
+    <div v-else-if="!unified" class="diff-labels"><span>Before</span><span>After</span></div>
+    <div v-if="!oversized" ref="host" class="diff-host" />
   </div>
 </template>

@@ -163,6 +163,44 @@ export function resolveShortcut(event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | '
   return (Object.keys(bindings) as ShortcutId[]).find(id => bindings[id] && bindings[id] === combo)
 }
 
+/** What the shortcut settings should do with a key pressed on its button. */
+export type RecordingDecision =
+  | { action: 'none' }                      // Not recording: let the browser activate the button.
+  | { action: 'ignore' }                    // Recording, but the key maps to no shortcut.
+  | { action: 'cancel'; moveFocus: boolean } // Esc (or Tab) leaves recording mode.
+  | { action: 'clear' }                     // Backspace or Delete unbinds the command.
+  | { action: 'assign'; combo: string }     // Bind the pressed key combination.
+
+/** Pure recording rules so the settings panel stays keyboard accessible:
+ *  a focused-but-not-recording button keeps Enter, Space and Tab behaviour,
+ *  and Tab during recording cancels and moves focus instead of binding. */
+export function recordingDecision(
+  recording: ShortcutId | undefined, id: ShortcutId,
+  event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>,
+): RecordingDecision {
+  if (recording !== id) return { action: 'none' }
+  const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+  if (plain && event.key === 'Escape') return { action: 'cancel', moveFocus: false }
+  if (event.key === 'Tab') return { action: 'cancel', moveFocus: true }
+  if (plain && (event.key === 'Backspace' || event.key === 'Delete')) return { action: 'clear' }
+  const combo = eventShortcut(event)
+  if (!combo) return { action: 'ignore' }
+  return { action: 'assign', combo }
+}
+
+/** Commands that move through lists; plain text fields keep the arrow-style
+ *  keys for caret movement, while modifier combos still dispatch globally. */
+export const navigationShortcuts: ReadonlySet<ShortcutId> = new Set([
+  'previousCommit', 'nextCommit', 'previousChange', 'nextChange', 'previousHunk', 'nextHunk',
+])
+
+/** Commands owned by the CodeMirror panes (the text editor and the diff
+ *  viewer). Inside those panes the global dispatcher must not run them as
+ *  well, or one keypress would trigger the editor keymap and the workspace
+ *  command at the same time — for example Ctrl+F would open both the editor
+ *  search panel and the Git history search. */
+export const editorScopeShortcuts: ReadonlySet<ShortcutId> = new Set(['searchHistory', 'commit'])
+
 /** Text fields keep their own navigation keys; CodeMirror panes do not. */
 export function isTextEntry(target: EventTarget | null): boolean {
   if (typeof HTMLElement === 'undefined' || !(target instanceof HTMLElement)) return false

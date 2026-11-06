@@ -1,6 +1,8 @@
 import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
+export const defaultPreviewHeight = 60
+
 function preference(key: string) {
   try {
     return localStorage.getItem(key)
@@ -19,7 +21,7 @@ function persist(key: string, value: string) {
 
 export const usePreferences = defineStore('preferences', () => {
   const dark = ref(preference('gitvela.theme') === 'dark')
-  const previewHeight = ref(Math.min(70, Math.max(28, Number(preference('gitvela.previewHeight')) || 46)))
+  const previewHeight = ref(Math.min(70, Math.max(28, Number(preference('gitvela.previewHeight')) || defaultPreviewHeight)))
   const fileTree = ref(preference('gitvela.fileTree') === 'true')
   watch(dark, value => persist('gitvela.theme', value ? 'dark' : 'light'))
   watch(previewHeight, value => persist('gitvela.previewHeight', String(value)))

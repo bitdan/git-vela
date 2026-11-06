@@ -2,7 +2,9 @@
 
 GitVela is a Windows desktop client for local Git repositories. Browse history, compare files, stage or unstage whole files, and commit staged changes. The branch panel supports creating, switching, renaming, and safely deleting local branches, plus browsing tags. For a merge commit, select the parent to compare against. Selecting a commit opens the diff for the previously selected path when available, or the first changed file.
 
-Use **Git → Worktrees** to list and open linked checkouts. **New…** creates a checkout at an unused absolute path, using an available local branch or a new branch from the selected commit. To remove a linked checkout, open a different worktree and confirm removal in the panel. GitVela keeps the branch and requires an unlocked checkout on a branch with no modified, untracked, or ignored files. The list checks for external changes every five seconds while the panel is open.
+Select **Worktrees** in the repository sidebar to list and open linked checkouts. **New…** creates a checkout at an unused absolute path, using an available local branch or a new branch from the selected commit. To remove a linked checkout, open a different worktree and confirm removal in the panel. GitVela keeps the branch and requires an unlocked checkout on a branch with no modified, untracked, or ignored files. The list checks for external changes every five seconds while the panel is open.
+
+Switch the repository sidebar between **Changes**, **Branches**, and **Worktrees**. The right-hand preview sits above Git Log and Changed Files. Use **History** in the preview header to collapse or reopen both history panels.
 
 Use **Search…** in Git Log to search the full history by message, author, branch, or commit date, or look up a commit by hash. Results are paginated and open in the same Changed Files and Diff panels. Right-click a commit or press **Shift+F10** on its row to copy its hash or message, or start a branch from it. Switch Changed Files between Flat and Tree, or double-click a file to maximize the diff. Use **Settings** for theme, file layout, and resetting panel sizes.
 

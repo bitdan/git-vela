@@ -120,11 +120,13 @@ try {
     const rect = selector => document.querySelector(selector).getBoundingClientRect()
     const working = rect('.working-panel')
     const preview = rect('.preview-panel')
-    const branches = rect('.branch-panel')
+    const sidebar = rect('.workspace-sidebar')
     const history = rect('.log-panel')
     const changes = rect('.files-panel')
-    return working.y === preview.y && working.x < preview.x && working.bottom <= history.y &&
-      branches.y === history.y && history.y === changes.y && branches.x < history.x && history.x < changes.x
+    return working.left >= sidebar.left && working.right <= sidebar.right &&
+      sidebar.right < preview.x && sidebar.y === preview.y &&
+      preview.bottom < history.y && history.x === preview.x && history.y === changes.y &&
+      history.right < changes.x && sidebar.bottom === history.bottom
   })()`), true)
   assert.equal(await evaluate("document.querySelector('.shell').dataset.theme"), 'light')
   if (workingFile) {
@@ -158,6 +160,7 @@ try {
     await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('Commit from desktop'))"), 'new commit in history')
   }
   if (testBranch) {
+    await clickButton('.sidebar-segments', 'Branches')
     await evaluate("document.querySelector('.branch-panel .panel-header button').click()")
     await evaluate(`(() => {
       const input = document.querySelector('[aria-label="New branch name"]')
@@ -206,7 +209,7 @@ try {
       button.click()
       return true
     })()`), 'enabled worktree control ' + selector)
-    await gitMenuAction('Worktrees')
+    await clickButton('.sidebar-segments', 'Worktrees')
     await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'main worktree listed')
     await click('[aria-label="Worktrees"] .panel-header button[aria-expanded="false"]')
     await evaluate(`(() => {
@@ -284,6 +287,10 @@ try {
     await click('.preferences-panel label:nth-child(2) input')
     await click('.preferences summary')
     await until(() => evaluate("!!document.querySelector('.diff-host .cm-editor')"), 'commit diff available')
+    await click('.preview-tabs .history-toggle')
+    await until(() => evaluate("getComputedStyle(document.querySelector('#history-dock')).display === 'none' && getComputedStyle(document.querySelector('.workspace-sidebar')).display !== 'none'"), 'history hidden with sidebar open')
+    await click('.preview-tabs .history-toggle')
+    await until(() => evaluate("getComputedStyle(document.querySelector('#history-dock')).display !== 'none'"), 'history visible again')
     await click('.preview-tabs .diff-size')
     await until(() => evaluate("document.querySelector('.upper').classList.contains('diff-expanded') && getComputedStyle(document.querySelector('.lower')).display === 'none'"), 'maximized diff')
     await evaluate("document.querySelector('.preview-tabs .diff-size').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
@@ -321,6 +328,7 @@ try {
     config(repo)
     git(repo, 'switch', '-c', dailyBranch)
     await text('.statusbar', dailyBranch)
+    await clickButton('.sidebar-segments', 'Changes')
     await click('.commit-form', 'Amend…')
     await text('.amend-warning', 'Rewrites HEAD')
     assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))

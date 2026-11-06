@@ -3,7 +3,7 @@ import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, o
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
-import { usePreferences } from './stores/preferences'
+import { defaultPreviewHeight, usePreferences } from './stores/preferences'
 import { useWorkspace } from './stores/workspace'
 import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
@@ -35,7 +35,14 @@ const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
 const branchActions = useTemplateRef<HTMLElement>('branch-actions')
 const branchMenu = ref<{ item: GitRef; trigger: HTMLElement; x: number; y: number }>()
-const showWorktrees = ref(false)
+type Sidebar = 'changes' | 'branches' | 'worktrees'
+const sidebar = ref<Sidebar>('changes')
+const historyVisible = ref(true)
+const sidebarTabs: { id: Sidebar; label: string }[] = [
+  { id: 'changes', label: 'Changes' },
+  { id: 'branches', label: 'Branches' },
+  { id: 'worktrees', label: 'Worktrees' },
+]
 const refKind = ref<'branches' | 'tags'>('branches')
 const visibleRefs = computed(() => {
   const query = branchFilter.value.trim().toLowerCase()
@@ -306,6 +313,7 @@ async function initializeProject() {
   try {
     const repo = await api.Initialize(projectPath.value.trim())
     await store.open(repo.path)
+    sidebar.value = 'changes'
   } catch (cause) {
     projectError.value = String(cause)
   } finally {
@@ -438,6 +446,9 @@ async function updateBranch(operation: 'create' | 'switch' | 'rename' | 'delete'
 }
 
 async function jump(hash: string) {
+  historyVisible.value = true
+  diffExpanded.value = false
+  await nextTick()
   const repo = store.repository
   navigation.value = ''
   while (repo === store.repository && !log.value?.jump(hash)) {
@@ -457,12 +468,19 @@ function maximizeDiff() {
 
 function restoreDiffLayout() {
   diffExpanded.value = false
-  void nextTick(() => content.value?.querySelector<HTMLButtonElement>('.file-row.active')?.focus())
+  void nextTick(() => {
+    const selector = historyVisible.value ? '.file-row.active' : '.history-toggle'
+    const button = content.value?.querySelector<HTMLButtonElement>(selector)
+    const fallback = content.value?.querySelector<HTMLButtonElement>('.history-toggle')
+    const focusTarget = button ?? fallback
+    focusTarget?.focus()
+  })
 }
 
 function createBranchFromCommit() {
   if (indexBusy.value) return
-  showWorktrees.value = false
+  openSidebar('branches')
+  refKind.value = 'branches'
   openBranchForm('create')
 }
 
@@ -484,8 +502,15 @@ function openSync(intent: SyncIntent) {
   }
 }
 
-function focusCommit() {
+function openSidebar(panel: Sidebar) {
+  if (indexBusy.value) return
+  closeBranchMenu()
+  sidebar.value = panel
   diffExpanded.value = false
+}
+
+function focusCommit() {
+  openSidebar('changes')
   void nextTick(() => document.getElementById('commit-message')?.focus())
 }
 
@@ -547,9 +572,22 @@ function resizeWithKey(event: KeyboardEvent) {
 <template>
   <div class="shell" :data-theme="dark ? 'dark' : 'light'">
     <header class="topbar">
-      <div class="brand"><span class="brand-icon" aria-hidden="true">◇</span><strong>GitVela</strong></div>
+      <div class="brand">
+        <span class="brand-icon">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2.8 10.6 17.2 3l-4.4 14-3.1-5.3zM9.7 11.7 17.2 3" />
+          </svg>
+        </span>
+        <strong>GitVela</strong>
+      </div>
       <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
-        <summary>Git</summary>
+        <summary>
+          <svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <circle cx="6" cy="4" r="1.7" /><circle cx="6" cy="15" r="1.7" /><circle cx="14" cy="5" r="1.7" />
+            <path d="M6 5.7v7.6m8-6.6a6 6 0 0 1-6 5.8H6" />
+          </svg>
+          Git
+        </summary>
         <div class="command-menu" role="group" aria-label="Git operations">
           <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('init'))">Initialize Project…</button>
           <template v-if="store.repository">
@@ -560,9 +598,9 @@ function resizeWithKey(event: KeyboardEvent) {
             <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
             <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('stash'))">Stash…</button>
             <div class="command-divider"></div>
-            <button :disabled="indexBusy" @click="gitAction(() => { showWorktrees = false; refKind = 'branches'; diffExpanded = false })">Branches</button>
+            <button :disabled="indexBusy" @click="gitAction(() => { openSidebar('branches'); refKind = 'branches' })">Branches</button>
             <button :disabled="indexBusy || !store.selected" @click="gitAction(createBranchFromCommit)">New Branch…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => { showWorktrees = !showWorktrees; diffExpanded = false })">Worktrees</button>
+            <button :disabled="indexBusy" @click="gitAction(() => openSidebar('worktrees'))">Worktrees</button>
             <button :disabled="indexBusy || store.opening" @click="gitAction(refresh)">Refresh</button>
             <div class="command-divider"></div>
             <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('remotes'))">Manage Remotes…</button>
@@ -585,7 +623,7 @@ function resizeWithKey(event: KeyboardEvent) {
         <div class="preferences-panel">
           <label><input v-model="dark" type="checkbox" /> Dark theme</label>
           <label><input v-model="fileTree" type="checkbox" /> Show Changed Files as a tree</label>
-          <button @click="previewHeight = 46">Reset panel sizes</button>
+          <button @click="previewHeight = defaultPreviewHeight">Reset panel sizes</button>
         </div>
       </details>
     </header>
@@ -615,60 +653,24 @@ function resizeWithKey(event: KeyboardEvent) {
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
                :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <div class="workspace">
-      <main v-if="store.repository" ref="content" class="content">
-        <div class="upper" :class="{ 'diff-expanded': diffExpanded }" :style="{ flexBasis: diffExpanded ? '100%' : previewHeight + '%' }">
-          <WorkingChanges v-show="!diffExpanded" v-model:message="commitMessage" :files="workingFiles" :active="view !== 'commit' ? workingSelection?.path : undefined"
+      <main v-if="store.repository" class="content" :class="{ 'preview-only': diffExpanded }">
+        <aside v-show="!diffExpanded" class="panel workspace-sidebar" aria-label="Repository workspace">
+          <div class="sidebar-project">
+            <span class="eyebrow">Repository</span>
+            <strong class="ellipsis" :title="store.repository.path">{{ store.repository.name }}</strong>
+          </div>
+          <nav class="sidebar-segments" aria-label="Workspace views">
+            <button v-for="tab in sidebarTabs" :key="tab.id" :aria-pressed="sidebar === tab.id"
+                    :disabled="indexBusy" @click="openSidebar(tab.id)">{{ tab.label }}</button>
+          </nav>
+          <WorkingChanges v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="view !== 'commit' ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="view !== 'commit' && currentWorkingFile?.canStage" :can-unstage="view !== 'commit' && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
                           @select="selectWorking" @update-index="updateIndex" @commit="commitChanges"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll" />
-          <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
-            <header class="preview-tabs">
-              <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
-              <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
-              <span class="ellipsis muted" :title="view !== 'commit' ? workingSelection?.path : store.file?.path">
-                {{ view !== 'commit' ? workingSelection?.path : store.file?.path }}
-              </span>
-              <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
-              <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
-            </header>
-            <template v-if="view !== 'commit'">
-              <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
-              <p v-else-if="previewError" class="notice error" role="alert">{{ previewError }}</p>
-              <pre v-else-if="preview?.kind === 'text' && view === 'working'" class="working-preview" tabindex="0"><code>{{ preview.content }}</code></pre>
-              <pre v-else-if="preview?.kind === 'text' && preview.content" class="working-preview patch" tabindex="0"><code><span v-for="(line, index) in patchLines" :key="index" :class="patchClass(line)">{{ line + '\n' }}</span></code></pre>
-              <p v-else-if="preview?.kind === 'text'" class="notice">{{ view === 'staged' ? 'No staged diff for this file.' : 'No tracked unstaged diff for this file. Use Working file to read untracked files.' }}</p>
-              <p v-else-if="preview?.kind === 'missing'" class="notice">This file is absent from the working tree.</p>
-              <p v-else-if="preview?.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines).</p>
-              <p v-else-if="preview?.kind === 'binary'" class="notice">Binary or non-UTF-8 file.</p>
-              <p v-else-if="preview?.kind === 'special'" class="notice">This path is not a regular file.</p>
-              <p v-else class="notice">Select a working change to preview its current contents.</p>
-            </template>
-            <template v-else>
-              <p v-if="store.loadingDiff" class="notice" role="status">Loading file comparison…</p>
-              <p v-else-if="store.diffError" class="notice error" role="alert">{{ store.diffError }}</p>
-              <p v-else-if="!store.comparison" class="notice">Select a file from the commit changes below.</p>
-              <template v-else-if="store.comparison.kind === 'text' || store.comparison.kind === 'lfs'">
-                <p v-if="store.comparison.kind === 'lfs'" class="notice">Showing the Git LFS pointer.</p>
-                <TextDiff :comparison="store.comparison" :path="store.file?.path ?? ''" :dark="dark" />
-              </template>
-              <p v-else-if="store.comparison.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines per side).</p>
-              <p v-else-if="store.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
-              <div v-else-if="store.comparison.kind === 'submodule'" class="notice submodule">
-                <strong>Submodule update</strong>
-                <div>Before <code>{{ store.comparison.before || '—' }}</code></div>
-                <div>After <code>{{ store.comparison.after || '—' }}</code></div>
-              </div>
-            </template>
-          </section>
-        </div>
-        <div v-show="!diffExpanded" class="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
-             :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
-             @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
-        <div v-show="!diffExpanded" class="lower">
-          <WorktreePanel v-if="showWorktrees" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" />
-          <aside v-else class="panel branch-panel" aria-label="Branches and tags">
+          <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" />
+          <aside v-show="sidebar === 'branches'" class="panel branch-panel" aria-label="Branches and tags">
             <header class="panel-header">
               <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
               <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
@@ -711,17 +713,74 @@ function resizeWithKey(event: KeyboardEvent) {
               </div>
             </div>
           </aside>
-          <CommitLog ref="log" @select="view = 'commit'" @create-branch="createBranchFromCommit" />
-          <ChangedFiles @select="view = 'commit'" @maximize="maximizeDiff" />
+        </aside>
+        <div ref="content" class="editor-workspace">
+          <div class="upper" :class="{ 'diff-expanded': diffExpanded }"
+               :style="{ flexBasis: diffExpanded || !historyVisible ? '100%' : previewHeight + '%' }">
+            <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
+              <header class="preview-tabs">
+                <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
+                <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
+                <span class="ellipsis muted" :title="view !== 'commit' ? workingSelection?.path : store.file?.path">
+                  {{ view !== 'commit' ? workingSelection?.path : store.file?.path }}
+                </span>
+                <button v-if="!diffExpanded" class="history-toggle" aria-controls="history-dock" :aria-pressed="historyVisible"
+                        @click="historyVisible = !historyVisible">History</button>
+                <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
+                <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
+              </header>
+              <template v-if="view !== 'commit'">
+                <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
+                <p v-else-if="previewError" class="notice error" role="alert">{{ previewError }}</p>
+                <pre v-else-if="preview?.kind === 'text' && view === 'working'" class="working-preview" tabindex="0"><code>{{ preview.content }}</code></pre>
+                <pre v-else-if="preview?.kind === 'text' && preview.content" class="working-preview patch" tabindex="0"><code><span v-for="(line, index) in patchLines" :key="index" :class="patchClass(line)">{{ line + '\n' }}</span></code></pre>
+                <p v-else-if="preview?.kind === 'text'" class="notice">{{ view === 'staged' ? 'No staged diff for this file.' : 'No tracked unstaged diff for this file. Use Working file to read untracked files.' }}</p>
+                <p v-else-if="preview?.kind === 'missing'" class="notice">This file is absent from the working tree.</p>
+                <p v-else-if="preview?.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines).</p>
+                <p v-else-if="preview?.kind === 'binary'" class="notice">Binary or non-UTF-8 file.</p>
+                <p v-else-if="preview?.kind === 'special'" class="notice">This path is not a regular file.</p>
+                <p v-else class="notice">Select a working change to preview its current contents.</p>
+              </template>
+              <template v-else>
+                <p v-if="store.loadingDiff" class="notice" role="status">Loading file comparison…</p>
+                <p v-else-if="store.diffError" class="notice error" role="alert">{{ store.diffError }}</p>
+                <p v-else-if="!store.comparison" class="notice">Select a file from the commit changes below.</p>
+                <template v-else-if="store.comparison.kind === 'text' || store.comparison.kind === 'lfs'">
+                  <p v-if="store.comparison.kind === 'lfs'" class="notice">Showing the Git LFS pointer.</p>
+                  <TextDiff :comparison="store.comparison" :path="store.file?.path ?? ''" :dark="dark" />
+                </template>
+                <p v-else-if="store.comparison.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines per side).</p>
+                <p v-else-if="store.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
+                <div v-else-if="store.comparison.kind === 'submodule'" class="notice submodule">
+                  <strong>Submodule update</strong>
+                  <div>Before <code>{{ store.comparison.before || '—' }}</code></div>
+                  <div>After <code>{{ store.comparison.after || '—' }}</code></div>
+                </div>
+              </template>
+            </section>
+          </div>
+          <div v-show="historyVisible && !diffExpanded" class="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
+               :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
+               @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
+          <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower">
+            <CommitLog ref="log" @select="view = 'commit'" @create-branch="createBranchFromCommit" />
+            <ChangedFiles @select="view = 'commit'" @maximize="maximizeDiff" />
+          </div>
         </div>
       </main>
       <main v-else class="empty">
-        <div class="empty-icon" aria-hidden="true">◇</div>
+        <div class="brand-icon empty-icon">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2.8 10.6 17.2 3l-4.4 14-3.1-5.3zM9.7 11.7 17.2 3" />
+          </svg>
+        </div>
         <span class="eyebrow">LOCAL GIT WORKSPACE</span>
         <h1>Open a Git repository</h1>
         <p>Browse commits, inspect changed files, and compare versions side by side.</p>
-        <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse for a repository</button>
-        <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('init')">Initialize a project…</button>
+        <div class="empty-actions">
+          <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse for a repository</button>
+          <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('init')">Initialize a project…</button>
+        </div>
       </main>
     </div>
     <div v-if="branchMenu && store.repository" ref="branch-actions" class="command-menu branch-commands"
@@ -743,7 +802,7 @@ function resizeWithKey(event: KeyboardEvent) {
     </div>
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
-      <span>{{ store.opening ? 'Opening…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
+      <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
     </footer>
   </div>
 </template>

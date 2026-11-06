@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { useTemplateRef, watchPostEffect } from 'vue'
+import { usePreferences } from '../../stores/preferences'
 import type { GraphRow } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ row: GraphRow; width: number }>()
 const canvas = useTemplateRef<HTMLCanvasElement>('canvas')
-const palette = ['#6b9cff', '#45bdab', '#bb90ff', '#edaa59', '#f77699', '#5fb4eb', '#a0c969']
+const preferences = usePreferences()
+const lightPalette = ['#326cc2', '#27866b', '#805db8', '#ae6a2c', '#ab5279', '#397f9d', '#618532']
+const darkPalette = ['#86b0f1', '#71bfa7', '#b79be0', '#d4a067', '#db91ad', '#71b4cb', '#a7c375']
 const height = 34
 const x = (lane: number) => lane * 13 + 12
 
@@ -17,10 +20,11 @@ watchPostEffect(() => {
   element.height = Math.ceil(height * ratio)
   ctx.scale(ratio, ratio)
   const row = props.row
+  const palette = preferences.dark ? darkPalette : lightPalette
   const mid = height / 2
   const line = (from: number, to: number, top: number, bottom: number, color: number) => {
     ctx.strokeStyle = palette[color % palette.length]
-    ctx.lineWidth = 1.7
+    ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(x(from), top)
     if (from === to) ctx.lineTo(x(to), bottom)
@@ -32,7 +36,7 @@ watchPostEffect(() => {
   for (const edge of row.out ?? []) line(edge.from, edge.to, mid, height, edge.color)
   ctx.fillStyle = palette[row.color % palette.length]
   ctx.beginPath()
-  ctx.arc(x(row.node), mid, 4.1, 0, Math.PI * 2)
+  ctx.arc(x(row.node), mid, 3.8, 0, Math.PI * 2)
   ctx.fill()
 })
 </script>

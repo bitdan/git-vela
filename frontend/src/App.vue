@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
-import { Events } from '@wailsio/runtime'
+import { Events, Window } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
 import { defaultPreviewHeight, usePreferences } from './stores/preferences'
+import { useKeymap } from './stores/keymap'
+import { isTextEntry, type ShortcutId } from './stores/shortcuts'
+import { clearSession, readSession, saveSession } from './stores/session'
 import { useWorkspace } from './stores/workspace'
+import CommandPalette from './components/layout/CommandPalette.vue'
+import ShortcutSettings from './components/layout/ShortcutSettings.vue'
+import type { PaletteCommand } from './components/layout/commandFilter'
+import { navigateDiff } from './components/diff/diffNavigation'
 import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
@@ -24,8 +31,19 @@ import './styles.css'
 const TextDiff = defineAsyncComponent(() => import('./components/diff/TextDiff.vue'))
 const WorkspaceEditor = defineAsyncComponent(() => import('./components/editor/WorkspaceEditor.vue'))
 const store = useWorkspace()
+const keymap = useKeymap()
+const preferences = usePreferences()
 const log = useTemplateRef<InstanceType<typeof CommitLog>>('log')
+const filesPanel = useTemplateRef<{ step: (direction: number) => void }>('filesPanel')
+const settings = useTemplateRef<HTMLDetailsElement>('settings')
+const paletteTrigger = useTemplateRef<HTMLButtonElement>('paletteTrigger')
 const content = useTemplateRef<HTMLElement>('content')
+const paletteOpen = ref(false)
+const windowError = ref('')
+const restoreNotice = ref('')
+const sessionNotice = ref('')
+const expandedPreview = ref(false)
+const expandedDiff = ref(false)
 const path = ref('')
 const navigation = ref('')
 const branchError = ref('')
@@ -69,7 +87,7 @@ function openBranchForm(form?: BranchForm, branch = '', base = '') {
   branchNotice.value = ''
 }
 const picking = ref(false)
-const { dark, previewHeight, fileTree } = storeToRefs(usePreferences())
+const { dark, previewHeight, fileTree, density, resumeOnStart } = storeToRefs(preferences)
 const workspaceError = ref('')
 onErrorCaptured((error, _component, info) => {
   console.error('GitVela workspace error', info, error)
@@ -159,8 +177,28 @@ let timer: ReturnType<typeof setInterval>
 watch(view, value => {
   if (value !== 'commit') diffExpanded.value = false
   showHunks.value = false
+  expandedPreview.value = false
 })
-watch(() => store.file?.path, () => { submoduleError.value = '' })
+watch(() => store.file?.path, () => { submoduleError.value = ''; expandedDiff.value = false })
+watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange], () => { expandedDiff.value = false })
+const imageSides = computed(() => [
+  { label: 'Before', src: store.comparison?.before ?? '' },
+  { label: 'After', src: store.comparison?.after ?? '' },
+])
+function isDataImage(src: string) {
+  return /^data:image\/(png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/=]+$/.test(src)
+}
+function loadFullDiff() {
+  if (!store.file || store.loadingDiff) return
+  expandedDiff.value = true
+  void store.selectFile(store.file, true)
+}
+function loadFullWorkingPreview() {
+  const next = workingView.value
+  if (!next || previewLoading.value) return
+  expandedPreview.value = true
+  void selectView(next, false, true)
+}
 watch(editorDirty, dirty => { if (!dirty) pendingEditorAction.value = undefined })
 watch(() => store.repository?.path, repo => {
   if (repo) {
@@ -204,6 +242,8 @@ watch(() => store.repository?.path, repo => {
   preview.value = undefined
   previewError.value = ''
   previewLoading.value = false
+  expandedPreview.value = false
+  expandedDiff.value = false
   view.value = 'working'
   void loadWorking()
 })
@@ -226,7 +266,7 @@ async function refreshExternalChanges() {
   const repo = store.repository?.path
   await loadWorking()
   if (repo === store.repository?.path && workingSelection.value && workingView.value && !previewLoading.value) {
-    void selectView(workingView.value, true)
+    void selectView(workingView.value, true, expandedPreview.value)
   }
 }
 
@@ -254,10 +294,11 @@ function selectWorking(file: WorkingFile) {
   workingSelection.value = file
   showHunks.value = false
   indexError.value = ''
+  expandedPreview.value = false
   void selectView('working')
 }
 
-async function selectView(next: FileView | 'commit', background = false) {
+async function selectView(next: FileView | 'commit', background = false, expanded = false) {
   view.value = next
   if (next === 'commit') return
   const repo = store.repository?.path
@@ -275,7 +316,9 @@ async function selectView(next: FileView | 'commit', background = false) {
     return
   }
   previewLoading.value = !background
-  const call = next === 'working' ? api.WorkingPreview(repo, file.path) : api.WorkingDiff(repo, file.path, next === 'staged')
+  const call = next === 'working'
+    ? expanded ? api.WorkingPreviewExpanded(repo, file.path) : api.WorkingPreview(repo, file.path)
+    : expanded ? api.WorkingDiffExpanded(repo, file.path, next === 'staged') : api.WorkingDiff(repo, file.path, next === 'staged')
   const current = previewRequest.replace(call)
   try {
     const result = await call
@@ -756,7 +799,9 @@ async function commitChanges() {
 onMounted(() => {
   document.addEventListener('pointerdown', outsideMenus)
   window.addEventListener('beforeunload', preventDiscard)
+  window.addEventListener('keydown', onGlobalKeydown)
   void store.detectGit()
+  void restoreSession()
   unsubscribeChanges = Events.On(GitvelaRepositoryChanged, event => {
     if (event.data === store.repository?.path) void refreshExternalChanges()
   })
@@ -765,6 +810,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('pointerdown', outsideMenus)
   window.removeEventListener('beforeunload', preventDiscard)
+  window.removeEventListener('keydown', onGlobalKeydown)
+  if (sessionTimer) clearTimeout(sessionTimer)
   editorRequest.clear()
   headRequest.clear()
   operationRequest.clear()
@@ -960,10 +1007,210 @@ function resizeWithKey(event: KeyboardEvent) {
   event.preventDefault()
   previewHeight.value = Math.min(70, Math.max(28, previewHeight.value + (event.key === 'ArrowUp' ? -3 : 3)))
 }
+
+/* ---- Keyboard commands, command palette, session restore ---- */
+
+const navigationShortcuts = new Set<ShortcutId>([
+  'previousCommit', 'nextCommit', 'previousChange', 'nextChange', 'previousHunk', 'nextHunk',
+])
+
+function stepChange(direction: number) {
+  if (!store.repository || !store.files.length) return
+  historyVisible.value = true
+  diffExpanded.value = false
+  view.value = 'commit'
+  filesPanel.value?.step(direction)
+}
+
+async function toggleFullscreen() {
+  try {
+    await Window.ToggleFullscreen()
+    windowError.value = ''
+  } catch (error) {
+    windowError.value = 'Could not toggle fullscreen: ' + String(error)
+  }
+}
+
+function runShortcut(id: ShortcutId) {
+  switch (id) {
+    case 'palette': paletteOpen.value = !paletteOpen.value; break
+    case 'openRepository': void choose(); break
+    case 'refresh': refresh(); break
+    case 'searchHistory':
+      if (store.repository) {
+        historyVisible.value = true
+        void nextTick(() => log.value?.openSearch())
+      }
+      break
+    case 'commit': focusCommit(); break
+    case 'previousCommit': log.value?.step(-1); break
+    case 'nextCommit': log.value?.step(1); break
+    case 'previousChange': stepChange(-1); break
+    case 'nextChange': stepChange(1); break
+    case 'previousHunk': navigateDiff(-1); break
+    case 'nextHunk': navigateDiff(1); break
+    case 'toggleHistory': historyVisible.value = !historyVisible.value; diffExpanded.value = false; break
+    case 'maximizeDiff':
+      if (diffExpanded.value) restoreDiffLayout()
+      else if (view.value === 'commit' && store.file) maximizeDiff()
+      break
+    case 'toggleTheme': dark.value = !dark.value; break
+    case 'toggleDensity': preferences.toggleDensity(); break
+    case 'toggleFullscreen': void toggleFullscreen(); break
+  }
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if (keymap.recording || paletteOpen.value || event.isComposing) return
+  const id = keymap.resolve(event)
+  if (!id) return
+  // Navigation keys belong to text fields, but modifier shortcuts still work.
+  if (navigationShortcuts.has(id) && isTextEntry(event.target)) return
+  event.preventDefault()
+  runShortcut(id)
+}
+
+function closePalette() {
+  paletteOpen.value = false
+  void nextTick(() => paletteTrigger.value?.focus())
+}
+
+function openSettings() {
+  paletteOpen.value = false
+  void nextTick(() => {
+    if (settings.value) settings.value.open = true
+    settings.value?.querySelector('summary')?.focus()
+  })
+}
+
+function runPalette(id: string) {
+  paletteOpen.value = false
+  const command = paletteCommands.value.find(item => item.id === id)
+  if (command && !command.disabled) command.run()
+}
+
+function forgetSession() {
+  clearSession()
+  sessionNotice.value = 'Saved session cleared.'
+}
+
+async function restoreSession() {
+  const saved = readSession()
+  if (!saved?.path || !resumeOnStart.value) return
+  await store.open(saved.path)
+  if (!store.repository) {
+    clearSession()
+    store.repoError = ''
+    restoreNotice.value = 'The last repository is no longer available. Choose a repository to continue.'
+    return
+  }
+  sidebar.value = saved.sidebar ?? 'changes'
+  historyVisible.value = saved.historyVisible ?? true
+  await nextTick()
+  if (saved.range) {
+    view.value = 'commit'
+    void store.selectComparison(saved.range.before, saved.range.after, saved.range.label, saved.file)
+    return
+  }
+  if (saved.hash) {
+    await jump(saved.hash)
+    const commit = store.commits.find(item => item.hash === saved.hash)
+    if (commit) void store.selectCommit(commit, saved.parent ?? 0, saved.file)
+    view.value = 'commit'
+    return
+  }
+  view.value = saved.view && ['working', 'unstaged', 'staged'].includes(saved.view) ? saved.view as FileView : 'working'
+}
+
+let sessionTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleSessionSave(attempt = 0) {
+  if (sessionTimer) clearTimeout(sessionTimer)
+  sessionTimer = setTimeout(() => {
+    const repo = store.repository?.path
+    // Never persist the empty state produced while a refresh resets the store.
+    if (!repo || store.opening || store.loading) {
+      if (attempt < 5) scheduleSessionSave(attempt + 1)
+      return
+    }
+    saveSession({
+      path: repo,
+      hash: store.selected?.hash,
+      parent: store.parent,
+      file: store.file?.path,
+      range: store.comparisonRange ? { ...store.comparisonRange } : undefined,
+      sidebar: sidebar.value,
+      view: view.value,
+      historyVisible: historyVisible.value,
+    })
+  }, 350)
+}
+watch([
+  () => store.repository?.path, () => store.selected?.hash, () => store.parent,
+  () => store.file?.path, () => store.comparisonRange, sidebar, view, historyVisible,
+], () => scheduleSessionSave())
+
+const paletteCommands = computed<PaletteCommand[]>(() => {
+  const items: PaletteCommand[] = []
+  const hint = (id: ShortcutId) => keymap.bindings[id] || undefined
+  const add = (id: string, label: string, group: string, run: () => void, options: Partial<PaletteCommand> = {}) => {
+    items.push({ id, label, group, run, ...options })
+  }
+  const busy = indexBusy.value || store.opening
+  add('open', 'Browse for a repository…', 'Repository', () => void choose(), { hint: hint('openRepository'), disabled: picking.value || busy })
+  add('init', 'Initialize Project…', 'Repository', () => toggleDailyPanel('init'), { disabled: busy })
+  for (const repo of store.recent) {
+    add('repo:' + repo, 'Open ' + (repo.split(/[\\/]/).at(-1) || repo), 'Recent repositories', () => openRepository(repo), { keywords: repo, disabled: busy })
+  }
+  if (store.repository) {
+    add('refresh', 'Refresh repository', 'Repository', refresh, { hint: hint('refresh'), disabled: busy })
+    add('search', 'Search Git history…', 'Repository', () => {
+      historyVisible.value = true
+      void nextTick(() => log.value?.openSearch())
+    }, { hint: hint('searchHistory') })
+    add('commit', 'Commit changes…', 'Git operations', focusCommit, { hint: hint('commit'), disabled: busy })
+    add('fetch', 'Fetch…', 'Git operations', () => openSync('fetch'), { disabled: busy })
+    add('pull', 'Pull…', 'Git operations', () => openSync('pull'), { disabled: busy })
+    add('push', 'Push…', 'Git operations', () => openSync('push'), { disabled: busy })
+    add('stash', 'Stash…', 'Git operations', () => toggleDailyPanel('stash'), { disabled: busy })
+    add('remotes', 'Manage Remotes…', 'Git operations', () => toggleDailyPanel('remotes'), { disabled: busy })
+    add('publish', 'Publish to GitHub…', 'Git operations', () => toggleDailyPanel('publish'), { disabled: busy })
+    add('new-branch', 'New Branch…', 'Git operations', createBranchFromCommit, { disabled: busy || !store.selected })
+  }
+  for (const tab of sidebarTabs) {
+    add('sidebar:' + tab.id, 'Show ' + tab.label, 'Workspace views', () => openSidebar(tab.id), { disabled: busy })
+  }
+  if (store.repository) {
+    add('previousCommit', 'Previous commit', 'Navigation', () => log.value?.step(-1), { hint: hint('previousCommit') })
+    add('nextCommit', 'Next commit', 'Navigation', () => log.value?.step(1), { hint: hint('nextCommit') })
+    add('previousChange', 'Previous changed file', 'Navigation', () => stepChange(-1), { hint: hint('previousChange') })
+    add('nextChange', 'Next changed file', 'Navigation', () => stepChange(1), { hint: hint('nextChange') })
+    add('previousHunk', 'Previous diff hunk', 'Navigation', () => navigateDiff(-1), { hint: hint('previousHunk'), disabled: view.value !== 'commit' })
+    add('nextHunk', 'Next diff hunk', 'Navigation', () => navigateDiff(1), { hint: hint('nextHunk'), disabled: view.value !== 'commit' })
+  }
+  add('theme', 'Toggle dark theme', 'View', () => { dark.value = !dark.value }, { hint: hint('toggleTheme') })
+  add('density', density.value === 'compact' ? 'Use comfortable rows' : 'Use compact rows', 'View', () => preferences.toggleDensity(), { hint: hint('toggleDensity') })
+  add('fullscreen', 'Toggle fullscreen', 'View', () => void toggleFullscreen(), { hint: hint('toggleFullscreen') })
+  add('history', 'Show or hide history', 'View', () => { historyVisible.value = !historyVisible.value; diffExpanded.value = false }, { hint: hint('toggleHistory') })
+  add('diff', diffExpanded.value ? 'Restore diff layout' : 'Maximize diff', 'View', () => diffExpanded.value ? restoreDiffLayout() : maximizeDiff(), { hint: hint('maximizeDiff'), disabled: !diffExpanded.value && (view.value !== 'commit' || !store.file) })
+  add('file-tree', fileTree.value ? 'Show Changed Files flat' : 'Show Changed Files as a tree', 'View', () => { fileTree.value = !fileTree.value })
+  add('reset-size', 'Reset panel sizes', 'View', () => { previewHeight.value = defaultPreviewHeight })
+  add('shortcuts', 'Keyboard shortcuts…', 'Settings', openSettings)
+  add('forget-session', 'Forget saved session', 'Settings', forgetSession)
+  if (store.repository) {
+    for (const ref of store.branchRefs.slice(0, 30)) {
+      const name = refLabel(ref.name)
+      add('ref:' + ref.name, 'Jump to ' + name, 'Branches & tags', () => void jump(ref.hash), { keywords: ref.name })
+    }
+    for (const tag of store.tagRefs.slice(0, 15)) {
+      add('tag:' + tag.name, 'Jump to tag ' + refLabel(tag.name), 'Branches & tags', () => void jump(tag.hash), { keywords: tag.name })
+    }
+  }
+  return items
+})
 </script>
 
 <template>
-  <div class="shell" :data-theme="dark ? 'dark' : 'light'">
+  <div class="shell" :data-theme="dark ? 'dark' : 'light'" :data-density="density">
     <header class="topbar">
       <div class="brand">
         <span class="brand-icon">
@@ -1011,12 +1258,23 @@ function resizeWithKey(event: KeyboardEvent) {
         <option v-for="repo in store.recent" :key="repo" :value="repo">{{ repo.split(/[\\/]/).at(-1) || repo }}</option>
       </select>
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
-      <details class="preferences">
+      <button ref="paletteTrigger" :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
+              @click="paletteOpen = !paletteOpen">Commands…</button>
+      <details ref="settings" class="preferences">
         <summary>Settings</summary>
         <div class="preferences-panel">
           <label><input v-model="dark" type="checkbox" /> Dark theme</label>
+          <label><input type="checkbox" :checked="density === 'compact'" @change="preferences.toggleDensity()" /> Compact rows</label>
           <label><input v-model="fileTree" type="checkbox" /> Show Changed Files as a tree</label>
+          <label><input v-model="resumeOnStart" type="checkbox" /> Reopen last repository on startup</label>
           <button @click="previewHeight = defaultPreviewHeight">Reset panel sizes</button>
+          <button @click="toggleFullscreen">Toggle fullscreen</button>
+          <button @click="forgetSession">Forget saved session</button>
+          <p v-if="sessionNotice" class="notice" role="status">{{ sessionNotice }}</p>
+          <details class="shortcut-details">
+            <summary>Keyboard shortcuts</summary>
+            <ShortcutSettings />
+          </details>
         </div>
       </details>
     </header>
@@ -1025,6 +1283,8 @@ function resizeWithKey(event: KeyboardEvent) {
       <button @click="workspaceError = ''; refresh()">Reload workspace</button>
     </div>
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
+    <p v-if="windowError" class="notice error top-error" role="alert">{{ windowError }} <button @click="windowError = ''">Dismiss</button></p>
+    <p v-if="restoreNotice" class="notice top-error" role="status">{{ restoreNotice }} <button @click="restoreNotice = ''">Dismiss</button></p>
     <p v-if="watchError" class="notice top-error" role="status" :title="watchError">File notifications unavailable. Checking for Git changes every 5 seconds.</p>
     <section v-if="dailyPanel === 'init'" class="daily-panel" aria-label="Initialize project">
       <form class="daily-controls" @submit.prevent="withSavedEditor('initializing another project', () => { void initializeProject() })">
@@ -1215,8 +1475,15 @@ function resizeWithKey(event: KeyboardEvent) {
                 <pre v-else-if="preview?.kind === 'text' && preview.content" class="working-preview patch" tabindex="0"><code><span v-for="(line, index) in patchLines" :key="index" :class="patchClass(line)">{{ line + '\n' }}</span></code></pre>
                 <p v-else-if="preview?.kind === 'text'" class="notice">{{ view === 'staged' ? 'No staged diff for this file.' : 'No tracked unstaged diff for this file. Use Working file to read untracked files.' }}</p>
                 <p v-else-if="preview?.kind === 'missing'" class="notice">This file is absent from the working tree.</p>
-                <p v-else-if="preview?.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines).</p>
-                <p v-else-if="preview?.kind === 'binary'" class="notice">Binary or non-UTF-8 file.</p>
+                <p v-else-if="preview?.kind === 'large'" class="notice">
+                  Preview limit reached (512 KiB or 12,000 lines).
+                  <button v-if="!expandedPreview" :disabled="previewLoading" @click="loadFullWorkingPreview">Load full preview (up to 8 MiB)</button>
+                  <span v-else>This file exceeds the expanded preview limit (8 MiB or 120,000 lines).</span>
+                </p>
+                <div v-else-if="preview?.kind === 'image' && isDataImage(preview.content)" class="image-preview">
+                  <img :src="preview.content" :alt="'Working copy of ' + (workingSelection?.path ?? 'file')" />
+                </div>
+                <p v-else-if="preview?.kind === 'binary' || preview?.kind === 'image'" class="notice">Binary or non-UTF-8 file.</p>
                 <p v-else-if="preview?.kind === 'special'" class="notice">This path is not a regular file.</p>
                 <p v-else class="notice">Select a working change to preview its current contents.</p>
               </template>
@@ -1237,7 +1504,20 @@ function resizeWithKey(event: KeyboardEvent) {
                   </div>
                   <TextDiff :comparison="store.comparison" :path="store.file?.path ?? ''" :dark="dark" />
                 </template>
-                <p v-else-if="store.comparison.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines per side).</p>
+                <div v-else-if="store.comparison.kind === 'image'" class="image-diff">
+                  <figure v-for="side in imageSides" :key="side.label">
+                    <figcaption>{{ side.label }}</figcaption>
+                    <div class="image-frame">
+                      <img v-if="isDataImage(side.src)" :src="side.src" :alt="side.label + ' version of ' + (store.file?.path ?? 'file')" />
+                      <p v-else class="notice">{{ side.src ? 'Unsupported image format.' : 'No image on this side.' }}</p>
+                    </div>
+                  </figure>
+                </div>
+                <p v-else-if="store.comparison.kind === 'large'" class="notice">
+                  Preview limit reached (512 KiB or 12,000 lines per side).
+                  <button v-if="!expandedDiff" :disabled="store.loadingDiff" @click="loadFullDiff">Load full preview (up to 8 MiB)</button>
+                  <span v-else>This file exceeds the expanded preview limit (8 MiB or 120,000 lines per side).</span>
+                </p>
                 <p v-else-if="store.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
                 <div v-else-if="store.comparison.kind === 'submodule'" class="notice submodule">
                   <strong>Submodule update</strong>
@@ -1256,7 +1536,7 @@ function resizeWithKey(event: KeyboardEvent) {
             <CommitLog ref="log" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
                        @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
-            <ChangedFiles @select="view = 'commit'" @maximize="maximizeDiff" />
+            <ChangedFiles ref="filesPanel" @select="view = 'commit'" @maximize="maximizeDiff" />
           </div>
         </div>
       </main>
@@ -1297,6 +1577,7 @@ function resizeWithKey(event: KeyboardEvent) {
                 @click="branchAction('delete')">Delete…</button>
       </template>
     </div>
+    <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
       <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>

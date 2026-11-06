@@ -10,6 +10,7 @@ const repo = process.argv[2] ?? process.cwd()
 const screenshot = process.argv[3]
 const workingFile = process.argv[4]
 const testMvp = process.env.GITVELA_SMOKE_MVP === '1'
+const testM4 = process.env.GITVELA_SMOKE_M4 === '1'
 const dailyRemote = process.env.GITVELA_SMOKE_M2_REMOTE
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
@@ -610,6 +611,36 @@ try {
     }
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
+  if (testM4) {
+    // The configured Ctrl+K shortcut opens the command palette.
+    await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))")
+    await until(() => evaluate("!!document.querySelector('.palette')"), 'command palette')
+    await inputValue('[aria-label="Search commands"]', 'compact')
+    await until(() => evaluate("document.querySelector('.palette-item.active')?.innerText.includes('compact')"), 'ranked compact-row command')
+    await evaluate("document.querySelector('.palette').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))")
+    await until(() => evaluate("document.querySelector('.shell').dataset.density === 'compact'"), 'compact row density')
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.commit-row')).height"), '27px')
+
+    // Restore the comfortable layout, then rebind a shortcut through Settings.
+    await evaluate("document.querySelector('.preferences summary').click()")
+    await evaluate("[...document.querySelectorAll('.preferences-panel label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
+    await until(() => evaluate("document.querySelector('.shell').dataset.density === 'comfortable'"), 'comfortable row density')
+    await evaluate("document.querySelector('.shortcut-details summary').click()")
+    await until(() => evaluate("document.querySelectorAll('.shortcut-group button').length >= 16"), 'editable shortcut list')
+    await evaluate(`(() => {
+      const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
+      button.click()
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true, bubbles: true }))
+    })()`)
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+Shift+P'"), 'persisted custom shortcut')
+    await clickButton('.shortcut-settings', 'Reset to defaults')
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
+    await evaluate("document.querySelector('.preferences').open = false")
+
+    // Session state is persisted after opening a repository.
+    await until(() => evaluate("(() => { const saved = JSON.parse(localStorage.getItem('gitvela.session') || 'null'); return !!saved && typeof saved.path === 'string' && saved.path.length > 0 })()"), 'saved session')
+    assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
+  }
   assert.deepEqual(await evaluate("window.smokeRejections"), [])
   if (screenshot) {
     const image = await cdp('Page.captureScreenshot', { format: 'png' })
@@ -622,6 +653,7 @@ try {
   if (dailyRemote) console.log('Amend, stash save and pop, and remote push, fetch, and pull passed.')
   if (worktreeTarget) console.log('Worktree creation, switching, and removal passed.')
   if (testMvp) console.log('History search, commit actions, settings, file tree, and diff maximization passed.')
+  if (testM4) console.log('Command palette, configurable shortcuts, compact rows, and session persistence passed.')
 } finally {
   socket.close()
 }

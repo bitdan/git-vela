@@ -4,7 +4,7 @@ import { RepositoryService as api } from '../../bindings/gitvela/internal/app'
 import type { Change, Commit, Comparison, Cursor, Ref, Repository } from '../../bindings/gitvela/internal/git'
 import { LatestRequest } from './latestRequest'
 
-type ComparisonRange = { before: string; after: string; label: string }
+export type ComparisonRange = { before: string; after: string; label: string }
 
 const initialCursor: Cursor = { offset: 0, snapshot: '', lanes: null }
 
@@ -178,16 +178,21 @@ export const useWorkspace = defineStore('workspace', () => {
     }
   }
 
-  async function selectFile(change: Change) {
+  async function selectFile(change: Change, expanded = false) {
     if (!repository.value || (!selected.value && !comparisonRange.value)) return
     file.value = change
     comparison.value = undefined
     diffError.value = ''
     loadingDiff.value = true
     const range = comparisonRange.value
+    const repo = repository.value.path
     const call = range
-      ? api.CompareDiff(repository.value.path, range.before, range.after, change.index)
-      : api.Diff(repository.value.path, selected.value!.hash, parent.value, change.index)
+      ? expanded
+        ? api.CompareDiffExpanded(repo, range.before, range.after, change.index)
+        : api.CompareDiff(repo, range.before, range.after, change.index)
+      : expanded
+        ? api.DiffExpanded(repo, selected.value!.hash, parent.value, change.index)
+        : api.Diff(repo, selected.value!.hash, parent.value, change.index)
     const current = diffRequest.replace(call)
     try {
       const result = await call

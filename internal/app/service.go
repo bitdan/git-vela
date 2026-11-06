@@ -96,12 +96,21 @@ func (*RepositoryService) Diff(ctx context.Context, path, commit string, parent,
 	return discardCancelled(git.Diff(ctx, path, commit, parent, git.Change{Index: file}))
 }
 
+// DiffExpanded is only called after the user confirms loading a large preview.
+func (*RepositoryService) DiffExpanded(ctx context.Context, path, commit string, parent, file int) (git.Comparison, error) {
+	return discardCancelled(git.DiffExpanded(ctx, path, commit, parent, git.Change{Index: file}))
+}
+
 func (*RepositoryService) WorkingChanges(ctx context.Context, path string) ([]git.WorkingFile, error) {
 	return discardCancelled(git.WorkingChanges(ctx, path))
 }
 
 func (*RepositoryService) WorkingPreview(path, file string) (git.FilePreview, error) {
 	return git.WorkingPreview(path, file)
+}
+
+func (*RepositoryService) WorkingPreviewExpanded(path, file string) (git.FilePreview, error) {
+	return git.WorkingPreviewExpanded(path, file)
 }
 
 func (s *RepositoryService) SetStaged(ctx context.Context, path, file string, staged bool) error {
@@ -115,6 +124,10 @@ func (s *RepositoryService) SetStaged(ctx context.Context, path, file string, st
 
 func (*RepositoryService) WorkingDiff(ctx context.Context, path, file string, staged bool) (git.FilePreview, error) {
 	return discardCancelled(git.WorkingDiff(ctx, path, file, staged))
+}
+
+func (*RepositoryService) WorkingDiffExpanded(ctx context.Context, path, file string, staged bool) (git.FilePreview, error) {
+	return discardCancelled(git.WorkingDiffExpanded(ctx, path, file, staged))
 }
 
 func (s *RepositoryService) CommitIndex(ctx context.Context, path, message string) error {
@@ -313,6 +326,10 @@ func (*RepositoryService) CompareFiles(ctx context.Context, path, before, after 
 
 func (*RepositoryService) CompareDiff(ctx context.Context, path, before, after string, index int) (git.Comparison, error) {
 	return discardCancelled(git.CompareDiff(ctx, path, before, after, index))
+}
+
+func (*RepositoryService) CompareDiffExpanded(ctx context.Context, path, before, after string, index int) (git.Comparison, error) {
+	return discardCancelled(git.CompareDiffExpanded(ctx, path, before, after, index))
 }
 
 func (*RepositoryService) ReadHead(ctx context.Context, path string) (git.HeadState, error) {

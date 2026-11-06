@@ -101,10 +101,20 @@ func SetStaged(ctx context.Context, dir, path string, staged bool) error {
 }
 
 func WorkingDiff(ctx context.Context, dir, path string, staged bool) (FilePreview, error) {
+	return workingDiff(ctx, dir, path, staged, false)
+}
+
+// WorkingDiffExpanded reads a working diff with the larger, user-confirmed limits.
+func WorkingDiffExpanded(ctx context.Context, dir, path string, staged bool) (FilePreview, error) {
+	return workingDiff(ctx, dir, path, staged, true)
+}
+
+func workingDiff(ctx context.Context, dir, path string, staged, expanded bool) (FilePreview, error) {
 	file, err := findWorkingFile(ctx, dir, path)
 	if err != nil {
 		return FilePreview{}, err
 	}
+	maxBytes, maxLines := previewLimits(expanded)
 	args := []string{"diff", "--patch", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative"}
 	side := file.Status[1]
 	if staged {
@@ -112,8 +122,8 @@ func WorkingDiff(ctx context.Context, dir, path string, staged bool) (FilePrevie
 		side = file.Status[0]
 	}
 	args = append(args, "--")
-	data, err := run(ctx, dir, nil, previewBytes, append(args, workingPathspec(file, side)...)...)
-	if errors.Is(err, errLimit) || bytes.Count(data, []byte{'\n'}) > previewLines {
+	data, err := run(ctx, dir, nil, maxBytes, append(args, workingPathspec(file, side)...)...)
+	if errors.Is(err, errLimit) || bytes.Count(data, []byte{'\n'}) > maxLines {
 		return FilePreview{Kind: "large"}, nil
 	}
 	if err != nil {
@@ -121,17 +131,34 @@ func WorkingDiff(ctx context.Context, dir, path string, staged bool) (FilePrevie
 	}
 	return FilePreview{Kind: "text", Content: string(data)}, nil
 }
+
 func WorkingPreview(dir, path string) (FilePreview, error) {
+	return workingPreview(dir, path, false)
+}
+
+// WorkingPreviewExpanded reads a working file with the larger, user-confirmed limits.
+func WorkingPreviewExpanded(dir, path string) (FilePreview, error) {
+	return workingPreview(dir, path, true)
+}
+
+func workingPreview(dir, path string, expanded bool) (FilePreview, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return FilePreview{}, err
 	}
 	defer root.Close()
-	preview, _, err := readWorkingPreview(root, path)
+	preview, _, err := readWorkingPreviewWithLimit(root, path, expanded)
 	return preview, err
 }
 
+// readWorkingPreview keeps the editor's strict default limit. Images, binaries
+// and oversized files never return a FileInfo, so the editor refuses them.
 func readWorkingPreview(root *os.Root, path string) (FilePreview, os.FileInfo, error) {
+	return readWorkingPreviewWithLimit(root, path, false)
+}
+
+func readWorkingPreviewWithLimit(root *os.Root, path string, expanded bool) (FilePreview, os.FileInfo, error) {
+	maxBytes, maxLines := previewLimits(expanded)
 	local, err := filepath.Localize(path)
 	if err != nil || local == "." {
 		return FilePreview{}, nil, errors.New("invalid working file path")
@@ -163,7 +190,7 @@ func readWorkingPreview(root *os.Root, path string) (FilePreview, os.FileInfo, e
 	if !info.Mode().IsRegular() {
 		return FilePreview{Kind: "special"}, nil, nil
 	}
-	if info.Size() > previewBytes {
+	if info.Size() > int64(maxBytes) {
 		return FilePreview{Kind: "large"}, nil, nil
 	}
 	file, err := root.Open(local)
@@ -181,12 +208,15 @@ func readWorkingPreview(root *os.Root, path string) (FilePreview, os.FileInfo, e
 	if !os.SameFile(info, opened) {
 		return FilePreview{}, nil, errors.New("the working file changed while opening it")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, previewBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, int64(maxBytes)+1))
 	if err != nil {
 		return FilePreview{}, nil, err
 	}
-	if len(data) > previewBytes || bytes.Count(data, []byte{'\n'}) > previewLines || bytes.Count(data, []byte{'\r'}) > previewLines {
+	if len(data) > maxBytes || bytes.Count(data, []byte{'\n'}) > maxLines || bytes.Count(data, []byte{'\r'}) > maxLines {
 		return FilePreview{Kind: "large"}, nil, nil
+	}
+	if url, ok := imageDataURL(data); ok {
+		return FilePreview{Kind: "image", Content: url}, nil, nil
 	}
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return FilePreview{Kind: "binary"}, nil, nil

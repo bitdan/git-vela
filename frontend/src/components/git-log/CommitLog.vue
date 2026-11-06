@@ -6,9 +6,13 @@ import type { Commit, Cursor, HistoryFilter } from '../../../bindings/gitvela/in
 import { LatestRequest } from '../../stores/latestRequest'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useWorkspace } from '../../stores/workspace'
+import { usePreferences } from '../../stores/preferences'
+import { useKeymap } from '../../stores/keymap'
 import GraphCell from './GraphCell.vue'
 
 const store = useWorkspace()
+const preferences = usePreferences()
+const keymap = useKeymap()
 const props = defineProps<{ pinned?: string; busy?: boolean }>()
 const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
@@ -33,7 +37,7 @@ const columns = computed(() => ({ '--graph-width': graphPixels.value + 'px' }))
 const virtual = useVirtualizer(computed(() => ({
   count: commits.value.length,
   getScrollElement: () => scroll.value,
-  estimateSize: () => 34,
+  estimateSize: () => preferences.rowHeight,
   overscan: 12,
 })))
 const rows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
@@ -66,11 +70,22 @@ function jump(hash: string) {
   return false
 }
 
+function step(direction: number) {
+  if (!commits.value.length) return
+  const index = commits.value.findIndex(item => item.hash === store.selected?.hash)
+  const base = index < 0 ? (direction > 0 ? -1 : commits.value.length) : index
+  select(Math.max(0, Math.min(commits.value.length - 1, base + direction)))
+}
+
 function navigate(event: KeyboardEvent, direction: number) {
   if (!commits.value.length) return
   event.preventDefault()
-  const index = commits.value.findIndex(item => item.hash === store.selected?.hash)
-  select(Math.max(0, Math.min(commits.value.length - 1, index + direction)))
+  step(direction)
+}
+
+function openSearch() {
+  showSearch.value = true
+  void nextTick(() => document.querySelector<HTMLInputElement>('.history-search input')?.focus())
 }
 
 function dateBoundary(day: string, end: boolean) {
@@ -190,7 +205,7 @@ async function copyCommit(commit: Commit, message: boolean) {
   }
 }
 
-defineExpose({ jump })
+defineExpose({ jump, step, openSearch })
 </script>
 
 <template>
@@ -199,7 +214,8 @@ defineExpose({ jump })
       <div><span class="eyebrow">HISTORY</span><h2>Git Log</h2></div>
       <div class="log-tools">
         <span class="muted">{{ commits.length.toLocaleString() }} {{ filter ? 'matches loaded' : 'loaded' }}</span>
-        <button :aria-expanded="showSearch" @click="showSearch ? closeSearch() : showSearch = true">Search…</button>
+        <button :aria-expanded="showSearch" :title="'Search history (' + (keymap.bindings.searchHistory || 'unbound') + ')'"
+                @click="showSearch ? closeSearch() : showSearch = true">Search…</button>
       </div>
     </header>
     <form v-if="showSearch" class="history-search" @submit.prevent="startSearch">
@@ -256,7 +272,7 @@ defineExpose({ jump })
                 @contextmenu.prevent="showCommitActions(item.index)"
                 @keydown.shift.f10.prevent="showCommitActions(item.index)">
           <span v-if="filter" aria-hidden="true"></span>
-          <GraphCell v-else :row="commit.graph" :width="graphPixels" />
+          <GraphCell v-else :row="commit.graph" :width="graphPixels" :height="preferences.rowHeight" />
           <span class="commit-title" :title="commit.subject">
             <span v-for="label in commit.refs" :key="label" class="chip" :title="label">
               {{ label.replace(/^refs\/(heads|remotes|tags)\//, '') }}

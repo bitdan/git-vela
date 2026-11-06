@@ -10,7 +10,8 @@ import type { Change } from '../../../bindings/gitvela/internal/git'
 const store = useWorkspace()
 const emit = defineEmits<{ select: []; maximize: [] }>()
 const list = useTemplateRef<HTMLElement>('list')
-const { fileTree: tree } = storeToRefs(usePreferences())
+const preferences = usePreferences()
+const { fileTree: tree } = storeToRefs(preferences)
 const collapsed = ref(new Set<string>())
 const rows = computed(() => tree.value
   ? fileTreeRows(store.files, collapsed.value)
@@ -25,10 +26,26 @@ function select(file: Change) {
   emit('select')
   if (store.file?.index !== file.index || store.diffError) void store.selectFile(file)
 }
+
+/** Alt+Up/Down navigation over changed files, independent of tree folders. */
+function step(direction: number) {
+  const files = store.files
+  if (!files.length) return
+  const index = files.findIndex(file => file.index === store.file?.index)
+  const base = index < 0 ? (direction > 0 ? -1 : files.length) : index
+  const next = files[Math.max(0, Math.min(files.length - 1, base + direction))]
+  if (!next) return
+  select(next)
+  const row = rows.value.findIndex(item => item.file?.index === next.index)
+  if (row >= 0) virtual.value.scrollToIndex(row, { align: 'auto' })
+}
+
+defineExpose({ step })
+
 const virtual = useVirtualizer(computed(() => ({
   count: rows.value.length,
   getScrollElement: () => list.value,
-  estimateSize: () => 34,
+  estimateSize: () => preferences.rowHeight,
   getItemKey: index => rows.value[index]?.file ? 'file:' + rows.value[index]?.file?.index : 'folder:' + rows.value[index]?.path,
   overscan: 8,
 })))

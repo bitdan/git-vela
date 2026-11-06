@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref, useTemplateRef, watchPostEffect } from 'vue'
+import { onUnmounted, ref, useTemplateRef, watchPostEffect } from 'vue'
 import { EditorState } from '@codemirror/state'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { MergeView, getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView } from '@codemirror/merge'
 import { textHighlighting, textLanguage } from '../editor/textLanguage'
+import { useKeymap } from '../../stores/keymap'
+import { registerDiffNavigation } from './diffNavigation'
 import type { Comparison } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ comparison: Comparison; path: string; dark: boolean }>()
+const keymap = useKeymap()
 const host = useTemplateRef<HTMLDivElement>('host')
 const unified = ref(false)
 const changes = ref(0)
@@ -47,16 +50,18 @@ function navigate(direction: number) {
   const command = direction > 0 ? goToNextChunk : goToPreviousChunk
   command(editor)
 }
+
+onUnmounted(registerDiffNavigation(navigate))
 </script>
 
 <template>
-  <div class="text-diff" @keydown.alt.up.prevent="navigate(-1)" @keydown.alt.down.prevent="navigate(1)">
+  <div class="text-diff">
     <div class="diff-tools">
       <span class="muted">{{ changes }} change{{ changes === 1 ? '' : 's' }}</span>
       <div class="diff-actions">
         <button :aria-pressed="unified" @click="unified = !unified">{{ unified ? 'Side by side' : 'Unified' }}</button>
-        <button :disabled="!changes" title="Previous change (Alt+Up)" @click="navigate(-1)">↑</button>
-        <button :disabled="!changes" title="Next change (Alt+Down)" @click="navigate(1)">↓</button>
+        <button :disabled="!changes" :title="'Previous hunk (' + (keymap.bindings.previousHunk || 'unbound') + ')'" @click="navigate(-1)">↑</button>
+        <button :disabled="!changes" :title="'Next hunk (' + (keymap.bindings.nextHunk || 'unbound') + ')'" @click="navigate(1)">↓</button>
       </div>
     </div>
     <div v-if="!unified" class="diff-labels"><span>Before</span><span>After</span></div>

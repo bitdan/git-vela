@@ -46,6 +46,10 @@ export function CompareDiff(path: string, before: string, after: string, index: 
     return $Call.ByID(3708209960, path, before, after, index);
 }
 
+export function CompareDiffExpanded(path: string, before: string, after: string, index: number): $CancellablePromise<git$0.Comparison> {
+    return $Call.ByID(463619969, path, before, after, index);
+}
+
 export function CompareFiles(path: string, before: string, after: string): $CancellablePromise<git$0.Change[] | null> {
     return $Call.ByID(376826482, path, before, after);
 }
@@ -64,6 +68,13 @@ export function DeleteBranch(path: string, name: string): $CancellablePromise<vo
 
 export function Diff(path: string, commit: string, parent: number, file: number): $CancellablePromise<git$0.Comparison> {
     return $Call.ByID(2296331547, path, commit, parent, file);
+}
+
+/**
+ * DiffExpanded is only called after the user confirms loading a large preview.
+ */
+export function DiffExpanded(path: string, commit: string, parent: number, file: number): $CancellablePromise<git$0.Comparison> {
+    return $Call.ByID(3690685314, path, commit, parent, file);
 }
 
 export function EditableFiles(path: string): $CancellablePromise<string[] | null> {
@@ -234,12 +245,20 @@ export function WorkingDiff(path: string, file: string, staged: boolean): $Cance
     return $Call.ByID(1080875372, path, file, staged);
 }
 
+export function WorkingDiffExpanded(path: string, file: string, staged: boolean): $CancellablePromise<git$0.FilePreview> {
+    return $Call.ByID(1395988829, path, file, staged);
+}
+
 export function WorkingHunks(path: string, file: string, staged: boolean): $CancellablePromise<git$0.HunkPatch> {
     return $Call.ByID(3923986152, path, file, staged);
 }
 
 export function WorkingPreview(path: string, file: string): $CancellablePromise<git$0.FilePreview> {
     return $Call.ByID(4271850065, path, file);
+}
+
+export function WorkingPreviewExpanded(path: string, file: string): $CancellablePromise<git$0.FilePreview> {
+    return $Call.ByID(1607307580, path, file);
 }
 
 export function Worktrees(path: string): $CancellablePromise<git$0.Worktree[] | null> {

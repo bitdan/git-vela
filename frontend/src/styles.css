@@ -18,6 +18,7 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   --syntax-keyword: #e3a677; --syntax-string: #9ac7a5; --syntax-literal: #caa9e5;
   --syntax-type: #8ccacf; --syntax-function: #96bdf6; --syntax-property: #e0a8be;
   --chrome-gap: 8px; --panel-radius: 10px;
+  --row-height: 34px; --repo-row-height: 28px; --working-row-height: 26px;
   background: var(--bg); color: var(--text); height: 100%;
   display: flex; flex-direction: column;
 }
@@ -30,6 +31,13 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   --syntax-keyword: #943e32; --syntax-string: #27653b; --syntax-literal: #614196;
   --syntax-type: #236a72; --syntax-function: #225cb0; --syntax-property: #8b3f65;
 }
+.shell[data-density="compact"] {
+  --row-height: 27px; --repo-row-height: 22px; --working-row-height: 22px;
+}
+.shell[data-density="compact"] .panel-header { padding: 3px 10px; }
+.shell[data-density="compact"] .log-heading { padding-block: 3px; }
+.shell[data-density="compact"] .working-row { padding-block: 2px; }
+.shell[data-density="compact"] .chip { padding: 0 4px; font-size: 9px; }
 .topbar, .statusbar {
   display: flex; align-items: center; gap: 8px; flex: none;
   padding: 8px 12px; background: var(--bg);
@@ -88,7 +96,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .working-panel details > summary { padding: 4px 10px; color: var(--muted); cursor: pointer; }
 .working-panel details small { margin-left: 4px; }
 .working-row {
-  display: flex; align-items: center; gap: 6px; width: 100%; height: 26px;
+  display: flex; align-items: center; gap: 6px; width: 100%; height: var(--working-row-height);
   text-align: left; padding: 0 8px 0 18px; border: 0; border-radius: 0; background: transparent;
 }
 .index-actions { display: flex; gap: 4px; }
@@ -122,7 +130,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .log-heading > :first-child { padding-left: 8px; }
 .virtual-content { position: relative; }
 .commit-row, .file-row {
-  position: absolute; top: 0; left: 0; width: 100%; height: 34px;
+  position: absolute; top: 0; left: 0; width: 100%; height: var(--row-height);
   border: 0; border-radius: 0;
   background: var(--panel); padding: 0 8px 0 0;
 }
@@ -444,7 +452,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   inset-inline: 0;
   top: 0;
   width: 100%;
-  height: 28px;
+  height: var(--repo-row-height);
   padding: 3px 10px;
   border: 0;
   border-radius: 0;
@@ -532,7 +540,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .blame-row {
   position: absolute;
   inset: 0 auto auto 0;
-  height: 27px;
+  height: var(--working-row-height);
   width: max-content;
   min-width: 100%;
   grid-template-columns: 5ch 115px 8ch auto;
@@ -590,3 +598,61 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 
 .conflict-version > strong { padding: 4px 7px; background: var(--header); }
 .conflict-version pre { flex: 1; overflow: auto; margin: 0; padding: 5px 7px; }
+
+/* Command palette */
+.palette-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 11vh; background: #0006;
+}
+.palette {
+  display: flex; flex-direction: column;
+  width: min(620px, 92vw); max-height: 70vh;
+  overflow: hidden; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 18px 50px #0006;
+}
+.palette-search { display: flex; align-items: center; gap: 8px; flex: none; padding: 10px; border-bottom: 1px solid var(--border); }
+.palette-search > span { color: var(--muted); font-size: 20px; }
+.palette-search input { flex: 1; min-width: 0; padding: 7px 9px; font-size: 14px; }
+.palette-search button { flex: none; font-size: 11px; color: var(--muted); }
+.palette-results { flex: 1; min-height: 0; overflow: auto; padding: 5px; }
+.palette-group {
+  display: block; padding: 7px 9px 3px;
+  color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+}
+.palette-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; padding: 6px 9px;
+  border-color: transparent; background: transparent;
+}
+.palette-item.active { background: var(--select); color: var(--accent); }
+.palette-item kbd {
+  flex: none; font: 11px Consolas, "Cascadia Code", monospace; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+}
+.palette-footer { flex: none; padding: 6px 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+
+/* Shortcut editor */
+.preferences-panel { min-width: 262px; max-height: calc(100vh - 70px); overflow: auto; }
+.shortcut-details { border-top: 1px solid var(--border); padding-top: 6px; }
+.shortcut-details > summary { cursor: pointer; }
+.shortcut-settings { display: grid; gap: 8px; margin-top: 6px; width: min(350px, 70vw); }
+.shortcut-settings > p { font-size: 11px; }
+.shortcut-group { display: grid; gap: 3px; }
+.shortcut-group > strong { color: var(--muted); font-size: 11px; }
+.shortcut-group label { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; font-size: 12px; }
+.shortcut-group label button { min-width: 100px; font-size: 11px; text-align: center; }
+.shortcut-group button.recording { color: var(--accent); border-color: var(--accent); }
+
+/* Image previews */
+.image-diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; flex: 1; min-height: 0; padding: 8px; }
+.image-diff figure { display: flex; flex-direction: column; min-width: 0; min-height: 0; margin: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.image-diff figcaption { flex: none; padding: 4px 8px; background: var(--header); color: var(--muted); font-size: 11px; }
+.image-frame {
+  flex: 1; min-height: 0; overflow: auto; display: grid; place-items: start center; padding: 8px;
+  background: repeating-conic-gradient(var(--field) 0% 25%, var(--panel) 0% 50%) 50% / 16px 16px;
+}
+.image-frame img, .image-preview img { max-width: 100%; height: auto; }
+.image-preview { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 12px; background: var(--field); }
+.notice > button { margin-inline-start: 6px; }

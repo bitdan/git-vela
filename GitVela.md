@@ -5,6 +5,31 @@
 > **文档版本**：v1.0 · 2026-11-06  
 > **首发平台**：Windows 10/11（AMD64），预留 macOS / Linux 支持
 
+## 0. 实现状态核对（2026-11-06）
+
+> 本节记录当前仓库与 v1.0 方案的差异；路线图勾选状态见 §10。文档其余章节保留原始设计意图。
+
+**已完成**：M0、M1、M2 全部；M3 的 File History / Blame、Cherry-pick / Revert / Reset、分支与提交对比、交互式 Rebase 计划、冲突检测与 Base/Ours/Theirs 解决面板、Hunk / 行级 Stage；M4 的命令面板、可配置快捷键、会话恢复、全屏与紧凑行高、10,000 Commit 基准。
+
+**本轮新增（M4 与 §3.3 / §6.2 细节补齐）**：
+
+- **可配置快捷键**：`frontend/src/stores/shortcuts.ts` / `keymap.ts` 与 Settings 面板，提供 16 个命令的录制、冲突检测、解绑与恢复默认；全局 `Alt+Up/Down` 跳前后变更文件，`Alt+Shift+Up/Down` 跳 Diff hunk。
+- **命令面板**（Ctrl+K）：聚合 Git 操作、视图设置、最近仓库和分支 / 标签跳转，支持模糊排序与键盘导航。
+- **会话恢复**：重启后重开上次仓库、选中提交（或比较区间）与文件、侧栏与视图；可在 Settings 关闭或清除。
+- **紧凑行高与窗口全屏**：虚拟列表与 Canvas 图谱行高随密度切换。
+- **大文件显式续载**：默认 512 KiB / 12,000 行，点击「Load full preview」后放宽到 8 MiB / 120,000 行；新增 Go `...Expanded` 服务方法并重新生成 Wails 绑定。
+- **图片 Diff**：按魔数识别 PNG / JPEG / GIF / WebP / BMP，Before / After 双栏或工作区图片预览；其他二进制仍降级。
+- **测试**：Go（图片 / 大文件、四父 Octopus Merge 图谱、`index.lock`）、Vitest（快捷键、会话、命令排序、Diff 导航通道）、桌面冒烟 `GITVELA_SMOKE_M4=1`。
+
+**与方案的偏差（事实记录）**：
+
+- §2：未引入 Tailwind CSS 4 与 Reka UI；样式为手写 CSS + CSS Variables，菜单使用原生 `<details>` 与自研控件。
+- §2 / §9：设置与最近仓库保存在 WebView `localStorage`，未建立 `internal/settings` 的 JSON 文件层。
+- §1.3 / §14：后续迭代已实现工作区文本编辑器、GitHub 发布和交互式 Rebase 计划，超出「首版不做」清单；「不要提前实现 Push / Rebase」的阶段性约束已被后续需求取代。
+- §10 M4：多仓库同时管理、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
+
+**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0）**：`go test ./...`、`go vet ./...`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（25 项）、`npm --prefix frontend run build`、`wails3 build`、`node tests/desktop-smoke.mjs` 与 `GITVELA_SMOKE_M4=1 node tests/desktop-smoke.mjs` 均通过。注意 `go test ./...` 不要与前端测试并行运行：负载较高时 Git CLI 的 20 s 超时偶发失败，单独运行稳定通过。
+
 ## 1. 项目概述
 
 ### 1.1 产品定位
@@ -51,6 +76,8 @@ GitVela 不构建工程索引，不提供语言服务器，不尝试替代 IDE�
 | 测试 | Go testing + Vitest + 端到端测试 | Git 核心、界面交互、真实仓库回归 |
 
 **技术决策**：首版不引入 `go-git`、`libgit2` 或数据库。先把 Git CLI 解析、调度和错误处理做好；在性能数据证明必要后，才替换热点读取路径。
+
+**落地偏差（2026-11-06）**：Tailwind CSS 4 与 Reka UI 未引入，实际使用手写 CSS + CSS Variables、原生 `<details>` 与少量自研控件；配置未走 JSON 文件，而是 WebView `localStorage`。其余选型（Wails 3.1.0、Go、Pinia、TanStack Virtual、CodeMirror 6 Merge、fsnotify、Canvas 图谱、系统 Git CLI）与方案一致。
 
 ## 3. 界面与交互
 
@@ -315,42 +342,43 @@ gitvela/
 
 ### M0 — 工程底座
 
-- [ ] 使用 Wails 3 Vue + TypeScript 模板初始化。
-- [ ] 配置 Pinia、主题、日志、错误边界与设置管理。
-- [ ] 实现 GitRunner，校验 `git --version`，提供仓库打开对话框。
-- [ ] 定义 Wails Service 与稳定 DTO，生成前端绑定。
-- [ ] 添加 Go 单元测试、前端类型检查与构建检查。
+- [x] 使用 Wails 3 Vue + TypeScript 模板初始化。
+- [x] 配置 Pinia、主题、日志、错误边界与设置管理（设置改为 `localStorage`）。
+- [x] 实现 GitRunner，校验 `git --version`，提供仓库打开对话框。
+- [x] 定义 Wails Service 与稳定 DTO，生成前端绑定。
+- [x] 添加 Go 单元测试、前端类型检查与构建检查。
 
 ### M1 — IDEA 风格的只读 Git MVP（第一交付目标）
 
-- [ ] 选择本地仓库，展示仓库和分支信息。
-- [ ] Git Log 列表虚拟化、增量加载、搜索。
-- [ ] 提交 DAG Lane 算法与 Canvas 绘制。
-- [ ] 选择提交查看 Changed Files（包含 Merge/根提交）。
-- [ ] CodeMirror 双栏 Diff + 文件变更导航。
-- [ ] 窗口分隔条、主题、键盘导航、布局持久化。
-- [ ] 外部操作更新后刷新状态，过期请求不会覆盖当前视图。
+- [x] 选择本地仓库，展示仓库和分支信息。
+- [x] Git Log 列表虚拟化、增量加载、搜索。
+- [x] 提交 DAG Lane 算法与 Canvas 绘制。
+- [x] 选择提交查看 Changed Files（包含 Merge/根提交）。
+- [x] CodeMirror 双栏 Diff + 文件变更导航（`Alt+Up/Down`、hunk 导航）。
+- [x] 窗口分隔条、主题、键盘导航、布局持久化。
+- [x] 外部操作更新后刷新状态，过期请求不会覆盖当前视图。
 
 ### M2 — 日常操作
 
-- [ ] Local Changes、Stage / Unstage（先整文件）。
-- [ ] Commit、Amend、Stash。
-- [ ] Create / Checkout / Delete Branch。
-- [ ] Fetch、Pull、Push（包含认证、错误反馈）。
-- [ ] Worktree 列表、创建、打开、删除。
+- [x] Local Changes、Stage / Unstage（先整文件）。
+- [x] Commit、Amend、Stash。
+- [x] Create / Checkout / Rename / Delete Branch。
+- [x] Fetch、Pull、Push（包含认证、错误反馈）。
+- [x] Worktree 列表、创建、打开、删除。
 
 ### M3 — 高级 Git
 
-- [ ] 文件历史和 Blame。
-- [ ] Cherry-pick、Revert、Reset。
-- [ ] 分支和提交对比、多提交选择。
-- [ ] 交互式 Rebase、Merge 冲突检测及三方编辑。
-- [ ] Hunk/行级 Stage、子模块和 LFS 增强支持。
+- [x] 文件历史和 Blame。
+- [x] Cherry-pick、Revert、Reset。
+- [x] 分支和提交对比；多提交选择尚未实现。
+- [x] 交互式 Rebase 计划、Merge 冲突检测与 Base/Ours/Theirs 解决面板（非完整三方 Merge 编辑器）。
+- [x] Hunk/行级 Stage、子模块跳转与 LFS 指针展示（未实现真实 LFS smudge）。
 
 ### M4 — 产品化
 
-- [ ] 大仓库性能基准、内存与冷启动分析。
-- [ ] 多仓库管理、会话恢复、命令面板与可配置快捷键。
+- [ ] 大仓库性能基准（已有 10,000 Commit 基准）、内存与冷启动分析（缺冷启动、内存、60 FPS、10 万提交实测）。
+- [x] 会话恢复、命令面板与可配置快捷键；多仓库同时管理尚未实现。
+- [x] 紧凑行高、窗口全屏（§3.3 补充项）。
 - [ ] Windows 安装/便携包、代码签名、自动更新评估。
 - [ ] macOS/Linux 兼容测试与正式发布。
 

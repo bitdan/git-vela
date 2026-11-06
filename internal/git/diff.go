@@ -3,14 +3,51 @@ package git
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
 
-const previewBytes = 512 << 10
-const previewLines = 12000
+const (
+	previewBytes  = 512 << 10
+	previewLines  = 12000
+	expandedBytes = 8 << 20
+	expandedLines = 120000
+)
+
+// previewLimits returns the per-side byte and line limits of a preview.
+// The expanded limits are only used after the user explicitly asks for them,
+// so browsing a large file never loads megabytes into the WebView by default.
+func previewLimits(expanded bool) (int, int) {
+	if expanded {
+		return expandedBytes, expandedLines
+	}
+	return previewBytes, previewLines
+}
+
+// imageDataURL recognises raster formats from their magic bytes. The result is
+// rendered by an <img> element, which does not execute the embedded content.
+func imageDataURL(blob []byte) (string, bool) {
+	mime := ""
+	switch {
+	case bytes.HasPrefix(blob, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}):
+		mime = "image/png"
+	case bytes.HasPrefix(blob, []byte{0xff, 0xd8, 0xff}):
+		mime = "image/jpeg"
+	case bytes.HasPrefix(blob, []byte("GIF87a")), bytes.HasPrefix(blob, []byte("GIF89a")):
+		mime = "image/gif"
+	case len(blob) >= 12 && bytes.HasPrefix(blob, []byte("RIFF")) && bytes.Equal(blob[8:12], []byte("WEBP")):
+		mime = "image/webp"
+	case bytes.HasPrefix(blob, []byte("BM")):
+		mime = "image/bmp"
+	}
+	if mime == "" {
+		return "", false
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(blob), true
+}
 
 type Change struct {
 	Index   int    `json:"index"`
@@ -89,22 +126,40 @@ func readTreeChanges(ctx context.Context, dir string, args []string) ([]Change, 
 }
 
 func Diff(ctx context.Context, dir, commit string, parent int, selected Change) (Comparison, error) {
+	return diffWithLimit(ctx, dir, commit, parent, selected, false)
+}
+
+// DiffExpanded loads a comparison using the larger, user-confirmed limits.
+func DiffExpanded(ctx context.Context, dir, commit string, parent int, selected Change) (Comparison, error) {
+	return diffWithLimit(ctx, dir, commit, parent, selected, true)
+}
+
+func diffWithLimit(ctx context.Context, dir, commit string, parent int, selected Change, expanded bool) (Comparison, error) {
 	files, err := Files(ctx, dir, commit, parent)
 	if err != nil {
 		return Comparison{}, err
 	}
-	return compareFile(ctx, dir, files, selected.Index)
+	return compareFile(ctx, dir, files, selected.Index, expanded)
 }
 
 func CompareDiff(ctx context.Context, dir, before, after string, index int) (Comparison, error) {
+	return compareDiffWithLimit(ctx, dir, before, after, index, false)
+}
+
+// CompareDiffExpanded loads a revision comparison using the expanded limits.
+func CompareDiffExpanded(ctx context.Context, dir, before, after string, index int) (Comparison, error) {
+	return compareDiffWithLimit(ctx, dir, before, after, index, true)
+}
+
+func compareDiffWithLimit(ctx context.Context, dir, before, after string, index int, expanded bool) (Comparison, error) {
 	files, err := CompareFiles(ctx, dir, before, after)
 	if err != nil {
 		return Comparison{}, err
 	}
-	return compareFile(ctx, dir, files, index)
+	return compareFile(ctx, dir, files, index, expanded)
 }
 
-func compareFile(ctx context.Context, dir string, files []Change, index int) (Comparison, error) {
+func compareFile(ctx context.Context, dir string, files []Change, index int, expanded bool) (Comparison, error) {
 	if index < 0 || index >= len(files) {
 		return Comparison{}, errors.New("file is unavailable in this commit comparison")
 	}
@@ -112,9 +167,9 @@ func compareFile(ctx context.Context, dir string, files []Change, index int) (Co
 	if file.oldMode == "160000" || file.newMode == "160000" {
 		return Comparison{Kind: "submodule", Before: gitlink(file.oldMode, file.oldID), After: gitlink(file.newMode, file.newID)}, nil
 	}
-	sides, kind, err := blobs(ctx, dir, file)
+	sides, kind, err := blobs(ctx, dir, file, expanded)
 	if err != nil || kind != "text" {
-		return Comparison{Kind: kind}, err
+		return Comparison{Kind: kind, Before: sides[0], After: sides[1]}, err
 	}
 	if strings.HasPrefix(sides[0], "version https://git-lfs.github.com/spec/v1\n") || strings.HasPrefix(sides[1], "version https://git-lfs.github.com/spec/v1\n") {
 		kind = "lfs"
@@ -129,8 +184,9 @@ func gitlink(mode, id string) string {
 	return ""
 }
 
-func blobs(ctx context.Context, dir string, file Change) ([2]string, string, error) {
-	var sides [2]string
+func blobs(ctx context.Context, dir string, file Change, expanded bool) ([2]string, string, error) {
+	var sides, images [2]string
+	maxBytes, maxLines := previewLimits(expanded)
 	var input strings.Builder
 	ids := [2]string{file.oldID, file.newID}
 	for i, mode := range [2]string{file.oldMode, file.newMode} {
@@ -140,13 +196,14 @@ func blobs(ctx context.Context, dir string, file Change) ([2]string, string, err
 			input.WriteString(ids[i] + "\n")
 		}
 	}
-	data, err := run(ctx, dir, []byte(input.String()), 2*previewBytes+512, "cat-file", "--batch")
+	data, err := run(ctx, dir, []byte(input.String()), 2*maxBytes+512, "cat-file", "--batch")
 	if errors.Is(err, errLimit) {
 		return sides, "large", nil
 	}
 	if err != nil {
 		return sides, "", err
 	}
+	image := false
 	for i, id := range ids {
 		if id == "" {
 			continue
@@ -160,18 +217,25 @@ func blobs(ctx context.Context, dir string, file Change) ([2]string, string, err
 		if err != nil || size < 0 || size >= len(tail) || tail[size] != '\n' {
 			return sides, "", errors.New("invalid Git blob size")
 		}
-		if size > previewBytes {
+		if size > maxBytes {
 			return sides, "large", nil
 		}
 		blob := tail[:size]
-		if bytes.IndexByte(blob, 0) >= 0 || !utf8.Valid(blob) {
+		if url, ok := imageDataURL(blob); ok {
+			images[i] = url
+			image = true
+		} else if bytes.IndexByte(blob, 0) >= 0 || !utf8.Valid(blob) {
 			return sides, "binary", nil
+		} else {
+			if bytes.Count(blob, []byte{'\n'}) > maxLines || bytes.Count(blob, []byte{'\r'}) > maxLines {
+				return sides, "large", nil
+			}
+			sides[i] = string(blob)
 		}
-		if bytes.Count(blob, []byte{'\n'}) > previewLines || bytes.Count(blob, []byte{'\r'}) > previewLines {
-			return sides, "large", nil
-		}
-		sides[i] = string(blob)
 		data = tail[size+1:]
+	}
+	if image {
+		return images, "image", nil
 	}
 	return sides, "text", nil
 }

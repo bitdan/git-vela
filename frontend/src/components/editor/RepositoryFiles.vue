@@ -6,9 +6,11 @@ import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
 import { fileTreeRows } from '../changed-files/fileTree'
 import { LatestRequest } from '../../stores/latestRequest'
+import { usePreferences } from '../../stores/preferences'
 
 const props = defineProps<{ path: string; active: boolean; selected?: string }>()
 const emit = defineEmits<{ open: [path: string] }>()
+const preferences = usePreferences()
 const files = shallowRef<string[]>([])
 const query = ref('')
 const collapsed = ref(new Set<string>())
@@ -31,7 +33,7 @@ function toggleFolder(path: string) {
 const virtual = useVirtualizer(computed(() => ({
   count: rows.value.length,
   getScrollElement: () => props.active ? list.value : null,
-  estimateSize: () => 28,
+  estimateSize: () => preferences.repoRowHeight,
   overscan: 10,
   getItemKey: index => {
     const row = rows.value[index]

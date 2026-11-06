@@ -38,6 +38,7 @@ export const useWorkspace = defineStore('workspace', () => {
   const loadingFiles = ref(false)
   const loadingDiff = ref(false)
   const branchRefs = computed(() => refs.value.filter(item => /^refs\/(heads|remotes)\//.test(item.name)))
+  const tagRefs = computed(() => refs.value.filter(item => item.name.startsWith('refs/tags/')))
   const openRequest = new LatestRequest()
   const historyRequest = new LatestRequest()
   const filesRequest = new LatestRequest()
@@ -141,7 +142,6 @@ export const useWorkspace = defineStore('workspace', () => {
       const list = await call
       if (!current()) return
       files.value = list ?? []
-      if (files.value.length) void selectFile(files.value[0])
     } catch (error) {
       if (current()) filesError.value = String(error)
     } finally {
@@ -187,7 +187,7 @@ export const useWorkspace = defineStore('workspace', () => {
   }
 
   return {
-    repository, commits, branchRefs, graphWidth, more, selected, parent, files, file, comparison,
+    repository, commits, branchRefs, tagRefs, graphWidth, more, selected, parent, files, file, comparison,
     recent, gitVersion, repoError, logError, filesError, diffError, opening, loading, loadingFiles, loadingDiff,
     detectGit, open, choose, loadPage, selectCommit, selectFile, checkForChanges,
   }

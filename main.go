@@ -28,7 +28,7 @@ func main() {
 		Height:           880,
 		MinWidth:         780,
 		MinHeight:        560,
-		BackgroundColour: application.NewRGB(17, 22, 31),
+		BackgroundColour: application.NewRGB(255, 255, 255),
 		URL:              "/",
 	})
 	if err := desktop.Run(); err != nil {

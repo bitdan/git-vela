@@ -5,6 +5,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 const endpoint = process.env.GITVELA_CDP_URL ?? 'http://127.0.0.1:9331'
 const repo = process.argv[2] ?? process.cwd()
 const screenshot = process.argv[3]
+const workingFile = process.argv[4]
+const testIndex = process.argv[5] === '--index'
+const testCommit = process.argv[5] === '--commit'
+const testBranch = process.argv[5] === '--branch'
 
 async function until(action, description) {
   const deadline = Date.now() + 30000
@@ -73,6 +77,91 @@ try {
     input.form.requestSubmit()
   })()`)
   await until(() => evaluate("document.querySelector('.commit-row canvas')?.width > 0"), 'real commit history and a rendered graph')
+  assert.equal(await evaluate(`(() => {
+    const rect = selector => document.querySelector(selector).getBoundingClientRect()
+    const working = rect('.working-panel')
+    const preview = rect('.preview-panel')
+    const branches = rect('.branch-panel')
+    const history = rect('.log-panel')
+    const changes = rect('.files-panel')
+    return working.y === preview.y && working.x < preview.x && working.bottom <= history.y &&
+      branches.y === history.y && history.y === changes.y && branches.x < history.x && history.x < changes.x
+  })()`), true)
+  assert.equal(await evaluate("document.querySelector('.shell').dataset.theme"), 'light')
+  if (workingFile) {
+    await until(() => evaluate(`(() => {
+      const row = [...document.querySelectorAll('.working-row')].find(row => row.title === ${JSON.stringify(workingFile)})
+      if (!row) return false
+      row.click()
+      return true
+    })()`), 'working file in the upper left')
+    await until(() => evaluate("document.querySelector('.preview-panel .working-preview')?.textContent.length > 0"), 'working file content in the upper right')
+  }
+  if (testIndex) {
+    const buttons = "Array.from(document.querySelectorAll('.index-actions button'))"
+    await evaluate(buttons + ".find(button => button.innerText === 'Stage').click()")
+    await until(() => evaluate(buttons + ".some(button => button.innerText === 'Unstage' && !button.disabled)"), 'the selected file staged')
+    await evaluate(buttons + ".find(button => button.innerText === 'Unstage').click()")
+    await until(() => evaluate(buttons + ".some(button => button.innerText === 'Stage' && !button.disabled)"), 'the selected file unstaged')
+  }
+  if (testCommit) {
+    for (const [tab, line] of [['Staged diff', '+staged version'], ['Unstaged diff', '+working version']]) {
+      await evaluate(`[...document.querySelectorAll('.preview-tabs button')].find(button => button.innerText === ${JSON.stringify(tab)}).click()`)
+      await until(() => evaluate(`document.querySelector('.patch')?.textContent.includes(${JSON.stringify(line)})`), tab)
+    }
+    await evaluate(`(() => {
+      const input = document.querySelector('#commit-message')
+      input.value = 'Commit from desktop'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    await until(() => evaluate("!document.querySelector('.commit-actions button').disabled"), 'commit enabled')
+    await evaluate("document.querySelector('.commit-actions button').click()")
+    await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('Commit from desktop'))"), 'new commit in history')
+  }
+  if (testBranch) {
+    await evaluate("document.querySelector('.branch-panel .panel-header button').click()")
+    await evaluate(`(() => {
+      const input = document.querySelector('[aria-label="New branch name"]')
+      input.value = 'feature/desktop'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await until(() => evaluate("!!document.querySelector('[title=\"Switch to feature/desktop\"]')"), 'new local branch')
+    assert.equal(await evaluate("document.querySelector('.branch-panel .active')?.textContent.trim()"), 'main')
+    await evaluate("document.querySelector('[title=\"Switch to feature/desktop\"]').click()")
+    await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'feature/desktop'"), 'new active branch')
+  }
+  if (testBranch) {
+    const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
+    const action = (label) => evaluate(`[...document.querySelectorAll('.branch-panel .new-branch button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
+    await click('[title="Switch to main"]')
+    await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'main'"), 'main active again')
+    await click('[aria-label="Manage feature/desktop"]')
+    await action('Rename')
+    await evaluate(`(() => {
+      const input = document.querySelector('[aria-label="New branch name"]')
+      input.value = 'feature/renamed'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.form.requestSubmit()
+    })()`)
+    await until(() => evaluate("!!document.querySelector('[aria-label=\"Manage feature/renamed\"]')"), 'renamed branch')
+    await click('[aria-label="Manage feature/renamed"]')
+    await action('Delete…')
+    await action('Cancel')
+    assert.equal(await evaluate("!!document.querySelector('[aria-label=\"Manage feature/renamed\"]')"), true)
+    await click('[aria-label="Manage feature/renamed"]')
+    await action('Delete…')
+    await action('Delete branch')
+    await until(() => evaluate("!document.querySelector('[aria-label=\"Manage feature/renamed\"]')"), 'confirmed deletion')
+    await evaluate(`(() => {
+      const picker = document.querySelector('[aria-label="Reference type"]')
+      picker.value = 'tags'
+      picker.dispatchEvent(new Event('change', { bubbles: true }))
+    })()`)
+    await until(() => evaluate("!!document.querySelector('[title=\"refs/tags/v1.0\"]')"), 'repository tag listed')
+    await click('[title="refs/tags/v1.0"]')
+    await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('Initialize GitVela')"), 'tag commit selected')
+  }
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
   assert.deepEqual(alerts, [])
 

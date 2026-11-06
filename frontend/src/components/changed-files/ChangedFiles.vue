@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useWorkspace } from '../../stores/workspace'
 
 const store = useWorkspace()
+const emit = defineEmits<{ select: [] }>()
 const list = useTemplateRef<HTMLElement>('list')
 const virtual = useVirtualizer(computed(() => ({
   count: store.files.length,
@@ -41,7 +42,7 @@ watch(() => [store.selected?.hash, store.parent], () => {
                 :class="{ active: store.file?.index === item.index }" :aria-pressed="store.file?.index === item.index"
                 :style="{ transform: 'translateY(' + item.start + 'px)' }"
                 :title="store.files[item.index].oldPath ? store.files[item.index].oldPath + ' → ' + store.files[item.index].path : store.files[item.index].path"
-                @click="store.selectFile(store.files[item.index])">
+                @click="emit('select'); store.selectFile(store.files[item.index])">
           <code class="file-status" :data-status="store.files[item.index].status">{{ store.files[item.index].status }}</code>
           <span class="ellipsis">{{ store.files[item.index].oldPath ? store.files[item.index].oldPath + ' → ' : '' }}{{ store.files[item.index].path }}</span>
         </button>

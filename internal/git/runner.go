@@ -29,11 +29,16 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func run(ctx context.Context, dir string, input []byte, limit int, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	return runWithTimeout(ctx, 20*time.Second, dir, input, limit, args...)
+}
+
+func runWithTimeout(ctx context.Context, timeout time.Duration, dir string, input []byte, limit int, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "--no-replace-objects"}, args...)...)
 	configureProcess(cmd)
 	cmd.Dir = dir
+	cmd.WaitDelay = 2 * time.Second
 	for _, entry := range cmd.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch strings.ToUpper(key) {

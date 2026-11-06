@@ -1,6 +1,6 @@
 # GitVela
 
-GitVela is a read-only Windows desktop client for browsing local Git repositories. Open a folder, select a commit, and choose a file to compare its two versions. For a merge commit, select the parent to compare against.
+GitVela is a Windows desktop client for local Git repositories. Browse history, compare files, stage or unstage whole files, and commit staged changes. The branch panel supports creating, switching, renaming, and safely deleting local branches, plus browsing tags. For a merge commit, select the parent to compare against.
 
 See [GitVela.md](GitVela.md) for the architecture and roadmap.
 

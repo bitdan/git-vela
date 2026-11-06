@@ -36,6 +36,11 @@ export interface Edge {
     "color": number;
 }
 
+export interface FilePreview {
+    "kind": string;
+    "content": string;
+}
+
 export interface GraphRow {
     "node": number;
     "color": number;
@@ -66,4 +71,12 @@ export interface Repository {
     "path": string;
     "name": string;
     "head": string;
+}
+
+export interface WorkingFile {
+    "path": string;
+    "oldPath": string;
+    "status": string;
+    "canStage": boolean;
+    "canUnstage": boolean;
 }

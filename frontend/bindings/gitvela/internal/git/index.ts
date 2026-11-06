@@ -7,9 +7,11 @@ export type {
     Comparison,
     Cursor,
     Edge,
+    FilePreview,
     GraphRow,
     Lane,
     Page,
     Ref,
-    Repository
+    Repository,
+    WorkingFile
 } from "./models.js";

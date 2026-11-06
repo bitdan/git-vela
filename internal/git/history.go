@@ -86,7 +86,7 @@ func readHistory(ctx context.Context, dir string, cursor Cursor, filter *History
 	add("HEAD", strings.TrimSpace(string(head)))
 	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		fields := strings.Split(line, "\x00")
-		if len(fields) != 6 {
+		if len(fields) != 6 || fields[0] == "refs/stash" {
 			continue
 		}
 		switch {

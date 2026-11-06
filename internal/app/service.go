@@ -191,3 +191,48 @@ func (*RepositoryService) SearchHistory(ctx context.Context, path string, filter
 func (*RepositoryService) CommitMessage(ctx context.Context, path, hash string) (string, error) {
 	return discardCancelled(git.ReadCommitMessage(ctx, path, hash))
 }
+
+func (s *RepositoryService) write(ctx context.Context, action func() error) error {
+	s.indexWrite.Lock()
+	defer s.indexWrite.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return action()
+}
+
+func (*RepositoryService) PrepareAmend(ctx context.Context, path string) (git.AmendTarget, error) {
+	return discardCancelled(git.PrepareAmend(ctx, path))
+}
+
+func (s *RepositoryService) AmendIndex(ctx context.Context, path, expectedHead, expectedRef, message string) error {
+	return s.write(ctx, func() error { return git.AmendIndex(ctx, path, expectedHead, expectedRef, message) })
+}
+
+func (*RepositoryService) Stashes(ctx context.Context, path string) ([]git.StashEntry, error) {
+	return discardCancelled(git.Stashes(ctx, path))
+}
+
+func (s *RepositoryService) SaveStash(ctx context.Context, path, message string, untracked bool) error {
+	return s.write(ctx, func() error { return git.SaveStash(ctx, path, message, untracked) })
+}
+
+func (s *RepositoryService) UpdateStash(ctx context.Context, path, action, selector, hash string, restoreIndex bool) error {
+	return s.write(ctx, func() error { return git.UpdateStash(ctx, path, action, selector, hash, restoreIndex) })
+}
+
+func (*RepositoryService) SyncState(ctx context.Context, path string) (git.SyncState, error) {
+	return discardCancelled(git.ReadSyncState(ctx, path))
+}
+
+func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string) error {
+	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote) })
+}
+
+func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string) error {
+	return s.write(ctx, func() error { return git.PullUpstream(ctx, path, branch, remote, target) })
+}
+
+func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string) error {
+	return s.write(ctx, func() error { return git.PushBranch(ctx, path, branch, remote, target) })
+}

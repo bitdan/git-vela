@@ -255,3 +255,57 @@ button.primary:hover:not(:disabled) { background: var(--accent); filter: brightn
   align-items: center;
   gap: 6px;
 }
+
+.daily-panel {
+  flex: none;
+  max-height: 32vh;
+  overflow: auto;
+  padding: 6px 12px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+}
+
+.daily-controls,
+.daily-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 4px 0;
+}
+
+.daily-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.daily-controls select {
+  max-width: min(42vw, 360px);
+}
+
+.daily-panel .notice {
+  padding: 4px 0;
+  margin: 0;
+}
+
+.daily-confirm,
+.amend-warning {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.amend-warning {
+  color: var(--muted);
+}
+
+@media (max-width: 950px) {
+  .topbar {
+    gap: 5px;
+    padding-inline: 8px;
+  }
+
+  .recent-repos {
+    max-width: 90px;
+  }
+}

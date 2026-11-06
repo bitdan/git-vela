@@ -101,7 +101,7 @@ func WatchRepository(ctx context.Context, root string, changed func()) (func(), 
 					schedule()
 				case parent == gitDir || parent == commonDir:
 					switch filepath.Base(event.Name) {
-					case "HEAD", "index", "packed-refs", "shallow", "reftable", "MERGE_HEAD", "rebase-merge", "rebase-apply":
+					case "HEAD", "index", "packed-refs", "config", "config.worktree", "shallow", "reftable", "MERGE_HEAD", "rebase-merge", "rebase-apply":
 						schedule()
 					}
 				}

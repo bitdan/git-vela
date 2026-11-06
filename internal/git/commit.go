@@ -7,7 +7,51 @@ import (
 	"time"
 )
 
+type AmendTarget struct {
+	Ref     string `json:"ref"`
+	Hash    string `json:"hash"`
+	Message string `json:"message"`
+}
+
+func PrepareAmend(ctx context.Context, dir string) (AmendTarget, error) {
+	if err := checkOperationState(ctx, dir); err != nil {
+		return AmendTarget{}, err
+	}
+	hash, err := headID(ctx, dir)
+	if err != nil {
+		return AmendTarget{}, err
+	}
+	ref, err := headReference(ctx, dir)
+	if err != nil {
+		return AmendTarget{}, err
+	}
+	message, err := ReadCommitMessage(ctx, dir, hash)
+	return AmendTarget{Hash: hash, Ref: ref, Message: message}, err
+}
+
+func AmendIndex(ctx context.Context, dir, expectedHead, expectedRef, message string) error {
+	if err := checkOperationState(ctx, dir); err != nil {
+		return err
+	}
+	head, err := headID(ctx, dir)
+	if err != nil {
+		return err
+	}
+	ref, err := headReference(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if head != expectedHead || ref != expectedRef {
+		return errors.New("HEAD changed; reopen the amend form to review the current commit")
+	}
+	return writeCommit(ctx, dir, message, "--amend")
+}
+
 func CommitIndex(ctx context.Context, dir, message string) error {
+	return writeCommit(ctx, dir, message)
+}
+
+func writeCommit(ctx context.Context, dir, message string, options ...string) error {
 	if strings.TrimSpace(message) == "" {
 		return errors.New("enter a commit message")
 	}
@@ -15,7 +59,8 @@ func CommitIndex(ctx context.Context, dir, message string) error {
 		return errors.New("invalid commit message")
 	}
 	// A commit without paths uses the index and still runs the configured Git hooks.
-	_, err := runWithTimeout(ctx, 2*time.Minute, dir, []byte(message), 1<<20, "commit", "-F", "-", "--cleanup=verbatim")
+	args := append([]string{"commit", "-F", "-", "--cleanup=verbatim"}, options...)
+	_, err := runWithTimeout(ctx, 2*time.Minute, dir, []byte(message), 1<<20, args...)
 	return err
 }
 

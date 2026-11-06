@@ -2,11 +2,11 @@
 import { computed } from 'vue'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
-const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string }>()
-const emit = defineEmits<{ select: [file: WorkingFile]; updateIndex: [staged: boolean]; commit: [] }>()
+const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; amendHash?: string }>()
+const emit = defineEmits<{ select: [file: WorkingFile]; updateIndex: [staged: boolean]; commit: []; startAmend: []; cancelAmend: [] }>()
 const message = defineModel<string>('message', { required: true })
 const stagedCount = computed(() => props.files.filter(file => file.canUnstage).length)
-const canCommit = computed(() => !!message.value.trim() && stagedCount.value > 0 && !props.indexBusy)
+const canCommit = computed(() => !!message.value.trim() && (stagedCount.value > 0 || !!props.amendHash) && !props.indexBusy)
 const groups = computed(() => {
   const byDirectory = new Map<string, WorkingFile[]>()
   for (const file of props.files) {
@@ -49,12 +49,17 @@ function state(status: string) {
       </details>
     </div>
     <form class="commit-form" @submit.prevent="canCommit && emit('commit')">
-      <label for="commit-message">Commit message</label>
+      <label for="commit-message">{{ amendHash ? 'Amend commit message' : 'Commit message' }}</label>
+      <p v-if="amendHash" class="amend-warning" role="status">
+        Rewrites HEAD {{ amendHash.slice(0, 8) }} and includes staged changes. Check whether the commit has already been shared.
+      </p>
       <textarea id="commit-message" v-model="message" placeholder="Describe the staged changes" rows="2"
                 :disabled="indexBusy" @keydown.ctrl.enter.prevent="canCommit && emit('commit')" />
       <div class="commit-actions">
         <span role="status">{{ stagedCount }} staged<template v-if="notice"> · {{ notice }}</template></span>
-        <button class="primary" type="submit" :disabled="!canCommit">Commit</button>
+        <button class="primary" type="submit" :disabled="!canCommit">{{ amendHash ? 'Amend commit' : 'Commit' }}</button>
+        <button v-if="amendHash" type="button" :disabled="indexBusy" @click="emit('cancelAmend')">Cancel amend</button>
+        <button v-else type="button" :disabled="indexBusy || !canAmend" @click="emit('startAmend')">Amend…</button>
       </div>
     </form>
   </section>

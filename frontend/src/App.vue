@@ -9,8 +9,10 @@ import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
+import StashPanel from './components/operations/StashPanel.vue'
+import SyncPanel from './components/operations/SyncPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
-import type { FilePreview, WorkingFile } from '../bindings/gitvela/internal/git'
+import type { AmendTarget, FilePreview, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
 import './styles.css'
 
@@ -69,6 +71,9 @@ const view = ref<FileView | 'commit'>('working')
 const diffExpanded = ref(false)
 const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
+const amendTarget = ref<AmendTarget>()
+let draftBeforeAmend = ''
+const dailyPanel = ref<'stash' | 'sync'>()
 const commitNotice = ref('')
 const patchLines = computed(() => preview.value?.content.replace(/\n$/, '').split('\n') ?? [])
 const workingTabs: { id: FileView; title: string }[] = [
@@ -108,6 +113,9 @@ watch(() => store.repository?.path, repo => {
   workingFiles.value = []
   workingSelection.value = undefined
   commitMessage.value = ''
+  amendTarget.value = undefined
+  draftBeforeAmend = ''
+  dailyPanel.value = undefined
   commitNotice.value = ''
   indexError.value = ''
   preview.value = undefined
@@ -217,18 +225,64 @@ async function updateIndex(staged: boolean) {
   }
 }
 
-async function commitChanges() {
+async function startAmend() {
   const repo = store.repository?.path
-  const message = commitMessage.value
-  if (!repo || indexBusy.value || !message.trim() || !workingFiles.value.some(file => file.canUnstage)) return
+  if (!repo || indexBusy.value || store.opening || amendTarget.value) return
   indexBusy.value = true
   indexError.value = ''
   commitNotice.value = ''
   try {
-    await api.CommitIndex(repo, message)
+    const target = await api.PrepareAmend(repo)
     if (repo !== store.repository?.path) return
-    commitMessage.value = ''
-    commitNotice.value = 'Commit created'
+    draftBeforeAmend = commitMessage.value
+    amendTarget.value = target
+    commitMessage.value = target.message
+    void nextTick(() => document.getElementById('commit-message')?.focus())
+  } catch (cause) {
+    if (repo === store.repository?.path) indexError.value = String(cause)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+function cancelAmend() {
+  if (!amendTarget.value) return
+  amendTarget.value = undefined
+  commitMessage.value = draftBeforeAmend
+  draftBeforeAmend = ''
+  indexError.value = ''
+}
+
+async function refreshAfterDailyOperation() {
+  const repo = store.repository?.path
+  if (!repo) return
+  await Promise.all([store.open(repo, true), loadWorking()])
+  if (repo === store.repository?.path && workingSelection.value && view.value !== 'commit') {
+    await selectView(view.value, true)
+  }
+}
+
+function toggleDailyPanel(panel: 'stash' | 'sync') {
+  if (indexBusy.value || store.opening) return
+  dailyPanel.value = dailyPanel.value === panel ? undefined : panel
+}
+
+async function commitChanges() {
+  const repo = store.repository?.path
+  const message = commitMessage.value
+  const target = amendTarget.value
+  if (!repo || indexBusy.value || store.opening || !message.trim() ||
+      (!target && !workingFiles.value.some(file => file.canUnstage))) return
+  indexBusy.value = true
+  indexError.value = ''
+  commitNotice.value = ''
+  try {
+    if (target) await api.AmendIndex(repo, target.hash, target.ref, message)
+    else await api.CommitIndex(repo, message)
+    if (repo !== store.repository?.path) return
+    if (target) cancelAmend()
+    else commitMessage.value = ''
+    commitNotice.value = target ? 'Commit amended' : 'Commit created'
     await Promise.all([store.open(repo), loadWorking()])
     if (repo === store.repository?.path && (view.value === 'staged' || view.value === 'unstaged')) {
       void selectView(view.value)
@@ -294,6 +348,7 @@ async function updateBranch(operation: 'create' | 'switch' | 'rename' | 'delete'
     }
     if (repo !== store.repository?.path) return
     if (operation === 'switch') {
+      cancelAmend()
       branchNotice.value = 'Switched to ' + name
       previewRequest.clear()
       workingSelection.value = undefined
@@ -378,6 +433,10 @@ function resizeWithKey(event: KeyboardEvent) {
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
       <button :disabled="!store.repository || store.opening || indexBusy" @click="refresh">Refresh</button>
       <button v-if="store.repository" :disabled="indexBusy" :aria-pressed="showWorktrees" @click="showWorktrees = !showWorktrees">Worktrees</button>
+      <button v-if="store.repository" :disabled="indexBusy || store.opening" :aria-expanded="dailyPanel === 'stash'"
+              @click="toggleDailyPanel('stash')">Stash…</button>
+      <button v-if="store.repository" :disabled="indexBusy || store.opening" :aria-expanded="dailyPanel === 'sync'"
+              @click="toggleDailyPanel('sync')">Sync…</button>
       <details class="preferences">
         <summary>Settings</summary>
         <div class="preferences-panel">
@@ -393,13 +452,19 @@ function resizeWithKey(event: KeyboardEvent) {
     </div>
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
     <p v-if="watchError" class="notice top-error" role="status" :title="watchError">File notifications unavailable. Checking for Git changes every 5 seconds.</p>
+    <StashPanel v-if="dailyPanel === 'stash' && store.repository" :key="store.repository.path"
+                :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
+               :path="store.repository.path" :head="store.repository.head" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <div class="workspace">
       <main v-if="store.repository" ref="content" class="content">
         <div class="upper" :class="{ 'diff-expanded': diffExpanded }" :style="{ flexBasis: diffExpanded ? '100%' : previewHeight + '%' }">
           <WorkingChanges v-show="!diffExpanded" v-model:message="commitMessage" :files="workingFiles" :active="view !== 'commit' ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="view !== 'commit' && currentWorkingFile?.canStage" :can-unstage="view !== 'commit' && currentWorkingFile?.canUnstage"
-                          :index-busy="indexBusy" :notice="commitNotice" @select="selectWorking" @update-index="updateIndex" @commit="commitChanges" />
+                          :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
+                          @select="selectWorking" @update-index="updateIndex" @commit="commitChanges"
+                          @start-amend="startAmend" @cancel-amend="cancelAmend" />
           <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
             <header class="preview-tabs">
               <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>

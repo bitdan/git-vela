@@ -18,6 +18,10 @@ export function AddWorktree(path: string, target: string, branch: string, commit
     return $Call.ByID(2546006014, path, target, branch, commit);
 }
 
+export function AmendIndex(path: string, expectedHead: string, expectedRef: string, message: string): $CancellablePromise<void> {
+    return $Call.ByID(2472700641, path, expectedHead, expectedRef, message);
+}
+
 export function ChooseDirectory(): $CancellablePromise<string> {
     return $Call.ByID(2085580384);
 }
@@ -42,6 +46,10 @@ export function Diff(path: string, commit: string, parent: number, file: number)
     return $Call.ByID(2296331547, path, commit, parent, file);
 }
 
+export function FetchRemote(path: string, remote: string): $CancellablePromise<void> {
+    return $Call.ByID(3902937218, path, remote);
+}
+
 export function Files(path: string, commit: string, parent: number): $CancellablePromise<git$0.Change[] | null> {
     return $Call.ByID(2748190763, path, commit, parent);
 }
@@ -58,12 +66,28 @@ export function Open(path: string): $CancellablePromise<git$0.Repository> {
     return $Call.ByID(2498616652, path);
 }
 
+export function PrepareAmend(path: string): $CancellablePromise<git$0.AmendTarget> {
+    return $Call.ByID(2406328658, path);
+}
+
+export function PullUpstream(path: string, branch: string, remote: string, target: string): $CancellablePromise<void> {
+    return $Call.ByID(3373252214, path, branch, remote, target);
+}
+
+export function PushBranch(path: string, branch: string, remote: string, target: string): $CancellablePromise<void> {
+    return $Call.ByID(3873278312, path, branch, remote, target);
+}
+
 export function RemoveWorktree(path: string, target: string): $CancellablePromise<void> {
     return $Call.ByID(2563007137, path, target);
 }
 
 export function RenameBranch(path: string, oldName: string, newName: string): $CancellablePromise<void> {
     return $Call.ByID(2220009630, path, oldName, newName);
+}
+
+export function SaveStash(path: string, message: string, untracked: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3099866534, path, message, untracked);
 }
 
 export function SearchHistory(path: string, filter: git$0.HistoryFilter, cursor: git$0.Cursor): $CancellablePromise<git$0.Page> {
@@ -78,8 +102,20 @@ export function Snapshot(path: string): $CancellablePromise<string> {
     return $Call.ByID(1023985096, path);
 }
 
+export function Stashes(path: string): $CancellablePromise<git$0.StashEntry[] | null> {
+    return $Call.ByID(1731154529, path);
+}
+
 export function SwitchBranch(path: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(3487777736, path, name);
+}
+
+export function SyncState(path: string): $CancellablePromise<git$0.SyncState> {
+    return $Call.ByID(2400361248, path);
+}
+
+export function UpdateStash(path: string, action: string, selector: string, hash: string, restoreIndex: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3753820906, path, action, selector, hash, restoreIndex);
 }
 
 export function WatchRepository(path: string): $CancellablePromise<void> {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { writeFile } from 'node:fs/promises'
+import { mkdtemp, unlink, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const endpoint = process.env.GITVELA_CDP_URL ?? 'http://127.0.0.1:9331'
@@ -8,6 +9,7 @@ const repo = process.argv[2] ?? process.cwd()
 const screenshot = process.argv[3]
 const workingFile = process.argv[4]
 const testMvp = process.env.GITVELA_SMOKE_MVP === '1'
+const dailyRemote = process.env.GITVELA_SMOKE_M2_REMOTE
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
 const testCommit = process.argv[5] === '--commit'
@@ -260,12 +262,94 @@ try {
   await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Side by side').click()")
   await until(() => evaluate("document.querySelectorAll('.cm-mergeView .cm-editor').length === 2"), 'side-by-side Diff restored')
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
+  if (dailyRemote) {
+    const dailyBranch = 'smoke/daily'
+    const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
+    const click = (container, label) => until(() => evaluate(`(() => {
+      const button = [...document.querySelectorAll(${JSON.stringify(container + ' button')})]
+        .find(item => item.innerText === ${JSON.stringify(label)})
+      if (!button || button.disabled) return false
+      button.click()
+      return true
+    })()`), 'enabled ' + label)
+    const set = (selector, value) => evaluate(`(() => {
+      const field = document.querySelector(${JSON.stringify(selector)})
+      field.value = ${JSON.stringify(value)}
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+      field.dispatchEvent(new Event('change', { bubbles: true }))
+    })()`)
+    const config = dir => {
+      git(dir, 'config', 'user.name', 'GitVela Desktop Smoke')
+      git(dir, 'config', 'user.email', 'smoke@example.invalid')
+      git(dir, 'config', 'commit.gpgsign', 'false')
+    }
+    const text = (selector, expected) =>
+      until(() => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].some(node => node.innerText.includes(${JSON.stringify(expected)}))`), expected)
+
+    config(repo)
+    git(repo, 'switch', '-c', dailyBranch)
+    await text('.statusbar', dailyBranch)
+    await click('.commit-form', 'Amend…')
+    await text('.amend-warning', 'Rewrites HEAD')
+    assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))
+    await set('#commit-message', 'Amended through GitVela')
+    await click('.commit-form', 'Amend commit')
+    await text('.commit-form [role=status]', 'Commit amended')
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Amended through GitVela')
+
+    const untracked = join(repo, 'gitvela-smoke-untracked.txt')
+    await writeFile(untracked, 'saved by GitVela', { flag: 'wx' })
+    await click('.topbar', 'Stash…')
+    await evaluate("document.querySelector('[aria-label=Stashes] input[type=checkbox]').click()")
+    await set('[aria-label="Stash message"]', 'desktop stash')
+    await click('[aria-label=Stashes]', 'Save stash')
+    await text('[aria-label=Stashes] [role=status]', 'Stash saved.')
+    assert.equal(git(repo, 'status', '--porcelain'), '')
+    await until(() => evaluate("document.querySelector('[aria-label=Stashes] select')?.options.length === 2"), 'saved stash visible')
+    await evaluate(`(() => {
+      const select = document.querySelector('[aria-label=Stashes] select')
+      select.selectedIndex = 1
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })()`)
+    await click('[aria-label=Stashes]', 'Pop')
+    await text('[aria-label=Stashes] [role=status]', 'Stash applied and removed.')
+    assert.match(git(repo, 'status', '--porcelain'), /gitvela-smoke-untracked/)
+    assert.equal(git(repo, 'stash', 'list'), '')
+    await unlink(untracked)
+
+    git(repo, 'init', '--bare', '-b', dailyBranch, dailyRemote)
+    git(repo, 'remote', 'add', 'm2-smoke', dailyRemote)
+    await click('.topbar', 'Sync…')
+    await until(() => evaluate("[...document.querySelectorAll('[aria-label=\"Remote synchronization\"] select option')].some(option => option.value === 'm2-smoke')"), 'local test remote listed')
+    await set('[aria-label="Remote synchronization"] select', 'm2-smoke')
+    await click('[aria-label="Remote synchronization"]', 'Push…')
+    await text('[aria-label="Confirm push"]', 'm2-smoke/' + dailyBranch)
+    await click('[aria-label="Confirm push"]', 'Confirm push')
+    await text('[aria-label="Remote synchronization"] [role=status]', 'Push complete')
+    assert.equal(git(repo, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'm2-smoke/' + dailyBranch)
+
+    const peer = await mkdtemp(join(dirname(dailyRemote), 'm2-peer-'))
+    git(repo, 'clone', dailyRemote, peer)
+    config(peer)
+    await writeFile(join(peer, 'gitvela-smoke-peer.txt'), 'peer update')
+    git(peer, 'add', 'gitvela-smoke-peer.txt')
+    git(peer, 'commit', '-m', 'Commit from smoke peer')
+    git(peer, 'push', 'origin', dailyBranch)
+    await click('[aria-label="Remote synchronization"]', 'Fetch')
+    await text('[aria-label="Remote synchronization"] [role=status]', 'Fetched m2-smoke.')
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Amended through GitVela')
+    await click('[aria-label="Remote synchronization"]', 'Pull (fast-forward)')
+    await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit from smoke peer')
+    await click('.topbar', 'Sync…')
+  }
   assert.deepEqual(await evaluate("window.smokeRejections"), [])
   if (screenshot) {
     const image = await cdp('Page.captureScreenshot', { format: 'png' })
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
   }
   console.log('Desktop smoke passed: Go bindings, repository, history canvas, changed files, and read-only Diff.')
+  if (dailyRemote) console.log('Amend, stash save and pop, and remote push, fetch, and pull passed.')
   if (worktreeTarget) console.log('Worktree creation, switching, and removal passed.')
   if (testMvp) console.log('History search, commit actions, settings, file tree, and diff maximization passed.')
 } finally {

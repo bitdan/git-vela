@@ -11,10 +11,12 @@ import { useWorkspace } from './stores/workspace'
 import CommandPalette from './components/layout/CommandPalette.vue'
 import ShortcutSettings from './components/layout/ShortcutSettings.vue'
 import type { PaletteCommand } from './components/layout/commandFilter'
+import { exceedsRenderLimit } from './components/diff/renderGuard'
 import { navigateDiff } from './components/diff/diffNavigation'
 import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
+import { compareNames } from './components/changed-files/fileTree'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
 import RepositoryFiles from './components/editor/RepositoryFiles.vue'
 import FileInspection from './components/history/FileInspection.vue'
@@ -62,6 +64,7 @@ const branchMenu = ref<{ item: GitRef; trigger: HTMLElement; x: number; y: numbe
 type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
 const sidebar = ref<Sidebar>('changes')
 const historyVisible = ref(true)
+const restoringSession = ref(false)
 const sidebarTabs: { id: Sidebar; label: string }[] = [
   { id: 'files', label: 'Files' },
   { id: 'changes', label: 'Changes' },
@@ -72,7 +75,10 @@ const refKind = ref<'branches' | 'tags'>('branches')
 const visibleRefs = computed(() => {
   const query = branchFilter.value.trim().toLowerCase()
   const refs = refKind.value === 'branches' ? store.branchRefs : store.tagRefs
+  const current = 'refs/heads/' + store.repository?.head
+  const rank = (name: string) => name === current ? 0 : name.startsWith('refs/remotes/') ? 2 : 1
   return refs.filter(item => refLabel(item.name).toLowerCase().includes(query))
+    .sort((a, b) => rank(a.name) - rank(b.name) || compareNames(refLabel(a.name), refLabel(b.name)))
 })
 
 function refLabel(ref: string) {
@@ -156,6 +162,7 @@ const projectPath = ref('')
 const projectError = ref('')
 const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 'refs/heads/' + store.repository?.head))
 const commitNotice = ref('')
+const patchTooLarge = computed(() => preview.value?.kind === 'text' && exceedsRenderLimit('', preview.value.content))
 const patchLines = computed(() => preview.value?.content.replace(/\n$/, '').split('\n') ?? [])
 const workingTabs: { id: FileView; title: string }[] = [
   { id: 'working', title: 'Working file' },
@@ -246,7 +253,7 @@ watch(() => store.repository?.path, repo => {
   expandedPreview.value = false
   expandedDiff.value = false
   view.value = 'working'
-  void loadWorking()
+  if (!restoringSession.value) void loadWorking()
 })
 
 
@@ -260,7 +267,7 @@ function watchRepository(repo: string) {
 }
 
 async function refreshExternalChanges() {
-  if (document.hidden || indexBusy.value) return
+  if (document.hidden || indexBusy.value || restoringSession.value) return
   void store.checkForChanges()
   void loadOperationState()
   if (workingLoading.value) return
@@ -1067,14 +1074,19 @@ function isCommitField(target: EventTarget | null): boolean {
 }
 
 function onGlobalKeydown(event: KeyboardEvent) {
-  if (keymap.recording || paletteOpen.value || event.isComposing) return
+  if (keymap.recording || paletteOpen.value || event.defaultPrevented || event.isComposing) return
   const id = keymap.resolve(event)
   if (!id) return
   // CodeMirror panes own keys like Ctrl+F and Ctrl+Enter; the global
   // dispatcher must not also run the workspace command for the same press.
   if (editorScopeShortcuts.has(id) && isCodeEditor(event.target)) return
   // Navigation keys belong to text fields, but modifier shortcuts still work.
-  if (navigationShortcuts.has(id) && isTextEntry(event.target)) return
+  const textEntry = isTextEntry(event.target)
+  if (navigationShortcuts.has(id) && textEntry) return
+  // In text fields, only a deliberate Ctrl/Meta chord can submit. AltGr
+  // also reports Ctrl on Windows, but is used to type ordinary characters.
+  if (id === 'commit' && (event.repeat || (textEntry &&
+      (!(event.ctrlKey || event.metaKey) || event.getModifierState('AltGraph'))))) return
   event.preventDefault()
   // Submitting happens only through the commit message field itself, so a
   // rebound or duplicated dispatch can never fire Git a second time.
@@ -1108,46 +1120,56 @@ function forgetSession() {
 
 async function restoreSession() {
   const saved = readSession()
-  if (!saved?.path || !resumeOnStart.value) return
-  await store.open(saved.path)
-  if (!store.repository) {
-    clearSession()
-    store.repoError = ''
-    restoreNotice.value = 'The last repository is no longer available. Choose a repository to continue.'
-    return
-  }
-  sidebar.value = saved.sidebar ?? 'changes'
-  historyVisible.value = saved.historyVisible ?? true
-  await nextTick()
-  if (saved.range) {
-    view.value = 'commit'
-    void store.selectComparison(saved.range.before, saved.range.after, saved.range.label, saved.file)
-    return
-  }
-  if (saved.hash) {
-    await jump(saved.hash)
-    const commit = store.commits.find(item => item.hash === saved.hash)
-    if (commit) void store.selectCommit(commit, saved.parent ?? 0, saved.file)
-    view.value = 'commit'
-    return
-  }
-  const nextView = saved.view && ['working', 'unstaged', 'staged'].includes(saved.view) ? saved.view as FileView : 'working'
-  view.value = nextView
-  // Restore the working file selection behind the working, staged and
-  // unstaged views; without it the preview would only show the empty prompt.
-  if (saved.workingFile) {
-    await loadWorking()
-    const file = workingFiles.value.find(item => item.path === saved.workingFile || item.oldPath === saved.workingFile)
-    if (file && store.repository?.path === saved.path) {
-      workingSelection.value = file
-      await selectView(nextView)
+  if (!saved || !resumeOnStart.value) return
+  restoringSession.value = true
+  try {
+    await store.open(saved.path)
+    const repo = store.repository
+    if (!repo) {
+      clearSession()
+      store.repoError = ''
+      restoreNotice.value = 'The last repository is no longer available. Choose a repository to continue.'
+      return
     }
+    sidebar.value = saved.sidebar ?? 'changes'
+    historyVisible.value = saved.historyVisible ?? true
+    // Sessions written without a view used the revision to choose the preview.
+    const savedView = saved.view ?? (saved.hash || saved.range ? 'commit' : 'working')
+    const nextView = savedView === 'commit' || savedView === 'staged' || savedView === 'unstaged'
+      ? savedView : 'working'
+
+    if (saved.hash) {
+      let commit = store.commits.find(item => item.hash === saved.hash)
+      while (!commit && repo === store.repository && store.more && !store.loading && !store.logError) {
+        await store.loadPage()
+        commit = store.commits.find(item => item.hash === saved.hash)
+      }
+      if (repo !== store.repository) return
+      if (commit) await store.selectCommit(commit, saved.parent ?? 0, saved.range ? undefined : saved.file)
+    }
+    if (repo !== store.repository) return
+    if (saved.range) {
+      await store.selectComparison(saved.range.before, saved.range.after, saved.range.label, saved.file)
+    }
+    if (repo !== store.repository) return
+
+    await loadWorking()
+    if (repo !== store.repository) return
+    if (saved.workingFile) {
+      workingSelection.value = workingFiles.value.find(item => item.path === saved.workingFile)
+        ?? workingFiles.value.find(item => item.oldPath === saved.workingFile)
+    }
+    await selectView(nextView)
+  } finally {
+    restoringSession.value = false
+    scheduleSessionSave()
   }
 }
 
 let sessionTimer: ReturnType<typeof setTimeout> | undefined
 function scheduleSessionSave(attempt = 0) {
   if (sessionTimer) clearTimeout(sessionTimer)
+  if (restoringSession.value) return
   sessionTimer = setTimeout(() => {
     const repo = store.repository?.path
     // Never persist the empty state produced while a refresh resets the store.
@@ -1497,6 +1519,9 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
                 <p v-else-if="previewError" class="notice error" role="alert">{{ previewError }}</p>
                 <pre v-else-if="preview?.kind === 'text' && view === 'working'" class="working-preview" tabindex="0"><code>{{ preview.content }}</code></pre>
+                <p v-else-if="patchTooLarge" class="notice" role="status">
+                  This diff is too large to render line by line. Open Working file to view the current contents.
+                </p>
                 <pre v-else-if="preview?.kind === 'text' && preview.content" class="working-preview patch" tabindex="0"><code><span v-for="(line, index) in patchLines" :key="index" :class="patchClass(line)">{{ line + '\n' }}</span></code></pre>
                 <p v-else-if="preview?.kind === 'text'" class="notice">{{ view === 'staged' ? 'No staged diff for this file.' : 'No tracked unstaged diff for this file. Use Working file to read untracked files.' }}</p>
                 <p v-else-if="preview?.kind === 'missing'" class="notice">This file is absent from the working tree.</p>
@@ -1558,7 +1583,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
                @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
           <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower">
-            <CommitLog ref="log" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
+            <CommitLog ref="log" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
                        @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
             <ChangedFiles ref="filesPanel" @select="view = 'commit'" @maximize="maximizeDiff" />

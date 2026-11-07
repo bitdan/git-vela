@@ -13,7 +13,7 @@ import GraphCell from './GraphCell.vue'
 const store = useWorkspace()
 const preferences = usePreferences()
 const keymap = useKeymap()
-const props = defineProps<{ pinned?: string; busy?: boolean }>()
+const props = defineProps<{ pinned?: string; busy?: boolean; restoring?: boolean }>()
 const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
 const emptyFilter = (): HistoryFilter => ({ message: '', author: '', branch: '', from: '', through: '', hash: '' })
@@ -47,8 +47,8 @@ const rows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
 const tooltip = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-watch(() => rows.value.at(-1)?.item.index, index => {
-  if (!filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
+watch([() => rows.value.at(-1)?.item.index, () => props.restoring], ([index, restoring]) => {
+  if (!restoring && !filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
 })
 
 function select(index: number) {

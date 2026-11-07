@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -106,6 +106,7 @@ const inputValue = (selector, value) => evaluate(`(() => {
   field.dispatchEvent(new Event('change', { bubbles: true }))
 })()`)
 
+let shortcutRepo
 try {
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
   await evaluate(`(() => {
@@ -246,10 +247,12 @@ try {
     return true
   })()`), 'the initial commit')
   await until(() => evaluate(`(() => {
-    const files = [...document.querySelectorAll('.file-row')]
-    const file = files.find(row => row.title === 'GitVela.md')
-    if (!file) return false
-    files.slice(0, 3).forEach(row => row.click())
+    const list = document.querySelector('.files-panel .file-scroll')
+    const file = list?.querySelector('.file-row[title="GitVela.md"]')
+    if (!file) {
+      if (list) list.scrollTop += list.clientHeight
+      return false
+    }
     file.click()
     return true
   })()`), 'GitVela.md in Changed Files')
@@ -466,6 +469,7 @@ try {
     git('config', 'user.name', 'GitVela Smoke')
     git('config', 'user.email', 'smoke@example.invalid')
     git('config', 'commit.gpgsign', 'false')
+    git('config', 'core.autocrlf', 'false')
     git('switch', '-c', 'smoke-m3')
     await writeFile(target, 'base\n')
     git('add', 'm3.txt')
@@ -579,6 +583,7 @@ try {
     git('config', 'user.name', 'GitVela Smoke')
     git('config', 'user.email', 'smoke@example.invalid')
     git('config', 'commit.gpgsign', 'false')
+    git('config', 'core.autocrlf', 'false')
     await clickButton('.index-actions', 'Stage all')
     await inputValue('#commit-message', 'Initial project commit')
     await gitMenuAction('Commit…')
@@ -644,35 +649,124 @@ try {
     })()`)
     await until(() => evaluate("(() => { const map = JSON.parse(localStorage.getItem('gitvela.keymap') || '{}'); return !Object.values(map).includes('Tab') && !document.querySelector('.shortcut-settings .recording') })()"), 'Tab moves focus without becoming a shortcut')
 
-    // The commit shortcut drives submission from the message field only:
-    // an unbound Ctrl+Enter can never create a commit, and the rebound key
-    // still reaches the message field through the global dispatcher.
-    await evaluate(`(() => {
-      const button = document.querySelector('[aria-label="Change shortcut for Focus commit message"]')
-      button.click()
-      button.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, shiftKey: true, bubbles: true }))
-    })()`)
-    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').commit === 'Ctrl+Shift+S'"), 'rebound commit shortcut persisted')
-    await inputValue('#commit-message', '')
-    await evaluate(`(() => {
+    // Use a fresh repository with a genuinely committable index and message.
+    const tempRoot = resolve(tmpdir())
+    shortcutRepo = await mkdtemp(join(tempRoot, 'gitvela-shortcuts-'))
+    const git = (...args) => execFileSync('git', ['-C', shortcutRepo, ...args], { encoding: 'utf8' }).trim()
+    git('init', '-b', 'main')
+    git('config', 'user.name', 'GitVela Smoke')
+    git('config', 'user.email', 'smoke@example.invalid')
+    git('config', 'commit.gpgsign', 'false')
+    git('config', 'core.autocrlf', 'false')
+    git('config', 'core.hooksPath', join(shortcutRepo, '.git', 'no-hooks'))
+    const file = 'shortcut-test.txt'
+    await writeFile(join(shortcutRepo, file), 'original\n')
+    git('add', file)
+    git('commit', '-m', 'Shortcut fixture base')
+    const base = git('rev-parse', 'HEAD')
+    await writeFile(join(shortcutRepo, 'history.txt'), 'history fixture\n')
+    git('add', 'history.txt')
+    git('commit', '-m', 'Shortcut fixture latest')
+    const head = git('rev-parse', 'HEAD')
+    await writeFile(join(shortcutRepo, file), 'staged shortcut fixture\n')
+    git('add', file)
+    await writeFile(join(shortcutRepo, file), 'large working change\n'.repeat(22000))
+    assert.equal(git('diff', '--cached', '--name-only'), file)
+    await inputValue('[aria-label="Repository path"]', shortcutRepo)
+    await evaluate(`document.querySelector('[aria-label="Repository path"]').form.requestSubmit()`)
+    await until(() => evaluate(`document.querySelector('.working-row[title="shortcut-test.txt"]')`), 'temporary staged file')
+    const bindCommit = async (binding, key, modifiers = {}) => {
+      await evaluate(`(() => {
+        const button = document.querySelector('[aria-label="Change shortcut for Focus commit message"]')
+        button.click()
+        button.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key, ...modifiers, bubbles: true })}))
+      })()`)
+      await until(() => evaluate(`JSON.parse(localStorage.getItem('gitvela.keymap')).commit === ${JSON.stringify(binding)}`), 'commit binding ' + binding)
+    }
+    const pressCommitField = (key, modifiers = {}) => evaluate(`(() => {
       const field = document.getElementById('commit-message')
       field.focus()
-      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
+      return field.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key, ...modifiers, bubbles: true, cancelable: true })}))
     })()`)
-    await delay(200)
-    assert.equal(await evaluate("document.activeElement && document.activeElement.id"), 'commit-message')
-    assert.ok(!await evaluate("document.body.innerText.includes('Commit created')"), 'unbound Ctrl+Enter must not commit')
-    await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, shiftKey: true, bubbles: true }))")
-    await until(() => evaluate("document.activeElement && document.activeElement.id === 'commit-message'"), 'rebound commit shortcut focuses the message field')
+    const message = 'Shortcut integration commit'
+    await inputValue('#commit-message', message)
+    await until(() => evaluate("!!document.querySelector('#commit-message')?.form.querySelector('button[type=submit]:enabled')"), 'enabled commit')
+    for (const [binding, key, code, typed, modifiers] of [
+      ['A', 'a', 'KeyA', 'a', 0],
+      ['Enter', 'Enter', 'Enter', '\n', 0],
+      ['Shift+A', 'A', 'KeyA', 'A', 8],
+    ]) {
+      await bindCommit(binding, key, { shiftKey: modifiers === 8 })
+      assert.equal(await pressCommitField(key, { shiftKey: modifiers === 8 }), true, binding + ' must keep normal text input behavior')
+      await evaluate("document.getElementById('commit-message').setSelectionRange(1000, 1000)")
+      await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code, text: key === 'Enter' ? '\r' : typed, modifiers })
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers })
+      await until(() => evaluate(`document.getElementById('commit-message').value === ${JSON.stringify(message + typed)}`), binding + ' inserts text')
+      assert.equal(git('rev-parse', 'HEAD'), head)
+      assert.equal(git('diff', '--cached', '--name-only'), file)
+      await inputValue('#commit-message', message)
+    }
+    await bindCommit('Ctrl+Shift+S', 's', { ctrlKey: true, shiftKey: true })
+    assert.equal(await pressCommitField('Enter', { ctrlKey: true }), true, 'old binding must not submit')
+    assert.equal(git('rev-parse', 'HEAD'), head)
+    assert.equal(await pressCommitField('s', { ctrlKey: true, shiftKey: true }), false, 'configured chord must dispatch')
+    await until(() => git('rev-parse', 'HEAD') !== head, 'real commit from configured chord')
+    assert.equal(git('log', '-1', '--format=%s'), 'Shortcut integration commit')
+    assert.equal(git('diff', '--cached', '--name-only'), '')
     await clickButton('.shortcut-settings', 'Reset to defaults')
-    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').commit === 'Ctrl+Enter'"), 'commit shortcut restored')
     await evaluate("document.querySelector('.preferences').open = false")
+
+    // Reload the WebView and inspect actual session writes, including any
+    // intermediate state that might otherwise be overwritten by the last save.
+    const restoreWorkingDiff = async (view, tab, historyFile, range) => {
+      const session = {
+        path: shortcutRepo, hash: base, file: historyFile, workingFile: file,
+        sidebar: 'changes', view, historyVisible: false, range, smokeMarker: true,
+      }
+      await evaluate(`localStorage.setItem('gitvela.session', ${JSON.stringify(JSON.stringify(session))})`)
+      const writes = []
+      const monitor = ({ data }) => {
+        const { method, params } = JSON.parse(data)
+        if (method === 'DOMStorage.domStorageItemUpdated' && params.key === 'gitvela.session') {
+          writes.push(JSON.parse(params.newValue))
+        }
+      }
+      socket.addEventListener('message', monitor)
+      try {
+        await cdp('Page.reload', {})
+        await until(() => evaluate(`document.querySelector('.working-row.active')?.title === 'shortcut-test.txt' &&
+          document.querySelector('.preview-tabs [aria-pressed=true]')?.innerText === ${JSON.stringify(tab)}`), 'restored working file and ' + view + ' view')
+        await until(() => writes.length > 0, 'restored session saved')
+        for (const saved of writes) {
+          assert.equal(saved.hash, base)
+          assert.equal(saved.file, historyFile)
+          assert.equal(saved.workingFile, file)
+          assert.equal(saved.view, view)
+          assert.equal(saved.historyVisible, false)
+          assert.deepEqual(saved.range, range)
+        }
+      } finally {
+        socket.removeEventListener('message', monitor)
+      }
+    }
+
+    assert.deepEqual(await evaluate('window.smokeRejections'), [])
+    await cdp('DOMStorage.enable', {})
+    await restoreWorkingDiff('unstaged', 'Unstaged diff', file)
+    await clickButton('.preview-panel', 'Load full preview (up to 8 MiB)')
+    await until(() => evaluate("document.querySelector('.preview-panel').innerText.includes('too large to render line by line')"), 'large working diff fallback')
+    assert.equal(await evaluate("document.querySelectorAll('.patch span').length"), 0)
+
+    git('add', file)
+    await restoreWorkingDiff('staged', 'Staged diff', 'history.txt', {
+      before: base, after: head, label: 'Saved comparison',
+    })
 
     // Session state is persisted after opening a repository.
     await until(() => evaluate("(() => { const saved = JSON.parse(localStorage.getItem('gitvela.session') || 'null'); return !!saved && typeof saved.path === 'string' && saved.path.length > 0 })()"), 'saved session')
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
-  assert.deepEqual(await evaluate("window.smokeRejections"), [])
+  if (!testM4) assert.deepEqual(await evaluate("window.smokeRejections"), [])
   if (screenshot) {
     const image = await cdp('Page.captureScreenshot', { format: 'png' })
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
@@ -686,5 +780,17 @@ try {
   if (testMvp) console.log('History search, commit actions, settings, file tree, and diff maximization passed.')
   if (testM4) console.log('Command palette, configurable shortcuts, compact rows, and session persistence passed.')
 } finally {
-  socket.close()
+  const tempRoot = resolve(tmpdir())
+  try {
+    if (shortcutRepo && resolve(shortcutRepo).startsWith(tempRoot + sep + 'gitvela-shortcuts-')) {
+      // Switch away so the Windows repository watcher releases its handles.
+      await inputValue('[aria-label="Repository path"]', repo)
+      await evaluate(`document.querySelector('[aria-label="Repository path"]').form.requestSubmit()`)
+      await rm(shortcutRepo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+    }
+  } catch (error) {
+    console.warn('Could not remove temporary shortcut fixture:', error.message)
+  } finally {
+    socket.close()
+  }
 }

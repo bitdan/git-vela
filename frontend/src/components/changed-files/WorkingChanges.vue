@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { expandAncestors, fileTreeRows } from './fileTree'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string }>()
@@ -8,16 +9,15 @@ const message = defineModel<string>('message', { required: true })
 const canStageAll = computed(() => props.files.some(file => file.canStage))
 const stagedCount = computed(() => props.files.filter(file => file.canUnstage).length)
 const canCommit = computed(() => !!message.value.trim() && (stagedCount.value > 0 || !!props.amendHash) && !props.indexBusy)
-const groups = computed(() => {
-  const byDirectory = new Map<string, WorkingFile[]>()
-  for (const file of props.files) {
-    const folder = file.path.slice(0, Math.max(0, file.path.lastIndexOf('/')))
-    const entries = byDirectory.get(folder)
-    if (entries) entries.push(file)
-    else byDirectory.set(folder, [file])
-  }
-  return [...byDirectory].sort(([left], [right]) => left.localeCompare(right))
-})
+const collapsed = ref(new Set<string>())
+const rows = computed(() => fileTreeRows(props.files, collapsed.value))
+
+watch(() => props.active, path => { if (path) expandAncestors(collapsed.value, path) })
+
+function toggleFolder(path: string) {
+  if (collapsed.value.has(path)) collapsed.value.delete(path)
+  else collapsed.value.add(path)
+}
 
 function state(status: string) {
   if (status === '??') return 'Untracked'
@@ -51,15 +51,21 @@ defineExpose({ submit })
     <p v-if="error" class="notice error" role="alert">{{ error }}</p>
     <p v-else-if="!files.length" class="notice" role="status">{{ loading ? 'Reading working tree…' : 'Working tree is clean.' }}</p>
     <div class="file-scroll">
-      <details v-for="[folder, entries] in groups" :key="folder" open>
-        <summary :title="folder" class="ellipsis">{{ folder || 'Repository root' }} <small>{{ entries.length }}</small></summary>
-        <button v-for="file in entries" :key="file.path" class="working-row" :class="{ active: active === file.path }"
-                :aria-pressed="active === file.path" :title="file.oldPath ? file.oldPath + ' → ' + file.path : file.path"
-                @click="emit('select', file)">
-          <code class="file-status" :data-status="file.status.trim().at(-1)" :title="state(file.status)">{{ file.status.trim() }}</code>
-          <span class="ellipsis">{{ file.path.split('/').at(-1) }}</span>
+      <template v-for="row in rows" :key="(row.file ? 'file:' : 'folder:') + row.path">
+        <button v-if="row.file" class="working-row" :class="{ active: active === row.path }"
+                :style="{ paddingInlineStart: 10 + row.depth * 13 + 'px' }"
+                :aria-pressed="active === row.path" :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
+                @click="emit('select', row.file)">
+          <code class="file-status" :data-status="row.file.status.trim().at(-1)" :title="state(row.file.status)">{{ row.file.status.trim() }}</code>
+          <span class="ellipsis">{{ row.name }}</span>
         </button>
-      </details>
+        <button v-else class="working-row folder-row ellipsis" :title="row.path"
+                :style="{ paddingInlineStart: 10 + row.depth * 13 + 'px' }"
+                :aria-expanded="!collapsed.has(row.path)" @click="toggleFolder(row.path)">
+          <span aria-hidden="true">{{ collapsed.has(row.path) ? '▸' : '▾' }}</span>
+          <span class="ellipsis">{{ row.name }}</span>
+        </button>
+      </template>
     </div>
     <form class="commit-form" @submit.prevent="canCommit && emit('commit')">
       <label for="commit-message">{{ amendHash ? 'Amend commit message' : 'Commit message' }}</label>

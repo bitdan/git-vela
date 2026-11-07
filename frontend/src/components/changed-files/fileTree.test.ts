@@ -13,8 +13,8 @@ describe('Changed Files tree', () => {
   it('groups by destination and retains Git file identifiers across collapsed folders', () => {
     const rows = fileTreeRows(changes, new Set(['docs/guides']))
     expect(rows.map(row => [row.path, row.depth, row.file?.index])).toEqual([
-      ['docs.txt', 0, 9], ['docs', 0, undefined], ['docs/guides', 1, undefined],
-      ['docs/setup.md', 1, 2], ['src', 0, undefined], ['src/app.go', 1, 4],
+      ['docs', 0, undefined], ['docs/guides', 1, undefined], ['docs/setup.md', 1, 2],
+      ['src', 0, undefined], ['src/app.go', 1, 4], ['docs.txt', 0, 9],
     ])
     expect(fileTreeRows(changes, new Set()).find(row => row.file?.index === 6)?.file).toBe(changes[0])
   })

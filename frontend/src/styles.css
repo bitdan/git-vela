@@ -93,8 +93,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .sidebar-segments button[aria-pressed="true"] {
   background: var(--panel); color: var(--accent); border-color: var(--border);
 }
-.working-panel details > summary { padding: 4px 10px; color: var(--muted); cursor: pointer; }
-.working-panel details small { margin-left: 4px; }
+.working-row.folder-row { color: var(--muted); }
 .working-row {
   display: flex; align-items: center; gap: 6px; width: 100%; height: var(--working-row-height);
   text-align: left; padding: 0 8px 0 18px; border: 0; border-radius: 0; background: transparent;

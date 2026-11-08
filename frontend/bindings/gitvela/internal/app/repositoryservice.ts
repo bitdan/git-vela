@@ -34,6 +34,14 @@ export function ApplyHistoryOperation(path: string, action: string, target: stri
     return $Call.ByID(826886017, path, action, target, expected, mode);
 }
 
+export function BranchSync(path: string): $CancellablePromise<git$0.BranchSync[] | null> {
+    return $Call.ByID(2265013207, path);
+}
+
+export function CheckoutTag(path: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(2510887032, path, name);
+}
+
 export function ChooseDirectory(): $CancellablePromise<string> {
     return $Call.ByID(2085580384);
 }
@@ -66,8 +74,16 @@ export function CreateBranch(path: string, name: string, commit: string): $Cance
     return $Call.ByID(2196385032, path, name, commit);
 }
 
+export function CreateTag(path: string, name: string, commit: string, message: string): $CancellablePromise<void> {
+    return $Call.ByID(3727072456, path, name, commit, message);
+}
+
 export function DeleteBranch(path: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(3639123479, path, name);
+}
+
+export function DeleteTag(path: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(3348158797, path, name);
 }
 
 export function Diff(path: string, commit: string, parent: number, file: number): $CancellablePromise<git$0.Comparison> {
@@ -141,12 +157,16 @@ export function PublishGitHub(path: string, request: git$0.PublishRequest): $Can
     return $Call.ByID(283352124, path, request);
 }
 
-export function PullUpstream(path: string, branch: string, remote: string, target: string): $CancellablePromise<void> {
-    return $Call.ByID(3373252214, path, branch, remote, target);
+export function PullUpstream(path: string, branch: string, remote: string, target: string, options: git$0.PullOptions): $CancellablePromise<void> {
+    return $Call.ByID(3373252214, path, branch, remote, target, options);
 }
 
-export function PushBranch(path: string, branch: string, remote: string, target: string): $CancellablePromise<void> {
-    return $Call.ByID(3873278312, path, branch, remote, target);
+export function PushBranch(path: string, branch: string, remote: string, target: string, options: git$0.PushOptions): $CancellablePromise<void> {
+    return $Call.ByID(3873278312, path, branch, remote, target, options);
+}
+
+export function PushTag(path: string, remote: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(3757308072, path, remote, name);
 }
 
 export function ReadHead(path: string): $CancellablePromise<git$0.HeadState> {

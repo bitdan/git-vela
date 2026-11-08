@@ -118,7 +118,7 @@ func TestSyncFastForwardAndRejectDivergence(t *testing.T) {
 	if err := FetchRemote(ctx, dir, "--all"); err == nil {
 		t.Fatal("accepted an unconfigured remote")
 	}
-	if err := PushBranch(ctx, dir, "main", "origin", "main"); err != nil {
+	if err := PushBranch(ctx, dir, "main", "origin", "main", PushOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := ReadSyncState(ctx, dir)
@@ -139,13 +139,13 @@ func TestSyncFastForwardAndRejectDivergence(t *testing.T) {
 		t.Fatalf("fetch changed HEAD: %q", got)
 	}
 	write(t, dir, "local.txt", "unsaved")
-	if err := PullUpstream(ctx, dir, "main", "origin", "main"); err == nil {
+	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{}); err == nil {
 		t.Fatal("pulled into a dirty worktree")
 	}
 	command(t, dir, "restore", "local.txt")
 	write(t, dir, ".git/info/exclude", "peer.txt\n")
 	write(t, dir, "peer.txt", "ignored local data")
-	if err := PullUpstream(ctx, dir, "main", "origin", "main"); err == nil {
+	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{}); err == nil {
 		t.Fatal("pull overwrote an ignored file")
 	}
 	preview, err := WorkingPreview(dir, "peer.txt")
@@ -155,7 +155,7 @@ func TestSyncFastForwardAndRejectDivergence(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "peer.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := PullUpstream(ctx, dir, "main", "origin", "main"); err != nil {
+	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,10 +164,10 @@ func TestSyncFastForwardAndRejectDivergence(t *testing.T) {
 	write(t, peer, "peer.txt", "another update")
 	commit(t, peer, "another peer update")
 	command(t, peer, "push", "origin", "main")
-	if err := PullUpstream(ctx, dir, "main", "origin", "main"); err == nil || !strings.Contains(err.Error(), "fast-forward") {
+	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{}); err == nil || !strings.Contains(err.Error(), "fast-forward") {
 		t.Fatalf("diverged pull error: %v", err)
 	}
-	if err := PushBranch(ctx, dir, "main", "origin", "main"); err == nil || !strings.Contains(err.Error(), "rejected") {
+	if err := PushBranch(ctx, dir, "main", "origin", "main", PushOptions{}); err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("non-fast-forward push error: %v", err)
 	}
 	if got := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%s")); got != "local update" {

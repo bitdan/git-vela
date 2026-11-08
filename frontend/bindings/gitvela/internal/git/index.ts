@@ -4,6 +4,7 @@
 export type {
     AmendTarget,
     BlameLine,
+    BranchSync,
     Change,
     Commit,
     Comparison,
@@ -21,6 +22,8 @@ export type {
     Page,
     PublishRequest,
     PublishResult,
+    PullOptions,
+    PushOptions,
     RebaseStep,
     Ref,
     RemoteInfo,

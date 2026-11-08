@@ -11,15 +11,11 @@
 
 **已完成**：M0、M1、M2 全部；M3 的 File History / Blame、Cherry-pick / Revert / Reset、分支与提交对比、交互式 Rebase 计划、冲突检测与 Base/Ours/Theirs 解决面板、Hunk / 行级 Stage；M4 的命令面板、可配置快捷键、会话恢复、全屏与紧凑行高、10,000 Commit 基准。
 
-**本轮新增（M4 与 §3.3 / §6.2 细节补齐）**：
+**本轮新增（IDEA 对齐批次 1 / 批次 2，2026-11-08）**：
 
-- **可配置快捷键**：`frontend/src/stores/shortcuts.ts` / `keymap.ts` 与 Settings 面板，提供 16 个命令的录制、冲突检测、解绑与恢复默认；全局 `Alt+Up/Down` 跳前后变更文件，`Alt+Shift+Up/Down` 跳 Diff hunk。
-- **命令面板**（Ctrl+K）：聚合 Git 操作、视图设置、最近仓库和分支 / 标签跳转，支持模糊排序与键盘导航。
-- **会话恢复**：重启后重开上次仓库、选中提交（或比较区间）与文件、侧栏与视图；可在 Settings 关闭或清除。
-- **紧凑行高与窗口全屏**：虚拟列表与 Canvas 图谱行高随密度切换。
-- **大文件显式续载**：默认 512 KiB / 12,000 行，点击「Load full preview」后放宽到 8 MiB / 120,000 行；新增 Go `...Expanded` 服务方法并重新生成 Wails 绑定。
-- **图片 Diff**：按魔数识别 PNG / JPEG / GIF / WebP / BMP，Before / After 双栏或工作区图片预览；其他二进制仍降级。
-- **测试**：Go（图片 / 大文件、四父 Octopus Merge 图谱、`index.lock`）、Vitest（快捷键、会话、命令排序、Diff 导航通道）、桌面冒烟 `GITVELA_SMOKE_M4=1`。
+- **批次 1**（`8edd0ea`）：Add to .gitignore 右键动作、状态栏/编辑器编码与换行符显示及 CRLF/LF 切换、提交消息历史下拉、Issue Navigation 链接（Commit Details 级）、Diff 标签会话持久化。
+- **批次 2**：Tag 管理（lightweight/annotated 创建、删除确认、无 force 推送、detached 检出，`internal/git/tags.go`）；Pull 策略（Fast-forward only / Merge / Rebase + Autostash，`PullOptions`）；Push 选项（annotated tags `--follow-tags`、显式 re-point upstream、force-with-lease 受保护流程——确认对话框 + 后端强制本地 remote-tracking ref）；分支面板 ↑ahead/↓behind 同步徽标（`BranchSyncCounts`）。
+- **测试**：`internal/git/tags_test.go`（tag 生命周期与 push 保护、pull 三策略与 autostash、push upstream/force-with-lease 场景、同步计数）、Vitest 51 项、`tests/batch2-smoke.mjs` 与 desktop-smoke（基础+M2+Worktree+MVP+M4，M2 段已适配 Pull 按钮并加固 amend 点击竞态）。
 
 **与方案的偏差（事实记录）**：
 
@@ -28,7 +24,7 @@
 - §1.3 / §14：后续迭代已实现工作区文本编辑器、GitHub 发布和交互式 Rebase 计划，超出「首版不做」清单；「不要提前实现 Push / Rebase」的阶段性约束已被后续需求取代。
 - §10 M4：多仓库同时管理、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
 
-**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0）**：`go test ./...`、`go vet ./...`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（25 项）、`npm --prefix frontend run build`、`wails3 build`、`node tests/desktop-smoke.mjs` 与 `GITVELA_SMOKE_M4=1 node tests/desktop-smoke.mjs` 均通过。注意 `go test ./...` 不要与前端测试并行运行：负载较高时 Git CLI 的 20 s 超时偶发失败，单独运行稳定通过。
+**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 22 冒烟）**：`go test ./...`、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（51 项）、`wails3 generate bindings -ts -i`、`node tests/batch2-smoke.mjs` 与 `GITVELA_SMOKE_MVP=1 GITVELA_SMOKE_M4=1 GITVELA_SMOKE_M2_REMOTE=<未使用路径> node tests/desktop-smoke.mjs <一次性克隆>` 均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）。
 
 ## 1. 项目概述
 

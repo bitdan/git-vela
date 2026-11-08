@@ -16,6 +16,14 @@ export interface BlameLine {
     "uncommitted": boolean;
 }
 
+export interface BranchSync {
+    "branch": string;
+    "upstream": string;
+    "ahead": number;
+    "behind": number;
+    "gone": boolean;
+}
+
 export interface Change {
     "index": number;
     "path": string;
@@ -131,6 +139,17 @@ export interface PublishResult {
     "remoteAdded": boolean;
     "pushed": boolean;
     "failure": string;
+}
+
+export interface PullOptions {
+    "mode": string;
+    "autostash": boolean;
+}
+
+export interface PushOptions {
+    "pushTags": boolean;
+    "setUpstream": boolean;
+    "forceWithLease": boolean;
 }
 
 export interface RebaseStep {

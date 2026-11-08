@@ -1,7 +1,7 @@
 import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import { RepositoryService as api } from '../../bindings/gitvela/internal/app'
-import type { Change, Commit, Comparison, Cursor, Ref, Repository } from '../../bindings/gitvela/internal/git'
+import type { BranchSync, Change, Commit, Comparison, Cursor, Ref, Repository } from '../../bindings/gitvela/internal/git'
 import { LatestRequest } from './latestRequest'
 
 export type ComparisonRange = { before: string; after: string; label: string }
@@ -43,6 +43,8 @@ export const useWorkspace = defineStore('workspace', () => {
   const loadingDiff = ref(false)
   const branchRefs = computed(() => refs.value.filter(item => /^refs\/(heads|remotes)\//.test(item.name)))
   const tagRefs = computed(() => refs.value.filter(item => item.name.startsWith('refs/tags/')))
+  const branchSync = shallowRef<BranchSync[]>([])
+  const syncRequest = new LatestRequest()
   const openRequest = new LatestRequest()
   const historyRequest = new LatestRequest()
   const filesRequest = new LatestRequest()
@@ -92,6 +94,7 @@ export const useWorkspace = defineStore('workspace', () => {
       diffError.value = ''
       recent.value = [repo.path, ...recent.value.filter(item => item !== repo.path)].slice(0, 8)
       try { localStorage.setItem('gitvela.recent', JSON.stringify(recent.value)) } catch { /* storage unavailable */ }
+      void loadSync(repo.path)
       await loadPage(true, previous, previousRange)
     } catch (error) {
       if (current()) repoError.value = String(error)
@@ -107,6 +110,19 @@ export const useWorkspace = defineStore('workspace', () => {
       if (path) await openSelected(path)
     } catch (error) {
       repoError.value = String(error)
+    }
+  }
+
+  // Ahead/behind markers come from remote-tracking refs; they refresh with
+  // every repository reload (fetch/pull/push go through store.open).
+  async function loadSync(path: string) {
+    const call = api.BranchSync(path)
+    const current = syncRequest.replace(call)
+    try {
+      const entries = await call
+      if (current()) branchSync.value = entries ?? []
+    } catch {
+      if (current()) branchSync.value = []
     }
   }
 
@@ -223,7 +239,7 @@ export const useWorkspace = defineStore('workspace', () => {
   }
 
   return {
-    repository, commits, branchRefs, tagRefs, graphWidth, more, selected, parent, files, file, comparison, comparisonRange, headHash,
+    repository, commits, branchRefs, tagRefs, branchSync, graphWidth, more, selected, parent, files, file, comparison, comparisonRange, headHash,
     recent, gitVersion, repoError, logError, filesError, diffError, opening, loading, loadingFiles, loadingDiff,
     detectGit, open, choose, loadPage, selectCommit, selectComparison, selectFile, checkForChanges,
   }

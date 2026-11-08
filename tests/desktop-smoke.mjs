@@ -400,9 +400,15 @@ try {
     git(repo, 'switch', '-c', dailyBranch)
     await text('.statusbar', dailyBranch)
     await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
-    // Amend is an IDEA-style checkbox above the message field now.
-    await evaluate("document.querySelector('.amend-row input').click()")
-    await text('.amend-warning', 'Rewrites HEAD')
+    // Amend is an IDEA-style checkbox above the message field now. The 5s
+    // external-change poll can re-render the commit form right after the
+    // branch switch, so retry until the checkbox click sticks (2026-11-08).
+    await until(() => evaluate(`(() => {
+      const box = document.querySelector('.amend-row input')
+      if (!box || box.disabled) return false
+      if (!box.checked) box.click()
+      return !!document.querySelector('.amend-warning')
+    })()`), 'amend armed with warning')
     assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))
     await set('#commit-message', 'Amended through GitVela')
     await click('.commit-form', 'Amend commit')
@@ -461,7 +467,8 @@ try {
     await text('[aria-label="Remote synchronization"] [role=status]', 'Fetched m2-smoke.')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit and push review')
     await gitMenuAction('Pull…')
-    await click('[aria-label="Remote synchronization"]', 'Pull (fast-forward)')
+    // G3 added pull strategies; the default stays fast-forward-only.
+    await click('[aria-label="Remote synchronization"]', 'Pull')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit from smoke peer')
   }

@@ -35,12 +35,12 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
 
 | # | 功能 | rebased 证据 | GitVela 现状 | 优先级 |
 |---|---|---|---|---|
-| G1 | **Tag 管理**：create/delete/push tag、checkout tag | branch/tag 操作、GitTag| 仅 tag 列表显示（refs/tags）；无创建/删除/推送/检出 | **高**（成本中） |
-| G2 | **push 选项**：force-with-lease（受保护流程）、push tags、push 后设置 upstream、推送预览列表 | push/GitPushDialog（GitVela 有意 `--no-force`，sync.go:136） | push 固定安全参数；无 force/tags/upstream 选项 | **高**（force 须带确认对话框） |
-| G3 | **pull 选项**：merge / rebase（GitPullSettings）、--ff-only、autostash | config/GitPullSettings.java | pull 固定策略 | 高 |
+| G1 | **Tag 管理**：create/delete/push tag、checkout tag | branch/tag 操作、GitTag | ✅ 已交付（2026-11-08）：lightweight/annotated 创建、删除确认、无 force 推送、detached 检出；`internal/git/tags.go` + Tags 面板右键菜单 | **已交付** |
+| G2 | **push 选项**：force-with-lease（受保护流程）、push tags、push 后设置 upstream、推送预览列表 | push/GitPushDialog（GitVela 有意 `--no-force`，sync.go:136） | ✅ 已交付（2026-11-08）：push 确认对话框内 Push annotated tags（`--follow-tags`）、显式 re-point upstream、force-with-lease（必选确认 + 后端要求本地 remote-tracking ref，禁止无租约强推）；无推送预览列表 | **已交付** |
+| G3 | **pull 选项**：merge / rebase（GitPullSettings）、--ff-only、autostash | config/GitPullSettings.java | ✅ 已交付（2026-11-08）：Sync 面板 Pull 策略单选（Fast-forward only / Merge / Rebase）+ Autostash 复选框；`PullOptions{Mode,Autostash}` | **已交付** |
 | G4 | **Interactive rebase**：todo 编辑（squash/fixup/reword/edit/drop）、continue/abort | rebase/（GitRebaseTodoEditor） | rebase+冲突 ✅ 但无 todo 编辑 | 高 |
 | G5 | **add to .gitignore**（右键未跟踪文件）、.gitignore 校验提示 | ignore/ | ✅ 右键 `??` 文件 → Add to .gitignore（仓库根追加锚定 pattern、幂等去重、拒绝 .git/越界路径）；无校验提示 | **已交付**（高频小功能） |
-| G6 | **incoming/outgoing 指示**：分支面板 ↑/↓ 计数、Log 中 merged 高亮 | branch/GitBranchIncomingOutgoingManager.java、DeepComparator | ❌ 无同步状态徽标 | 中 |
+| G6 | **incoming/outgoing 指示**：分支面板 ↑/↓ 计数、Log 中 merged 高亮 | branch/GitBranchIncomingOutgoingManager.java、DeepComparator | ✅ 已交付（2026-11-08）：本地分支行 ↑ahead/↓behind 徽标 + gone 标记（`BranchSyncCounts` 基于 remote-tracking refs，随仓库刷新更新；Log 内 merged 高亮未做） | **已交付**（面板级） |
 | G7 | **Cherry-pick 多选 + 继续/中止流** | cherrypick/、CherryPickedCommitsHighlighter | 单提交 ✅；多选菜单已禁用（T06） | 中 |
 | G8 | **Squash merge**、squash/fixup 提交 | merge/、branch/GitMergeOperation | ❌ | 中 |
 | G9 | **Clone from URL**（仓库初始化流程内） | checkout/GitCloneDialog | 有 init/发布；无 URL 克隆 | 中 |
@@ -64,9 +64,12 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
 
 1. **批次 1（高频低成本）**：✅ 已完成（2026-11-08）——G5 add to .gitignore、E1 状态栏编码/换行
    切换、G14 message 历史、Issue Navigation（Details 级）、E2 diff 标签持久化。
-   提交：`<批次1提交号>`。
-2. **批次 2（Git 安全写操作扩展）**：G1 tag 管理、G3 pull 选项、G2 push 选项（force-with-lease
-   必须走 ConfirmationDialog + 目标校验）、G6 分支同步徽标。
+   提交：`8edd0ea`。
+2. **批次 2（Git 安全写操作扩展）**：✅ 已完成（2026-11-08）——G1 tag 管理、G3 pull 选项、
+   G2 push 选项（force-with-lease 走 ConfirmationDialog + 后端 remote-tracking ref 校验）、
+   G6 分支同步徽标。测试：`internal/git/tags_test.go`（tag 生命周期/push 保护/pull 三策略/
+   autostash/upstream/lease/sync 计数）、`tests/batch2-smoke.mjs` 桌面冒烟；
+   desktop-smoke M2 段已适配新 Pull 按钮并加固 amend 点击竞态。
 3. **批次 3（深水区）**：G4 interactive rebase、G8 squash、G9 clone、G11 stash diff、
    Directory Mappings（多根）。
 4. **明确不做**：Mercurial/Perforce/Subversion/Gitee/GitLab 集成、Changelists（与真实

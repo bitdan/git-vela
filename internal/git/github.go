@@ -94,7 +94,7 @@ func publishGitHub(ctx context.Context, dir string, req PublishRequest, create f
 		result.Failure = "Git rewrote the fetch destination; review the effective URL in Manage remotes"
 		return result, nil
 	}
-	if err := pushBranch(ctx, dir, req.Branch, "origin", req.Branch, address); err != nil {
+	if err := pushBranch(ctx, dir, req.Branch, "origin", req.Branch, address, PushOptions{}); err != nil {
 		result.Failure = err.Error()
 		return result, nil
 	}

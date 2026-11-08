@@ -242,12 +242,32 @@ func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string
 	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote) })
 }
 
-func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string) error {
-	return s.write(ctx, func() error { return git.PullUpstream(ctx, path, branch, remote, target) })
+func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string, options git.PullOptions) error {
+	return s.write(ctx, func() error { return git.PullUpstream(ctx, path, branch, remote, target, options) })
 }
 
-func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string) error {
-	return s.write(ctx, func() error { return git.PushBranch(ctx, path, branch, remote, target) })
+func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string, options git.PushOptions) error {
+	return s.write(ctx, func() error { return git.PushBranch(ctx, path, branch, remote, target, options) })
+}
+
+func (*RepositoryService) BranchSync(ctx context.Context, path string) ([]git.BranchSync, error) {
+	return discardCancelled(git.BranchSyncCounts(ctx, path))
+}
+
+func (s *RepositoryService) CreateTag(ctx context.Context, path, name, commit, message string) error {
+	return s.write(ctx, func() error { return git.CreateTag(ctx, path, name, commit, message) })
+}
+
+func (s *RepositoryService) DeleteTag(ctx context.Context, path, name string) error {
+	return s.write(ctx, func() error { return git.DeleteTag(ctx, path, name) })
+}
+
+func (s *RepositoryService) PushTag(ctx context.Context, path, remote, name string) error {
+	return s.write(ctx, func() error { return git.PushTag(ctx, path, remote, name) })
+}
+
+func (s *RepositoryService) CheckoutTag(ctx context.Context, path, name string) error {
+	return s.write(ctx, func() error { return git.CheckoutTag(ctx, path, name) })
 }
 
 func (s *RepositoryService) Initialize(ctx context.Context, path string) (git.Repository, error) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,7 +62,25 @@ func FetchRemote(ctx context.Context, dir, remote string) error {
 	return runRemote(ctx, dir, "fetch", "--no-recurse-submodules", "--", remote)
 }
 
-func PullUpstream(ctx context.Context, dir, branch, remote, target string) error {
+// Pull modes, aligned with IDEA GitPullSettings strategies.
+const (
+	PullFastForward = "ff"
+	PullMerge       = "merge"
+	PullRebase      = "rebase"
+)
+
+type PullOptions struct {
+	Mode      string `json:"mode"`
+	Autostash bool   `json:"autostash"`
+}
+
+type PushOptions struct {
+	PushTags       bool `json:"pushTags"`
+	SetUpstream    bool `json:"setUpstream"`
+	ForceWithLease bool `json:"forceWithLease"`
+}
+
+func PullUpstream(ctx context.Context, dir, branch, remote, target string, options PullOptions) error {
 	state, err := ReadSyncState(ctx, dir)
 	if err != nil {
 		return err
@@ -80,8 +99,10 @@ func PullUpstream(ctx context.Context, dir, branch, remote, target string) error
 	if err != nil {
 		return err
 	}
-	if err := requireCleanWorktree(ctx, dir); err != nil {
-		return err
+	if !options.Autostash {
+		if err := requireCleanWorktree(ctx, dir); err != nil {
+			return err
+		}
 	}
 	// Use a remote-tracking ref, since other Git clients can replace FETCH_HEAD.
 	refspec := "+refs/heads/" + target + ":" + state.TrackingRef
@@ -104,19 +125,42 @@ func PullUpstream(ctx context.Context, dir, branch, remote, target string) error
 	if err := checkOperationState(ctx, dir); err != nil {
 		return err
 	}
-	if err := requireCleanWorktree(ctx, dir); err != nil {
-		return err
+	if !options.Autostash {
+		if err := requireCleanWorktree(ctx, dir); err != nil {
+			return err
+		}
 	}
-	_, err = run(ctx, dir, nil, 1<<20, "-c", "submodule.recurse=false", "merge",
-		"--ff-only", "--no-squash", "--commit", "--no-autostash", "--no-overwrite-ignore", "--", state.TrackingRef)
+	switch options.Mode {
+	case "", PullFastForward:
+		_, err = run(ctx, dir, nil, 1<<20, "-c", "submodule.recurse=false", "merge",
+			"--ff-only", "--no-squash", "--commit", "--no-autostash", "--no-overwrite-ignore", "--", state.TrackingRef)
+	case PullMerge:
+		args := []string{"-c", "submodule.recurse=false", "merge", "--no-squash", "--commit", "--no-overwrite-ignore"}
+		if options.Autostash {
+			args = append(args, "--autostash")
+		} else {
+			args = append(args, "--no-autostash")
+		}
+		args = append(args, "--", state.TrackingRef)
+		_, err = run(ctx, dir, nil, 1<<20, args...)
+	case PullRebase:
+		args := []string{"-c", "submodule.recurse=false", "rebase"}
+		if options.Autostash {
+			args = append(args, "--autostash")
+		}
+		args = append(args, "--", state.TrackingRef)
+		_, err = run(ctx, dir, nil, 1<<20, args...)
+	default:
+		return errors.New("select a supported pull mode: fast-forward, merge, or rebase")
+	}
 	return remoteFailure(err)
 }
 
-func PushBranch(ctx context.Context, dir, branch, remote, target string) error {
-	return pushBranch(ctx, dir, branch, remote, target, "")
+func PushBranch(ctx context.Context, dir, branch, remote, target string, options PushOptions) error {
+	return pushBranch(ctx, dir, branch, remote, target, "", options)
 }
 
-func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddress string) error {
+func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddress string, options PushOptions) error {
 	state, err := ReadSyncState(ctx, dir)
 	if err != nil {
 		return err
@@ -133,12 +177,26 @@ func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddres
 	if _, err := headID(ctx, dir); err != nil {
 		return err
 	}
-	args := []string{"push", "--no-force", "--no-mirror", "--no-prune", "--no-tags",
-		"--no-follow-tags", "--recurse-submodules=no"}
-	if state.UpstreamRemote == "" && target == branch {
+	args := []string{"push", "--no-mirror", "--no-prune", "--recurse-submodules=no"}
+	if options.PushTags {
+		args = append(args, "--follow-tags")
+	} else {
+		args = append(args, "--no-tags", "--no-follow-tags")
+	}
+	if options.SetUpstream || (state.UpstreamRemote == "" && target == branch) {
 		args = append(args, "--set-upstream")
 	} else if state.UpstreamRemote != remote || state.UpstreamBranch != target || target == "" {
 		return errors.New("the push target changed; review the branch upstream")
+	}
+	if options.ForceWithLease {
+		lease, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", "refs/remotes/"+remote+"/"+target)
+		if err != nil || !objectID(strings.TrimSuffix(strings.TrimSuffix(string(lease), "\n"), "\r")) {
+			return errors.New("force-with-lease needs a local remote-tracking ref for the target; fetch before forcing")
+		}
+		leaseID := strings.TrimSuffix(strings.TrimSuffix(string(lease), "\n"), "\r")
+		args = append(args, "--force-with-lease=refs/heads/"+target+":"+leaseID)
+	} else {
+		args = append(args, "--no-force")
 	}
 	if expectedAddress != "" {
 		effective, err := run(ctx, dir, nil, 32768, "remote", "get-url", "--push", "--all", "--", remote)
@@ -152,6 +210,56 @@ func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddres
 func runRemote(ctx context.Context, dir string, args ...string) error {
 	_, err := runWithTimeout(ctx, 3*time.Minute, dir, nil, 2<<20, args...)
 	return remoteFailure(err)
+}
+
+type BranchSync struct {
+	Branch   string `json:"branch"`
+	Upstream string `json:"upstream"`
+	Ahead    int    `json:"ahead"`
+	Behind   int    `json:"behind"`
+	Gone     bool   `json:"gone"`
+}
+
+var syncTrack = regexp.MustCompile(`\bahead (\d+)|\bbehind (\d+)`)
+
+// BranchSyncCounts reports local branch ahead/behind state relative to each
+// configured upstream. Values come from remote-tracking refs, so they are as
+// fresh as the last fetch (the same source IDEA uses for its branch markers).
+func BranchSyncCounts(ctx context.Context, dir string) ([]BranchSync, error) {
+	data, err := run(ctx, dir, nil, 1<<20, "for-each-ref",
+		"--format=%(refname:short)%00%(upstream:short)%00%(upstream:track,nobracket)", "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+	var result []BranchSync
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, "\x00")
+		if len(fields) != 3 || fields[0] == "" {
+			continue
+		}
+		entry := BranchSync{Branch: fields[0], Upstream: fields[1]}
+		if fields[2] == "gone" {
+			entry.Gone = true
+		}
+		for _, match := range syncTrack.FindAllStringSubmatch(fields[2], -1) {
+			if match[1] != "" {
+				entry.Ahead = parseCount(match[1])
+			}
+			if match[2] != "" {
+				entry.Behind = parseCount(match[2])
+			}
+		}
+		result = append(result, entry)
+	}
+	return result, nil
+}
+
+func parseCount(value string) int {
+	count, _ := strconv.Atoi(value)
+	if count < 0 {
+		return 0
+	}
+	return count
 }
 
 var remoteURL = regexp.MustCompile(`(?i)(https?|ssh|ftps?)://[^\s'"]+`)

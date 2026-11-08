@@ -288,6 +288,11 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .danger-button { color: var(--error); }
 .branch-row { display: flex; align-items: center; gap: 3px; }
 .branch-row .side-item { flex: 1; }
+.sync-badge { margin-inline-start: auto; padding-inline-start: 4px; font-size: 10px; color: var(--muted-fg, #6e7681); white-space: nowrap; }
+.pull-options { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; border: 1px solid var(--border-color, #d0d7de); border-radius: 6px; padding: 6px 10px; }
+.pull-options legend { font-size: 11px; padding: 0 4px; }
+.pull-options label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.push-option { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; }
 .branch-folder { color: var(--muted); }
 .current-ref-marker { color: var(--accent); margin-inline-end: 5px; }
 .switch-branch { flex: none; font-size: 11px; padding: 2px 5px; }

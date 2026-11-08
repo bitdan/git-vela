@@ -83,6 +83,7 @@ const activityActive = computed<ActivityItem | undefined>(() => {
 function onActivitySelect(item: ActivityItem) {
   if (indexBusy.value) return
   closeBranchMenu()
+  closeTagMenu()
   diffExpanded.value = false
   if (item === 'git') {
     historyVisible.value = true
@@ -133,7 +134,161 @@ function openBranchForm(form?: BranchForm, branch = '', base = '') {
   branchName.value = form === 'rename' ? branch : ''
   branchError.value = ''
   branchNotice.value = ''
+  tagForm.value = undefined
 }
+
+// ---- Tags (G1): create / delete / push / checkout via the Tags panel ----
+type TagForm = 'create' | 'delete' | 'push'
+const tagForm = ref<TagForm>()
+const tagName = ref('')
+const tagMessage = ref('')
+const tagRemote = ref('')
+const tagRemotes = ref<string[]>([])
+const tagMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
+const tagBase = computed(() => store.selected?.hash ?? store.headHash)
+
+function openTagForm(form?: TagForm, name = '') {
+  branchForm.value = undefined
+  tagForm.value = form
+  tagName.value = name
+  tagMessage.value = ''
+  branchError.value = ''
+  branchNotice.value = ''
+}
+
+function closeTagMenu() {
+  tagMenu.value = undefined
+}
+
+function openTagActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
+  tagMenu.value = { item, anchor: contextAnchor(event) }
+}
+
+async function createTag() {
+  const repo = store.repository?.path
+  const name = tagName.value.trim()
+  const base = tagBase.value
+  if (!repo || !name || !base || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.CreateTag(repo, name, base, tagMessage.value.trim())
+    openTagForm()
+    branchNotice.value = 'Created tag ' + name
+    await store.open(repo, true)
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function deleteTag(name: string) {
+  const repo = store.repository?.path
+  if (!repo || !name || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.DeleteTag(repo, name)
+    openTagForm()
+    branchNotice.value = 'Deleted tag ' + name
+    await store.open(repo, true)
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function pushTag(name: string) {
+  const repo = store.repository?.path
+  if (!repo || !name || !tagRemote.value || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.PushTag(repo, tagRemote.value, name)
+    openTagForm()
+    branchNotice.value = 'Pushed tag ' + name + ' to ' + tagRemote.value
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function openTagPush(name: string) {
+  const repo = store.repository?.path
+  if (!repo || store.opening) return
+  try {
+    const state = await api.SyncState(repo)
+    const remotes = state.remotes ?? []
+    if (!remotes.length) {
+      branchError.value = 'Configure a Git remote before pushing tags.'
+      return
+    }
+    tagRemotes.value = remotes
+    tagRemote.value = remotes.includes('origin') ? 'origin' : remotes[0]
+    openTagForm('push', name)
+  } catch (error) {
+    branchError.value = String(error)
+  }
+}
+
+async function checkoutTag(name: string) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.CheckoutTag(repo, name)
+    if (repo !== store.repository?.path) return
+    cancelAmend()
+    branchNotice.value = 'Checked out tag ' + name
+    previewRequest.clear()
+    workingSelection.value = undefined
+    preview.value = undefined
+    previewError.value = ''
+    previewLoading.value = false
+    view.value = 'working'
+    await Promise.all([store.open(repo), loadWorking()])
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+function tagAction(action: 'history' | 'checkout' | 'push' | 'delete') {
+  const item = tagMenu.value?.item
+  if (!item) return
+  closeTagMenu()
+  const name = refLabel(item.name)
+  switch (action) {
+    case 'history': void jump(item.hash); break
+    case 'checkout': withSavedEditor('checking out a tag', () => { void checkoutTag(name) }); break
+    case 'push': void openTagPush(name); break
+    case 'delete': openTagForm('delete', name); break
+  }
+}
+
+// ---- Ahead/behind markers (G6) for local branches ----
+const syncEntries = computed(() => new Map((store.branchSync ?? []).map(entry => [entry.branch, entry])))
+
+function syncBadge(item: GitRef) {
+  if (!item.name.startsWith('refs/heads/')) return ''
+  const entry = syncEntries.value.get(refLabel(item.name))
+  if (!entry) return ''
+  const parts: string[] = []
+  if (entry.ahead) parts.push('↑' + entry.ahead)
+  if (entry.behind) parts.push('↓' + entry.behind)
+  if (!parts.length && entry.gone) parts.push('gone')
+  return parts.join(' ')
+}
+
 const picking = ref(false)
 const { dark, previewHeight, fileTree, density, resumeOnStart } = storeToRefs(preferences)
 const workspaceError = ref('')
@@ -1245,6 +1400,7 @@ function openSync(intent: SyncIntent) {
 function openSidebar(panel: Sidebar) {
   if (indexBusy.value) return
   closeBranchMenu()
+  closeTagMenu()
   if (panel === 'branches') {
     historyVisible.value = true
     void nextTick(() => content.value?.querySelector<HTMLInputElement>('[aria-label="Filter branches or tags"]')?.focus())
@@ -2069,6 +2225,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
                 <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
                         @click="openBranchForm(branchForm === 'create' ? undefined : 'create')">New…</button>
+                <button v-else :disabled="!store.selected || indexBusy" :aria-expanded="tagForm === 'create'"
+                        @click="openTagForm(tagForm === 'create' ? undefined : 'create')">New…</button>
               </header>
               <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
                     @submit.prevent="updateBranch(branchForm, branchName.trim())">
@@ -2089,14 +2247,44 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                   <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
                 </template>
               </ConfirmationDialog>
-              <div v-else class="ref-filter">
+              <form v-if="tagForm === 'create'" class="new-branch" @submit.prevent="createTag()">
+                <input v-model="tagName" aria-label="New tag name" placeholder="Tag name" spellcheck="false" />
+                <input v-model="tagMessage" aria-label="Optional tag message" placeholder="Optional message (annotated)" spellcheck="false" />
+                <small v-if="tagBase" class="muted">From {{ tagBase.slice(0, 8) }}</small>
+                <button type="button" :disabled="indexBusy" @click="openTagForm()">Cancel</button>
+                <button type="submit" :disabled="!tagName.trim() || indexBusy || !tagBase">Create</button>
+              </form>
+              <ConfirmationDialog v-else-if="tagForm === 'delete'" title="Confirm tag deletion"
+                                  :busy="indexBusy" @cancel="openTagForm()">
+                <p>Delete tag <strong>{{ tagName }}</strong>? Only the local tag is removed; remote copies keep pointing at the same commit.</p>
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <template #actions>
+                  <button data-cancel :disabled="indexBusy" @click="openTagForm()">Cancel</button>
+                  <button class="danger-button" :disabled="indexBusy" @click="deleteTag(tagName)">Delete tag</button>
+                </template>
+              </ConfirmationDialog>
+              <ConfirmationDialog v-else-if="tagForm === 'push'" title="Push tag"
+                                  :busy="indexBusy" @cancel="openTagForm()">
+                <p>Push tag <strong>{{ tagName }}</strong> to the selected remote without force?</p>
+                <label>Remote
+                  <select v-model="tagRemote" :disabled="indexBusy || !tagRemotes.length">
+                    <option v-for="remote in tagRemotes" :key="remote">{{ remote }}</option>
+                  </select>
+                </label>
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <template #actions>
+                  <button data-cancel :disabled="indexBusy" @click="openTagForm()">Cancel</button>
+                  <button class="primary" :disabled="indexBusy || !tagRemote" @click="pushTag(tagName)">Push tag</button>
+                </template>
+              </ConfirmationDialog>
+              <div v-else-if="!branchForm" class="ref-filter">
                 <select v-model="refKind" aria-label="Reference type" @change="branchFilter = ''; navigation = ''">
                   <option value="branches">Branches</option>
                   <option value="tags">Tags</option>
                 </select>
                 <input v-model="branchFilter" aria-label="Filter branches or tags" placeholder="Filter" />
               </div>
-              <div class="branch-scroll" @scroll.passive="closeBranchMenu()">
+              <div class="branch-scroll" @scroll.passive="closeBranchMenu(), closeTagMenu()">
                 <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
                 <p v-if="branchNotice" class="notice" role="status">{{ branchNotice }}</p>
                 <p v-if="navigation" class="notice" role="status">{{ navigation }}</p>
@@ -2113,7 +2301,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                             @click="jump(row.file.item.hash)"
                             @contextmenu.prevent="openBranchActions(row.file.item, $event)"
                             @keydown.shift.f10.prevent="openBranchActions(row.file.item, $event)">
-                      <span v-if="row.file.item.name === 'refs/heads/' + store.repository.head" class="current-ref-marker" aria-hidden="true">●</span>{{ row.name }}
+                      <span v-if="row.file.item.name === 'refs/heads/' + store.repository.head" class="current-ref-marker" aria-hidden="true">●</span>{{ row.name }}<span
+                        v-if="syncBadge(row.file.item)" class="sync-badge" aria-label="Branch sync state">{{ syncBadge(row.file.item) }}</span>
                     </button>
                     <button v-else class="side-item ellipsis branch-folder" :disabled="!!branchFilter.trim()"
                             :aria-expanded="!!branchFilter.trim() || !collapsedBranches.has(row.path)"
@@ -2123,7 +2312,10 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                   </div>
                 </template>
                 <div v-else v-for="item in visibleRefs" :key="item.name" class="branch-row">
-                  <button class="side-item ellipsis" :title="item.name" @click="jump(item.hash)">{{ refLabel(item.name) }}</button>
+                  <button class="side-item ellipsis" :title="item.name" :aria-expanded="tagMenu?.item.name === item.name"
+                          @click="jump(item.hash)"
+                          @contextmenu.prevent="openTagActions(item, $event)"
+                          @keydown.shift.f10.prevent="openTagActions(item, $event)">{{ refLabel(item.name) }}</button>
                 </div>
               </div>
             </aside>
@@ -2184,6 +2376,14 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <button :disabled="indexBusy || branchMenu.item.name === 'refs/heads/' + store.repository.head"
                 @click="branchAction('delete')">Delete…</button>
       </template>
+    </ContextActions>
+    <ContextActions v-if="tagMenu && store.repository" :anchor="tagMenu.anchor" label="Tag actions" @close="closeTagMenu">
+      <strong class="ellipsis">{{ refLabel(tagMenu.item.name) }}</strong>
+      <button @click="tagAction('history')">Show in Git Log</button>
+      <button :disabled="indexBusy" @click="tagAction('checkout')">Checkout (detached HEAD)</button>
+      <button :disabled="store.opening || indexBusy" @click="tagAction('push')">Push Tag…</button>
+      <hr />
+      <button :disabled="indexBusy" @click="tagAction('delete')">Delete…</button>
     </ContextActions>
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <footer class="statusbar">

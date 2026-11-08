@@ -8,6 +8,8 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useWorkspace } from '../../stores/workspace'
 import { usePreferences } from '../../stores/preferences'
 import { useKeymap } from '../../stores/keymap'
+import ContextActions from '../layout/ContextActions.vue'
+import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import GraphCell from './GraphCell.vue'
 
 const store = useWorkspace()
@@ -29,8 +31,8 @@ const searchError = ref('')
 const requests = new LatestRequest()
 let historyScroll = 0
 const menu = ref<Commit>()
+const menuAnchor = shallowRef<ContextAnchor>()
 const copyStatus = ref('')
-const menuButtons = useTemplateRef<HTMLElement>('commit-actions')
 const commits = computed(() => filter.value ? matches.value : store.commits)
 const graphPixels = computed(() => filter.value ? 8 : Math.max(52, store.graphWidth * 13 + 14))
 const columns = computed(() => ({ '--graph-width': graphPixels.value + 'px' }))
@@ -51,11 +53,11 @@ watch([() => rows.value.at(-1)?.item.index, () => props.restoring], ([index, res
   if (!restoring && !filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
 })
 
-function select(index: number) {
+function select(index: number, reveal = true) {
   const commit = commits.value[index]
   if (!commit) return
   menu.value = undefined
-  void nextTick(() => virtual.value.scrollToIndex(index, { align: 'auto' }))
+  if (reveal) void nextTick(() => virtual.value.scrollToIndex(index, { align: 'auto' }))
   emit('select')
   void store.selectCommit(commit)
 }
@@ -180,13 +182,13 @@ watch(() => store.repository, (repo, previous) => {
 })
 onUnmounted(() => requests.clear())
 
-function showCommitActions(index: number) {
+function showCommitActions(index: number, event: MouseEvent | KeyboardEvent) {
   const commit = commits.value[index]
   if (!commit) return
-  select(index)
+  select(index, false)
   menu.value = commit
   copyStatus.value = ''
-  void nextTick(() => menuButtons.value?.querySelector('button')?.focus())
+  menuAnchor.value = contextAnchor(event)
 }
 
 function closeCommitActions() {
@@ -248,32 +250,33 @@ defineExpose({ jump, step, openSearch })
         <button v-if="filter" type="button" @click="clearSearch()">Back to graph</button>
       </div>
     </form>
-    <div v-if="menu" ref="commit-actions" class="commit-actions" role="group" aria-label="Commit actions" @keydown.esc.stop="closeCommitActions">
+    <ContextActions v-if="menu && menuAnchor" :anchor="menuAnchor" label="Commit actions" @close="menu = undefined">
       <button @click="copyCommit(menu, false)">Copy hash</button>
       <button @click="copyCommit(menu, true)">Copy message</button>
+      <hr />
       <button @click="menu = undefined; emit('createBranch')">Create branch…</button>
       <button @click="emit('pin', menu); closeCommitActions()">{{ props.pinned === menu.hash ? 'Clear comparison base' : 'Use as comparison base' }}</button>
       <button :disabled="store.opening || props.pinned === menu.hash" @click="emit('compare', menu); closeCommitActions()">
         {{ props.pinned ? 'Compare with base' : 'Compare with HEAD' }}
       </button>
+      <hr />
       <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
       <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
       <button :disabled="props.busy" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
-      <button @click="closeCommitActions">Close</button>
-    </div>
+    </ContextActions>
     <p v-if="copyStatus" class="notice" role="status">{{ copyStatus }}</p>
     <p v-if="searchError" class="notice error" role="alert">{{ searchError }}</p>
     <p v-if="!filter && store.logError" class="notice error" role="alert">{{ store.logError }}</p>
     <div ref="scroll" class="log-scroll" :class="{ 'search-results': filter }" :style="columns" tabindex="0" aria-label="Commit history"
-         @keydown.up="navigate($event, -1)" @keydown.down="navigate($event, 1)">
+         @scroll.passive="menu = undefined" @keydown.up="navigate($event, -1)" @keydown.down="navigate($event, 1)">
       <div class="log-grid log-heading"><span>{{ filter ? '' : 'Graph' }}</span><span>Commit message</span><span>Author</span><span>{{ filter ? 'Commit date' : 'Date' }}</span><span>Hash</span></div>
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
         <button v-for="{ item, commit } in rows" :key="commit.hash"
                 class="log-grid commit-row" :class="{ active: store.selected?.hash === commit.hash }"
                 :aria-pressed="store.selected?.hash === commit.hash"
                 :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index)"
-                @contextmenu.prevent="showCommitActions(item.index)"
-                @keydown.shift.f10.prevent="showCommitActions(item.index)">
+                @contextmenu.prevent="showCommitActions(item.index, $event)"
+                @keydown.shift.f10.prevent="showCommitActions(item.index, $event)">
           <span v-if="filter" aria-hidden="true"></span>
           <GraphCell v-else :row="commit.graph" :width="graphPixels" :height="preferences.rowHeight" />
           <span class="commit-title" :title="commit.subject">

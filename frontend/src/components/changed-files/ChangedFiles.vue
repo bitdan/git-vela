@@ -1,18 +1,36 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { storeToRefs } from 'pinia'
 import { usePreferences } from '../../stores/preferences'
 import { useWorkspace } from '../../stores/workspace'
+import ContextActions from '../layout/ContextActions.vue'
+import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import { expandAncestors, fileTreeRows } from './fileTree'
 import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: []; maximize: [] }>()
+const emit = defineEmits<{ select: []; maximize: []; edit: [path: string] }>()
 const list = useTemplateRef<HTMLElement>('list')
 const preferences = usePreferences()
 const { fileTree: tree } = storeToRefs(preferences)
 const collapsed = ref(new Set<string>())
+const menu = shallowRef<{ file: Change; anchor: ContextAnchor }>()
+
+function showActions(file: Change, event: MouseEvent | KeyboardEvent) {
+  menu.value = { file, anchor: contextAnchor(event) }
+}
+
+function fileAction(action: 'diff' | 'maximize' | 'edit') {
+  const file = menu.value?.file
+  menu.value = undefined
+  if (!file) return
+  if (action === 'edit') emit('edit', file.path)
+  else {
+    select(file)
+    if (action === 'maximize') emit('maximize')
+  }
+}
 const rows = computed(() => tree.value
   ? fileTreeRows(store.files, collapsed.value)
   : store.files.map(file => ({ path: file.path, name: file.path, depth: 0, file })))
@@ -56,7 +74,7 @@ const visibleRows = computed(() => virtual.value.getVirtualItems().flatMap(item 
   const row = rows.value[item.index]
   return row ? [{ item, row }] : []
 }))
-watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange], () => collapsed.value.clear())
+watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange], () => { collapsed.value.clear(); menu.value = undefined })
 watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange, tree], () => {
   if (list.value) list.value.scrollTop = 0
 })
@@ -86,14 +104,15 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
     <p v-if="store.loadingFiles" class="notice" role="status">Loading changed files…</p>
     <p v-else-if="store.filesError" class="notice error" role="alert">{{ store.filesError }}</p>
     <p v-else-if="!store.files.length" class="notice">{{ (store.selected || store.comparisonRange) ? 'No changed files.' : 'Select a commit.' }}</p>
-    <div ref="list" class="file-scroll">
+    <div ref="list" class="file-scroll" @scroll.passive="menu = undefined">
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
         <template v-for="{ item, row } in visibleRows" :key="String(item.key)">
           <button v-if="row.file" class="file-row"
                   :class="{ active: store.file?.index === row.file.index }" :aria-pressed="store.file?.index === row.file.index"
                   :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 8 + row.depth * 12 + 'px' }"
                   :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
-                  @click="select(row.file)" @dblclick="emit('maximize')">
+                  @click="select(row.file)" @dblclick="emit('maximize')"
+                  @contextmenu.prevent="showActions(row.file, $event)" @keydown.shift.f10.prevent="showActions(row.file, $event)">
             <code class="file-status" :data-status="row.file.status">{{ row.file.status }}</code>
             <span class="ellipsis">{{ row.file.oldPath ? row.file.oldPath + ' → ' : '' }}{{ row.name }}</span>
           </button>
@@ -106,5 +125,11 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
         </template>
       </div>
     </div>
+    <ContextActions v-if="menu" :anchor="menu.anchor" label="Changed file actions" @close="menu = undefined">
+      <button @click="fileAction('diff')">Show Diff</button>
+      <button @click="fileAction('maximize')">Maximize Diff</button>
+      <hr />
+      <button @click="fileAction('edit')">Edit Working File</button>
+    </ContextActions>
   </section>
 </template>

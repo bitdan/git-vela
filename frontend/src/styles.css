@@ -93,6 +93,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .sidebar-segments button[aria-pressed="true"] {
   background: var(--panel); color: var(--accent); border-color: var(--border);
 }
+.changes-heading, .working-tree-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.changes-heading { font-weight: 600; }
+.changes-heading input, .working-tree-row input { flex: none; margin: 0; accent-color: var(--accent); }
+.working-tree-row .working-row { min-width: 0; padding-inline-start: 2px; }
 .working-row.folder-row { color: var(--muted); }
 .working-row {
   display: flex; align-items: center; gap: 6px; width: 100%; height: var(--working-row-height);
@@ -183,7 +187,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   padding: 5px 7px; color: inherit; font: inherit; background: var(--panel);
   border: 1px solid var(--border); border-radius: 4px;
 }
-.commit-actions { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.commit-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 8px; }
 .patch code > span { display: block; min-height: 1em; }
 .patch-added { color: var(--good); background: color-mix(in srgb, var(--good) 9%, transparent); }
 .patch-removed { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
@@ -266,13 +270,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 
 .search-results .log-grid > :first-child {
   padding: 0;
-}
-
-.commit-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 5px 8px;
 }
 
 .history-toggle { margin-inline-start: auto; }
@@ -403,9 +400,17 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   top: calc(100% + 4px);
 }
 
-.branch-commands {
+.context-actions {
   position: fixed;
-  max-height: min(240px, calc(100vh - 16px));
+  z-index: 20;
+  max-height: calc(100vh - 16px);
+}
+
+.context-actions hr {
+  width: 100%;
+  margin: 3px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 .command-menu button {

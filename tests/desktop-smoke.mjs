@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -617,6 +617,35 @@ try {
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
   if (testM4) {
+    const openContext = async (selector, label) => {
+      await until(() => evaluate(`(() => {
+        const trigger = document.querySelector(${JSON.stringify(selector)})
+        if (!trigger) return false
+        trigger.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, clientX: innerWidth - 2, clientY: innerHeight - 2,
+        }))
+        return true
+      })()`), label + ' trigger')
+      const menu = '[aria-label="' + label + '"]'
+      await until(() => evaluate(`(() => {
+        const popup = document.querySelector(${JSON.stringify(menu)})
+        if (!popup?.classList.contains('context-actions')) return false
+        const rect = popup.getBoundingClientRect()
+        return rect.right <= innerWidth && rect.bottom <= innerHeight && popup.contains(document.activeElement)
+      })()`), label + ' popup inside the viewport')
+      return menu
+    }
+    const dismissContext = async menu => {
+      await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+      await until(() => evaluate(`!document.querySelector(${JSON.stringify(menu)})`), 'context menu dismissed by Escape')
+    }
+    await dismissContext(await openContext('.commit-row.active', 'Commit actions'))
+    const changedMenu = await openContext('.files-panel .file-row:not(.folder-row)', 'Changed file actions')
+    await clickButton(changedMenu, 'Show Diff')
+    await clickButton('.sidebar-segments', 'Branches')
+    await dismissContext(await openContext('.branch-row .side-item.active', 'Branch actions'))
+    await clickButton('.sidebar-segments', 'Changes')
+
     // The configured Ctrl+K shortcut opens the command palette.
     await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))")
     await until(() => evaluate("!!document.querySelector('.palette')"), 'command palette')
@@ -675,6 +704,29 @@ try {
     await inputValue('[aria-label="Repository path"]', shortcutRepo)
     await evaluate(`document.querySelector('[aria-label="Repository path"]').form.requestSubmit()`)
     await until(() => evaluate(`document.querySelector('.working-row[title="shortcut-test.txt"]')`), 'temporary staged file')
+    const workingMenu = await openContext('.working-row[title="shortcut-test.txt"]', 'Working file actions')
+    await clickButton(workingMenu, 'Show Staged Diff')
+    await until(() => evaluate("document.querySelector('.patch')?.textContent.includes('+staged shortcut fixture')"), 'staged diff from working file context menu')
+    await mkdir(join(shortcutRepo, 'unchecked'))
+    await writeFile(join(shortcutRepo, 'unchecked', 'keep.txt'), 'leave this out\n')
+    const toggleCheck = async (label, checked) => {
+      await until(() => evaluate(`(() => {
+        const box = document.querySelector(${JSON.stringify('input[aria-label="' + label + '"]')})
+        if (!box || box.disabled || box.checked === ${checked}) return false
+        box.click()
+        return true
+      })()`), label + ' checkbox')
+    }
+    await toggleCheck('Include folder unchecked in commit', true)
+    await until(() => git('diff', '--cached', '--name-only').includes('unchecked/keep.txt'), 'folder contents staged')
+    await toggleCheck('Include unchecked/keep.txt in commit', false)
+    await until(() => git('diff', '--cached', '--name-only') === file, 'unchecked file removed from index')
+    await until(() => evaluate(`document.querySelector('input[aria-label="Include all changes in commit"]').indeterminate`), 'mixed root checkbox')
+    await toggleCheck('Include all changes in commit', true)
+    await until(() => git('diff', '--cached', '--name-only').includes('unchecked/keep.txt'), 'remaining file staged by root checkbox')
+    assert.equal(git('show', ':' + file), 'staged shortcut fixture', 'root selection preserves partial staging')
+    await toggleCheck('Include unchecked/keep.txt in commit', false)
+    await until(() => git('diff', '--cached', '--name-only') === file, 'only checked file left staged')
     const bindCommit = async (binding, key, modifiers = {}) => {
       await evaluate(`(() => {
         const button = document.querySelector('[aria-label="Change shortcut for Focus commit message"]')
@@ -712,6 +764,7 @@ try {
     assert.equal(await pressCommitField('s', { ctrlKey: true, shiftKey: true }), false, 'configured chord must dispatch')
     await until(() => git('rev-parse', 'HEAD') !== head, 'real commit from configured chord')
     assert.equal(git('log', '-1', '--format=%s'), 'Shortcut integration commit')
+    assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), file)
     assert.equal(git('diff', '--cached', '--name-only'), '')
     await clickButton('.shortcut-settings', 'Reset to defaults')
     await evaluate("document.querySelector('.preferences').open = false")

@@ -8,6 +8,8 @@ import { useKeymap } from './stores/keymap'
 import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
 import { clearSession, readSession, saveSession } from './stores/session'
 import { useWorkspace } from './stores/workspace'
+import ContextActions from './components/layout/ContextActions.vue'
+import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
 import CommandPalette from './components/layout/CommandPalette.vue'
 import ShortcutSettings from './components/layout/ShortcutSettings.vue'
 import type { PaletteCommand } from './components/layout/commandFilter'
@@ -59,8 +61,7 @@ const managedBranch = ref('')
 const branchBase = ref('')
 const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
-const branchActions = useTemplateRef<HTMLElement>('branch-actions')
-const branchMenu = ref<{ item: GitRef; trigger: HTMLElement; x: number; y: number }>()
+const branchMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
 type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
 const sidebar = ref<Sidebar>('changes')
 const historyVisible = ref(true)
@@ -298,12 +299,12 @@ async function loadWorking() {
   }
 }
 
-function selectWorking(file: WorkingFile) {
+function selectWorking(file: WorkingFile, next: FileView = 'working') {
   workingSelection.value = file
   showHunks.value = false
   indexError.value = ''
   expandedPreview.value = false
-  void selectView('working')
+  void selectView(next)
 }
 
 async function selectView(next: FileView | 'commit', background = false, expanded = false) {
@@ -665,14 +666,21 @@ async function applyHunk(file: string, staged: boolean, revision: string, index:
   }
 }
 
-async function updateIndex(staged: boolean) {
+function updateIndex(staged: boolean) {
+  if (currentWorkingFile.value) void updateIncludedFiles([currentWorkingFile.value.path], staged)
+}
+
+async function updateIncludedFiles(paths: string[], staged: boolean) {
   const repo = store.repository?.path
-  const file = currentWorkingFile.value
-  if (!repo || !file || indexBusy.value) return
+  if (!repo || indexBusy.value || store.opening || restoringSession.value) return
+  const selected = new Set(paths)
+  const files = workingFiles.value.filter(file => selected.has(file.path) &&
+    (staged ? file.canStage : file.canUnstage))
+  if (!files.length) return
   indexBusy.value = true
   indexError.value = ''
   try {
-    await api.SetStaged(repo, file.path, staged)
+    for (const file of files) await api.SetStaged(repo, file.path, staged)
   } catch (error) {
     if (repo === store.repository?.path) indexError.value = String(error)
   } finally {
@@ -960,27 +968,17 @@ function focusCommit() {
   void nextTick(() => document.getElementById('commit-message')?.focus())
 }
 
-function closeBranchMenu(restoreFocus = false) {
-  const trigger = branchMenu.value?.trigger
+function closeBranchMenu() {
   branchMenu.value = undefined
-  if (restoreFocus) trigger?.focus()
 }
 
 function openBranchActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
-  const trigger = event.currentTarget
-  if (!(trigger instanceof HTMLElement)) return
-  const rect = trigger.getBoundingClientRect()
-  branchMenu.value = {
-    item, trigger, x: Math.max(8, Math.min(rect.right, window.innerWidth - 254)),
-    y: Math.max(8, Math.min(rect.top, window.innerHeight - 250)),
-  }
-  void nextTick(() => branchActions.value?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus())
+  branchMenu.value = { item, anchor: contextAnchor(event) }
 }
 
 function outsideMenus(event: PointerEvent) {
   if (!(event.target instanceof Node)) return
   if (!gitMenu.value?.contains(event.target)) closeGitMenu()
-  if (!branchActions.value?.contains(event.target) && !branchMenu.value?.trigger.contains(event.target)) closeBranchMenu()
 }
 
 function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase' | SyncIntent) {
@@ -1426,8 +1424,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
-                          :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
-                          @select="selectWorking" @update-index="updateIndex" @commit="commitChanges"
+                          :index-busy="indexBusy || store.opening || restoringSession" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
+                          @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
                           :can-resolve="!!selectedConflict" @resolve="markResolved()" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
@@ -1586,7 +1584,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <CommitLog ref="log" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
                        @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
-            <ChangedFiles ref="filesPanel" @select="view = 'commit'" @maximize="maximizeDiff" />
+            <ChangedFiles ref="filesPanel" @edit="openEditorFile" @select="view = 'commit'" @maximize="maximizeDiff" />
           </div>
         </div>
       </main>
@@ -1605,28 +1603,29 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         </div>
       </main>
     </div>
-    <div v-if="branchMenu && store.repository" ref="branch-actions" class="command-menu branch-commands"
-         :style="{ left: branchMenu.x + 'px', top: branchMenu.y + 'px' }" role="group" aria-label="Branch actions"
-         @keydown.esc.stop="closeBranchMenu(true)">
+    <ContextActions v-if="branchMenu && store.repository" :anchor="branchMenu.anchor" label="Branch actions" @close="closeBranchMenu">
       <strong class="ellipsis">{{ refLabel(branchMenu.item.name) }}</strong>
+      <button v-if="branchMenu.item.name.startsWith('refs/heads/') && branchMenu.item.name !== 'refs/heads/' + store.repository.head"
+              :disabled="indexBusy" @click="branchAction('switch')">Checkout</button>
       <button @click="branchAction('history')">Show in Git Log</button>
       <button :disabled="indexBusy" @click="branchAction('create')">New Branch from Here…</button>
+      <hr />
       <button :disabled="store.opening || !store.headHash" @click="branchAction('compare')">Compare with HEAD</button>
       <template v-if="branchMenu.item.hash !== store.headHash">
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('merge')">Merge into current branch…</button>
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('rebase')">Interactive rebase onto this…</button>
       </template>
       <template v-if="branchMenu.item.name.startsWith('refs/heads/')">
+        <hr />
         <template v-if="branchMenu.item.name === 'refs/heads/' + store.repository.head">
           <button :disabled="indexBusy" @click="branchAction('pull')">Pull…</button>
           <button :disabled="indexBusy" @click="branchAction('push')">Push…</button>
         </template>
-        <button v-else :disabled="indexBusy" @click="branchAction('switch')">Checkout</button>
         <button :disabled="indexBusy" @click="branchAction('rename')">Rename…</button>
         <button :disabled="indexBusy || branchMenu.item.name === 'refs/heads/' + store.repository.head"
                 @click="branchAction('delete')">Delete…</button>
       </template>
-    </div>
+    </ContextActions>
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>

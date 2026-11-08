@@ -15,11 +15,12 @@ function place() {
     left: Math.max(8, Math.min(x, window.innerWidth - offsetWidth - 8)) + 'px',
     top: Math.max(8, Math.min(y, window.innerHeight - offsetHeight - 8)) + 'px',
   }
-  panel.value.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true })
+  const initial = panel.value.querySelector<HTMLElement>('[data-initial-focus]') ?? panel.value.querySelector<HTMLButtonElement>('button:not(:disabled)')
+  initial?.focus({ preventScroll: true })
 }
 
 function outside(event: PointerEvent) {
-  if (event.target instanceof Node && !panel.value?.contains(event.target)) emit('close')
+  if (event.target instanceof Node && !panel.value?.contains(event.target) && !props.anchor.trigger.contains(event.target)) emit('close')
 }
 
 function close() {
@@ -28,6 +29,8 @@ function close() {
 }
 
 function move(event: KeyboardEvent, direction: number) {
+  if (!(event.target instanceof HTMLButtonElement)) return
+  event.preventDefault()
   const buttons = Array.from(panel.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
   if (!buttons.length) return
   const index = buttons.indexOf(event.target as HTMLButtonElement)
@@ -50,8 +53,8 @@ watch(() => props.anchor, place, { flush: 'post' })
 
 <template>
   <div ref="panel" class="command-menu context-actions" :style="position" role="group" :aria-label="label"
-       @keydown.esc.stop.prevent="close" @keydown.up.stop.prevent="move($event, -1)"
-       @keydown.down.stop.prevent="move($event, 1)">
+       @keydown.esc.stop.prevent="close" @keydown.up.stop="move($event, -1)"
+       @keydown.down.stop="move($event, 1)">
     <slot />
   </div>
 </template>

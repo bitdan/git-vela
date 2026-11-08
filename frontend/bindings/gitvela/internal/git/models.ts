@@ -88,6 +88,12 @@ export interface HistoryFilter {
     "from": string;
     "through": string;
     "hash": string;
+    "path"?: string;
+    "regex"?: boolean;
+    "matchCase"?: boolean;
+    "sort"?: string;
+    "firstParent"?: boolean;
+    "noMerges"?: boolean;
 }
 
 export interface HunkPatch {

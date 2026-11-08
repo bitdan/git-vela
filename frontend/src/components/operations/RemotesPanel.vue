@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmationDialog from '../layout/ConfirmationDialog.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Browser, Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
@@ -144,11 +145,13 @@ async function openResult(url: string) {
         </label>
         <button :disabled="busy || !canPublish || !account || !repoName.trim()" @click="confirming = true">Review publication</button>
       </div>
-      <p v-if="confirming" class="daily-confirm" role="group" aria-label="Confirm GitHub publication">
-        <span>Create <strong>{{ account }}/{{ repoName.trim() }}</strong> as {{ privateRepo ? 'private' : 'public' }} and push the committed history of <strong>{{ branch }}</strong>?</span>
-        <button @click="confirming = false">Cancel</button>
-        <button class="primary" :disabled="busy || !canPublish" @click="publishProject">Create and push</button>
-      </p>
+      <ConfirmationDialog v-if="confirming" title="Confirm GitHub publication" :busy="busy" @cancel="confirming = false">
+        <p>Create <strong>{{ account }}/{{ repoName.trim() }}</strong> as {{ privateRepo ? 'private' : 'public' }} and push the committed history of <strong>{{ branch }}</strong>?</p>
+        <template #actions>
+          <button data-cancel :disabled="busy" @click="confirming = false">Cancel</button>
+          <button class="primary" :disabled="busy || !canPublish" @click="publishProject">Create and push</button>
+        </template>
+      </ConfirmationDialog>
       <p v-if="result" class="notice" role="status">
         {{ result.pushed ? 'Published to GitHub.' : result.remoteAdded ? 'GitHub repository created and origin added.' : 'GitHub repository created.' }}
         <a :href="result.url" @click.prevent="openResult(result.url)">{{ result.url }}</a>
@@ -162,7 +165,6 @@ async function openResult(url: string) {
     </template>
     <template v-else>
       <div class="daily-controls">
-        <h2>Manage remotes</h2>
         <button :disabled="busy" @click="openForm('add')">Add remote…</button>
         <button :disabled="busy || loading" @click="load">Reload remotes</button>
       </div>
@@ -172,11 +174,14 @@ async function openResult(url: string) {
         <button type="button" :disabled="busy" @click="openForm()">Cancel</button>
         <button type="submit" :disabled="busy || !remoteName.trim() || !address.trim()">{{ form === 'add' ? 'Add' : 'Save URL' }}</button>
       </form>
-      <p v-else-if="form === 'remove'" class="daily-confirm" role="group" aria-label="Confirm remote removal">
-        <span>Remove the local configuration and tracking refs for <strong>{{ remoteName }}</strong>?</span>
-        <button :disabled="busy" @click="openForm()">Cancel</button>
-        <button class="danger-button" :disabled="busy" @click="changeRemote">Remove remote</button>
-      </p>
+      <ConfirmationDialog v-if="form === 'remove'" title="Confirm remote removal" :busy="busy" @cancel="openForm()">
+        <p>Remove the local configuration and tracking refs for <strong>{{ remoteName }}</strong>?</p>
+        <p v-if="error" class="notice error" role="alert">{{ error }}</p>
+        <template #actions>
+          <button data-cancel :disabled="busy" @click="openForm()">Cancel</button>
+          <button class="danger-button" :disabled="busy" @click="changeRemote">Remove remote</button>
+        </template>
+      </ConfirmationDialog>
       <p v-if="!remotes.length && !loading && !loadError" class="notice">No configured remotes.</p>
       <div v-for="remote in remotes" :key="remote.name" class="remote-row">
         <strong>{{ remote.name }}</strong>

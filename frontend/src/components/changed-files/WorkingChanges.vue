@@ -6,7 +6,7 @@ import { expandAncestors, fileTreeRows } from './fileTree'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string }>()
-const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: [] }>()
+const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: [] }>()
 const message = defineModel<string>('message', { required: true })
 const canStageAll = computed(() => props.files.some(file => file.canStage))
 const stagedCount = computed(() => props.files.filter(file => file.canUnstage).length)
@@ -140,6 +140,7 @@ defineExpose({ submit })
       <div class="commit-actions">
         <span role="status">{{ stagedCount }} staged<template v-if="notice"> · {{ notice }}</template></span>
         <button class="primary" type="submit" :disabled="!canCommit">{{ amendHash ? 'Amend commit' : 'Commit' }}</button>
+        <button type="button" :disabled="!canCommit" @click="emit('commitAndPush')">Commit and Push…</button>
         <button v-if="amendHash" type="button" :disabled="indexBusy" @click="emit('cancelAmend')">Cancel amend</button>
         <button v-else type="button" :disabled="indexBusy || !canAmend" @click="emit('startAmend')">Amend…</button>
       </div>

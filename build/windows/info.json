@@ -8,9 +8,11 @@
 			"FileVersion": "0.1.0",
 			"ProductVersion": "0.1.0",
 			"CompanyName": "GitVela",
-			"FileDescription": "A lightweight Git desktop client for browsing local repository history",
+			"FileDescription": "git-vela",
 			"LegalCopyright": "(c) 2026 GitVela",
-			"ProductName": "GitVela",
+			"ProductName": "git-vela",
+			"OriginalFilename": "git-vela.exe",
+			"InternalName": "git-vela",
 			"Comments": "Browse commits, changed files and diffs in a local Git repository"
 		}
 	}

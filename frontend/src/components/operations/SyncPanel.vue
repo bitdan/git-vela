@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmationDialog from '../layout/ConfirmationDialog.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
@@ -127,13 +128,15 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
               @click="confirmation = destination">Push…</button>
       <button :disabled="busy || loading" @click="load">Reload targets</button>
     </div>
-    <p v-if="confirmation" class="daily-confirm" role="group" aria-label="Confirm push">
+    <ConfirmationDialog v-if="confirmation" title="Confirm push" :busy="busy" @cancel="confirmation = undefined">
       <span>Push <strong>{{ confirmation.branch }}</strong> to <strong>{{ confirmation.remote }}/{{ confirmation.target }}</strong>?
         <template v-if="!upstream">This sets the branch upstream.</template>
       </span>
-      <button @click="confirmation = undefined">Cancel</button>
-      <button class="primary" :disabled="busy || loading || !!loadError" @click="run('push')">Confirm push</button>
-    </p>
+      <template #actions>
+        <button data-cancel :disabled="busy" @click="confirmation = undefined">Cancel</button>
+        <button class="primary" :disabled="busy || loading || !!loadError" @click="run('push')">Confirm push</button>
+      </template>
+    </ConfirmationDialog>
     <p v-if="running || loading" class="notice" role="status">{{ running || 'Reading Git remotes…' }}</p>
     <p v-if="error || loadError" class="notice error" role="alert">{{ error || loadError }}</p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>

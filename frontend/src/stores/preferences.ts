@@ -32,6 +32,7 @@ export const usePreferences = defineStore('preferences', () => {
   const previewHeight = ref(Math.min(70, Math.max(28, Number(preference('gitvela.previewHeight')) || defaultPreviewHeight)))
   const fileTree = ref(preference('gitvela.fileTree') !== 'false')
   const density = ref<Density>(preference('gitvela.density') === 'compact' ? 'compact' : 'comfortable')
+  const commitFirst = ref(preference('gitvela.commitFirst') === 'true')
   const resumeOnStart = ref(preference('gitvela.resumeOnStart') !== 'false')
   const rowHeight = computed(() => rowHeights[density.value].row)
   const repoRowHeight = computed(() => rowHeights[density.value].repo)
@@ -41,11 +42,12 @@ export const usePreferences = defineStore('preferences', () => {
   watch(previewHeight, value => persist('gitvela.previewHeight', String(value)))
   watch(fileTree, value => persist('gitvela.fileTree', String(value)))
   watch(density, value => persist('gitvela.density', value))
+  watch(commitFirst, value => persist('gitvela.commitFirst', String(value)))
   watch(resumeOnStart, value => persist('gitvela.resumeOnStart', String(value)))
 
   function toggleDensity() {
     density.value = density.value === 'compact' ? 'comfortable' : 'compact'
   }
 
-  return { dark, previewHeight, fileTree, density, resumeOnStart, rowHeight, repoRowHeight, workingRowHeight, toggleDensity }
+  return { dark, previewHeight, fileTree, density, commitFirst, resumeOnStart, rowHeight, repoRowHeight, workingRowHeight, toggleDensity }
 })

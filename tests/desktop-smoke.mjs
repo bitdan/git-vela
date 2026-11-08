@@ -125,12 +125,13 @@ try {
     const working = rect('.working-panel')
     const preview = rect('.preview-panel')
     const sidebar = rect('.workspace-sidebar')
+    const branches = rect('.branch-panel')
     const history = rect('.log-panel')
     const changes = rect('.files-panel')
     return working.left >= sidebar.left && working.right <= sidebar.right &&
       sidebar.right < preview.x && sidebar.y === preview.y &&
-      preview.bottom < history.y && history.x === preview.x && history.y === changes.y &&
-      history.right < changes.x && sidebar.bottom === history.bottom
+      preview.bottom < history.y && branches.y === history.y && history.y === changes.y &&
+      branches.right < history.x && history.right < changes.x && sidebar.bottom === preview.bottom
   })()`), true)
   assert.equal(await evaluate("document.querySelector('.shell').dataset.theme"), 'light')
   if (workingFile) {
@@ -164,7 +165,7 @@ try {
     await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('Commit from desktop'))"), 'new commit in history')
   }
   if (testBranch) {
-    await clickButton('.sidebar-segments', 'Branches')
+    await gitMenuAction('Branches')
     await evaluate("document.querySelector('.branch-panel .panel-header button').click()")
     await evaluate(`(() => {
       const input = document.querySelector('[aria-label="New branch name"]')
@@ -173,15 +174,15 @@ try {
       input.form.requestSubmit()
     })()`)
     await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/feature/desktop\"]')"), 'new local branch')
-    assert.equal(await evaluate("document.querySelector('.branch-panel .active')?.textContent.trim()"), 'main')
+    assert.equal(await evaluate("document.querySelector('.branch-panel .active')?.title"), 'refs/heads/main')
     await branchMenuAction('feature/desktop', 'Checkout')
-    await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'feature/desktop'"), 'new active branch')
+    await until(() => evaluate("document.querySelector('.branch-panel .active')?.title === 'refs/heads/feature/desktop'"), 'new active branch')
   }
   if (testBranch) {
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
-    const action = (label) => evaluate(`[...document.querySelectorAll('.branch-panel .new-branch button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
+    const action = (label) => evaluate(`[...document.querySelectorAll('[aria-label="Confirm branch deletion"] button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
     await branchMenuAction('main', 'Checkout')
-    await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'main'"), 'main active again')
+    await until(() => evaluate("document.querySelector('.branch-panel .active')?.title === 'refs/heads/main'"), 'main active again')
     await branchMenuAction('feature/desktop', 'Rename…')
     await evaluate(`(() => {
       const input = document.querySelector('[aria-label="New branch name"]')
@@ -206,14 +207,13 @@ try {
     await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('Initialize GitVela')"), 'tag commit selected')
   }
   if (worktreeTarget) {
-    await gitMenuAction('Branches')
     const click = (selector) => until(() => evaluate(`(() => {
       const button = document.querySelector(${JSON.stringify(selector)})
       if (!button || button.disabled) return false
       button.click()
       return true
     })()`), 'enabled worktree control ' + selector)
-    await clickButton('.sidebar-segments', 'Worktrees')
+    await gitMenuAction('Worktrees')
     await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'main worktree listed')
     await click('[aria-label="Worktrees"] .panel-header button[aria-expanded="false"]')
     await evaluate(`(() => {
@@ -234,7 +234,7 @@ try {
     await until(() => evaluate("document.querySelector('.statusbar').innerText.includes(' · main')"), 'main worktree opened again')
     await until(() => evaluate("!!document.querySelector('.worktree-row .switch-branch')"), 'remove action available')
     await click('.worktree-row .switch-branch')
-    await click('.worktree-form .danger-button')
+    await click('[aria-label="Confirm worktree removal"] .danger-button')
     await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'confirmed removal')
   }
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
@@ -269,20 +269,29 @@ try {
       await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/smoke/external-metadata\"]')"), 'external branch refresh')
     }
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
-    await click('.log-tools button[aria-expanded="false"]')
-    await evaluate(`(() => {
-      const form = document.querySelector('.history-search')
-      const message = [...form.querySelectorAll('label')].find(label => label.textContent.trim() === 'Message').querySelector('input')
-      message.value = 'Initialize GitVela'
-      message.dispatchEvent(new Event('input', { bubbles: true }))
-      form.requestSubmit()
-    })()`)
+    const logSearch = '[aria-label="Text or hash"]'
+    await inputValue(logSearch, 'Initialize GitVela')
+    await evaluate(`document.querySelector(${JSON.stringify(logSearch)}).form.requestSubmit()`)
     await until(() => evaluate("document.querySelector('.search-results .commit-row')?.innerText.includes('Initialize GitVela')"), 'history search result')
     await evaluate("document.querySelector('.search-results .commit-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
     await until(() => evaluate("document.querySelector('[aria-label=\"Commit actions\"]')?.innerText.includes('Copy message')"), 'commit context actions')
     await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText === 'Copy hash').click()")
     await until(() => evaluate("document.querySelector('.log-panel [role=status]')?.innerText === 'Hash copied.'"), 'copy hash')
-    await click('.log-tools button[aria-expanded="true"]')
+    await click('[aria-label="Clear filters"]')
+    await click('[aria-label="Sort and history options"]')
+    await clickButton('[aria-label="sort options"]', 'By Commit Date')
+    await until(() => evaluate(`!!document.querySelector('.commit-row canvas') && !!document.querySelector('[aria-label="Clear filters"]')`), 'ordered graph')
+    await click('[aria-label="Clear filters"]')
+    await clickButton('.log-toolbar', 'Paths ⌄')
+    await inputValue('[aria-label="paths options"] input', 'GitVela.md')
+    await clickButton('[aria-label="paths options"]', 'Apply')
+    await until(() => evaluate("!!document.querySelector('.search-results .commit-row')"), 'repository path filter')
+    await click('[aria-label="Clear filters"]')
+    await click('[aria-label="History display options"]')
+    await clickButton('[aria-label="view options"]', 'Hash')
+    assert.equal(await evaluate("document.querySelector('.log-heading').innerText.includes('Hash')"), false)
+    await clickButton('[aria-label="view options"]', 'Hash')
+    await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!!document.querySelector('.commit-row canvas')"), 'return to history graph')
     await click('.preferences summary')
     await click('.preferences-panel label:first-child input')
@@ -335,7 +344,7 @@ try {
     config(repo)
     git(repo, 'switch', '-c', dailyBranch)
     await text('.statusbar', dailyBranch)
-    await clickButton('.sidebar-segments', 'Changes')
+    await clickButton('.workspace-rail', 'Commit')
     await click('.commit-form', 'Amend…')
     await text('.amend-warning', 'Rewrites HEAD')
     assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))
@@ -352,13 +361,9 @@ try {
     await click('[aria-label=Stashes]', 'Save stash')
     await text('[aria-label=Stashes] [role=status]', 'Stash saved.')
     assert.equal(git(repo, 'status', '--porcelain'), '')
-    await until(() => evaluate("document.querySelector('[aria-label=Stashes] select')?.options.length === 2"), 'saved stash visible')
-    await evaluate(`(() => {
-      const select = document.querySelector('[aria-label=Stashes] select')
-      select.selectedIndex = 1
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })()`)
-    await click('[aria-label=Stashes]', 'Pop')
+    await until(() => evaluate("!!document.querySelector('.shelf-entries button')"), 'saved stash visible')
+    await evaluate("document.querySelector('.shelf-entries button').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
+    await click('[aria-label="Shelf actions"]', 'Pop')
     await text('[aria-label=Stashes] [role=status]', 'Stash applied and removed.')
     assert.match(git(repo, 'status', '--porcelain'), /gitvela-smoke-untracked/)
     assert.equal(git(repo, 'stash', 'list'), '')
@@ -366,11 +371,24 @@ try {
 
     git(repo, 'init', '--bare', '-b', dailyBranch, dailyRemote)
     git(repo, 'remote', 'add', 'm2-smoke', dailyRemote)
-    await gitMenuAction('Push…')
+    await writeFile(join(repo, 'commit-and-push-smoke.txt'), 'local commit before push review')
+    git(repo, 'add', '--', 'commit-and-push-smoke.txt')
+    await clickButton('.workspace-rail', 'Commit')
+    await set('#commit-message', 'Commit and push review')
+    await click('.commit-form', 'Commit and Push…')
+    await until(() => git(repo, 'log', '-1', '--format=%s') === 'Commit and push review', 'local commit created')
+    assert.equal(git(dailyRemote, 'for-each-ref', '--format=%(refname)', 'refs/heads'), '')
     await until(() => evaluate("[...document.querySelectorAll('[aria-label=\"Remote synchronization\"] select option')].some(option => option.value === 'm2-smoke')"), 'local test remote listed')
     await set('[aria-label="Remote synchronization"] select', 'm2-smoke')
     await click('[aria-label="Remote synchronization"]', 'Push…')
     await text('[aria-label="Confirm push"]', 'm2-smoke/' + dailyBranch)
+    await until(() => evaluate(`document.querySelector('dialog[aria-label="Confirm push"]:modal')?.contains(document.activeElement) &&
+      document.activeElement.textContent === 'Cancel'`), 'modal push review focuses Cancel')
+    await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await until(() => evaluate(`!document.querySelector('dialog[aria-label="Confirm push"]')`), 'Escape cancels the modal')
+    assert.equal(git(dailyRemote, 'for-each-ref', '--format=%(refname)', 'refs/heads'), '')
+    await click('[aria-label="Remote synchronization"]', 'Push…')
     await click('[aria-label="Confirm push"]', 'Confirm push')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Push complete')
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'm2-smoke/' + dailyBranch)
@@ -385,7 +403,7 @@ try {
     await gitMenuAction('Fetch…')
     await click('[aria-label="Remote synchronization"]', 'Fetch')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Fetched m2-smoke.')
-    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Amended through GitVela')
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit and push review')
     await gitMenuAction('Pull…')
     await click('[aria-label="Remote synchronization"]', 'Pull (fast-forward)')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
@@ -414,7 +432,7 @@ try {
       await clickButton('.repository-files .file-scroll', path)
     }
 
-    await clickButton('.sidebar-segments', 'Files')
+    await clickButton('.workspace-rail', 'Files')
     await selectFile(file)
     await editorStatus('Saved')
     await clickButton('.editor-tools', 'Find / Replace')
@@ -431,7 +449,7 @@ try {
     assert.equal(await readFile(target, 'utf8'), savedContent)
     assert.equal(git('diff', '--cached', '--name-only', '--', file), '')
 
-    await clickButton('.sidebar-segments', 'Changes')
+    await clickButton('.workspace-rail', 'Commit')
     await until(() => evaluate(`(() => {
       const row = document.querySelector('.working-row[title="greetservice.go"]')
       if (!row) return false
@@ -451,7 +469,7 @@ try {
     await until(() => evaluate("document.querySelector('.preview-panel [role=alert]')?.innerText.includes('changed on disk')"), 'external change blocked save')
     assert.equal(await readFile(target, 'utf8'), 'external update')
 
-    await clickButton('.sidebar-segments', 'Files')
+    await clickButton('.workspace-rail', 'Files')
     await selectFile('README.md')
     await clickButton('[aria-label="Unsaved file changes"]', 'Keep editing')
     assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'unsaved draft')
@@ -482,11 +500,11 @@ try {
     git('add', 'm3-two.txt')
     git('commit', '-m', 'M3 second')
     await text('.statusbar', ' · smoke-m3')
-    await clickButton('.sidebar-segments', 'Branches')
+    await gitMenuAction('Branches')
     await branchMenuAction('smoke-m3-base', 'Interactive rebase onto this…')
     await text('.rebase-plan', 'M3 second')
     await evaluate("document.querySelector('[aria-label=\"Move M3 second earlier\"]').click()")
-    await clickButton('.advanced-panel', 'Confirm Rebase')
+    await clickButton('[aria-label="Confirm Rebase"]', 'Confirm Rebase')
     await text('.advanced-panel [role=status]', 'Rebase complete.')
     assert.equal(git('log', '-2', '--format=%s'), 'M3 first\nM3 second')
 
@@ -498,7 +516,14 @@ try {
     await writeFile(target, 'main\n')
     git('add', 'm3.txt')
     git('commit', '-m', 'M3 main')
-    await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('M3 side'))"), 'side commit visible')
+    const sideHash = git('rev-parse', 'smoke-m3-side')
+    const mainHash = git('rev-parse', 'HEAD')
+    await until(() => evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.commit-row')]
+      const hasRef = (hash, ref) => rows.some(row => row.querySelector('code')?.title === hash &&
+        [...row.querySelectorAll('.chip')].some(chip => chip.title === ref))
+      return hasRef(${JSON.stringify(mainHash)}, 'HEAD') && hasRef(${JSON.stringify(sideHash)}, 'refs/heads/smoke-m3-side')
+    })()`), 'both comparison refs reflect the final fixture commits')
     await branchMenuAction('smoke-m3-side', 'Compare with HEAD')
     await text('.files-panel .commit-summary', 'HEAD → smoke-m3-side')
     await until(() => evaluate(`(() => {
@@ -517,7 +542,7 @@ try {
       .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`)
     await clickButton('[aria-label="Commit actions"]', 'Cherry-pick…')
     try {
-      await clickButton('.advanced-panel', 'Confirm Cherry-pick')
+      await clickButton('[aria-label="Confirm Cherry-pick"]', 'Confirm Cherry-pick')
     } catch (error) {
       console.error(await evaluate("document.querySelector('.advanced-panel')?.innerText || document.querySelector('.statusbar')?.innerText"))
       throw error
@@ -542,7 +567,7 @@ try {
     assert.equal(git('show', 'HEAD:m3.txt'), 'resolved')
 
     await writeFile(target, 'pending change\n')
-    await clickButton('.sidebar-segments', 'Files')
+    await clickButton('.workspace-rail', 'Files')
     await until(() => evaluate("!!document.querySelector('.repository-files .folder-row[aria-expanded]')"), 'default repository tree')
     await inputValue('[aria-label="Filter repository files"]', 'm3.txt')
     await clickButton('.repository-files .file-scroll', 'm3.txt')
@@ -552,7 +577,7 @@ try {
     await text('.blame-row', 'Uncommitted')
     await clickButton('.file-inspection', 'Close')
 
-    await clickButton('.sidebar-segments', 'Changes')
+    await clickButton('.workspace-rail', 'Commit')
     await until(() => evaluate(`(() => {
       const row = document.querySelector('.working-row[title="m3.txt"]')
       if (!row) return false
@@ -604,6 +629,7 @@ try {
     await clickButton('[aria-label="Confirm remote removal"]', 'Remove remote')
     await until(() => evaluate("document.querySelector('[aria-label=\"Manage remotes\"]').innerText.includes('No configured remotes.')"), 'remote removed')
     assert.equal(git('remote'), '')
+    await clickButton('[aria-label="Git Remotes"]', 'Done')
 
     await gitMenuAction('Publish to GitHub…')
     assert.equal(await evaluate("document.querySelector('[aria-label=\"Publish to GitHub\"] select').selectedIndex"), 0)
@@ -642,9 +668,20 @@ try {
     await dismissContext(await openContext('.commit-row.active', 'Commit actions'))
     const changedMenu = await openContext('.files-panel .file-row:not(.folder-row)', 'Changed file actions')
     await clickButton(changedMenu, 'Show Diff')
-    await clickButton('.sidebar-segments', 'Branches')
+    await gitMenuAction('Branches')
     await dismissContext(await openContext('.branch-row .side-item.active', 'Branch actions'))
-    await clickButton('.sidebar-segments', 'Changes')
+    await clickButton('.workspace-rail', 'Commit')
+
+    await clickButton('.commit-tabs', 'Shelf')
+    await until(() => evaluate("document.querySelector('.workspace-sidebar [aria-label=Stashes]')?.innerText.includes('Save stash')"), 'Shelf in the Commit workspace')
+    await clickButton('.commit-tabs', 'Commit')
+    await evaluate(`(() => {
+      const [files, commit] = document.querySelectorAll('.workspace-rail button')
+      const dataTransfer = new DataTransfer()
+      commit.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }))
+      files.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }))
+    })()`)
+    await until(() => evaluate("document.querySelector('.workspace-rail button').innerText === 'Commit' && localStorage.getItem('gitvela.commitFirst') === 'true'"), 'persistent tool order')
 
     // The configured Ctrl+K shortcut opens the command palette.
     await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))")
@@ -776,17 +813,20 @@ try {
         path: shortcutRepo, hash: base, file: historyFile, workingFile: file,
         sidebar: 'changes', view, historyVisible: false, range, smokeMarker: true,
       }
-      await evaluate(`localStorage.setItem('gitvela.session', ${JSON.stringify(JSON.stringify(session))})`)
       const writes = []
       const monitor = ({ data }) => {
         const { method, params } = JSON.parse(data)
         if (method === 'DOMStorage.domStorageItemUpdated' && params.key === 'gitvela.session') {
-          writes.push(JSON.parse(params.newValue))
+          const saved = JSON.parse(params.newValue)
+          if (!saved.smokeMarker) writes.push(saved)
         }
       }
       socket.addEventListener('message', monitor)
       try {
-        await cdp('Page.reload', {})
+        await evaluate(`(() => {
+          localStorage.setItem('gitvela.session', ${JSON.stringify(JSON.stringify(session))})
+          location.reload()
+        })()`)
         await until(() => evaluate(`document.querySelector('.working-row.active')?.title === 'shortcut-test.txt' &&
           document.querySelector('.preview-tabs [aria-pressed=true]')?.innerText === ${JSON.stringify(tab)}`), 'restored working file and ' + view + ' view')
         await until(() => writes.length > 0, 'restored session saved')

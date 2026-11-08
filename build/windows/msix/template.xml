@@ -8,7 +8,7 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="gitvela.exe"
+        Path="git-vela.exe"
         Arguments=""
         InstallLocation="C:\Program Files\My Company\GitVela">
     </Installer>
@@ -28,7 +28,7 @@
                 Id="com.example.gitvela"
                 Description="A gitvela application"
                 DisplayName="GitVela"
-                ExecutableName="gitvela.exe"
+                ExecutableName="git-vela.exe"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -47,7 +47,7 @@
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="gitvela.msix" />
+    <SaveLocation PackagePath="git-vela.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

@@ -77,3 +77,35 @@ func TestReadCommitMessage(t *testing.T) {
 		t.Fatalf("message = %q, error = %v", message, err)
 	}
 }
+
+func TestSearchHistoryToolbarFilters(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "one.txt", "first")
+	command(t, dir, "add", "--", "one.txt")
+	command(t, dir, "commit", "-m", "First change")
+	write(t, dir, "two.txt", "second")
+	command(t, dir, "add", "--", "two.txt")
+	command(t, dir, "commit", "-m", "Second change")
+	for _, query := range []HistoryFilter{
+		{Branch: "HEAD", Path: "one.txt"},
+		{Message: "^first", Regex: true},
+		{Message: "First", MatchCase: true, Sort: "date", FirstParent: true, NoMerges: true},
+	} {
+		result, err := SearchHistory(ctx, dir, query, Cursor{})
+		if err != nil || len(result.Commits) != 1 || result.Commits[0].Subject != "First change" {
+			t.Fatalf("filter %+v: %+v, %v", query, result.Commits, err)
+		}
+	}
+	result, err := SearchHistory(ctx, dir, HistoryFilter{Message: "first", MatchCase: true}, Cursor{})
+	if err != nil || len(result.Commits) != 0 {
+		t.Fatalf("case-sensitive filter: %+v, %v", result.Commits, err)
+	}
+	if _, err := SearchHistory(ctx, dir, HistoryFilter{Path: "../one.txt"}, Cursor{}); err == nil {
+		t.Fatal("accepted a path outside the repository")
+	}
+	result, err = SearchHistory(ctx, dir, HistoryFilter{Sort: "date"}, Cursor{})
+	if err != nil || len(result.Commits) != 2 || result.Commits[0].Graph.Width == 0 {
+		t.Fatalf("ordered graph: %+v, %v", result.Commits, err)
+	}
+}

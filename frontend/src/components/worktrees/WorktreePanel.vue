@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmationDialog from '../layout/ConfirmationDialog.vue'
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
@@ -163,13 +164,15 @@ function description(tree: Worktree) {
           <button type="submit" :disabled="busy || store.opening || !target.trim() || !branch.trim() || (newBranch && !store.selected)">Create</button>
         </div>
       </form>
-      <div v-else-if="removal" class="worktree-form" aria-label="Confirm worktree removal">
+      <ConfirmationDialog v-if="removal" title="Confirm worktree removal" :busy="busy"
+                          @cancel="removal = undefined; actionError = ''">
         <p>Remove the checkout at <strong>{{ removal.path }}</strong>? Its branch will be kept.</p>
-        <div class="worktree-actions">
-          <button :disabled="busy" @click="removal = undefined; actionError = ''">Cancel</button>
+        <p v-if="actionError" class="notice error" role="alert">{{ actionError }}</p>
+        <template #actions>
+          <button data-cancel :disabled="busy" @click="removal = undefined; actionError = ''">Cancel</button>
           <button class="danger-button" :disabled="busy || store.opening" @click="update('remove')">Remove worktree</button>
-        </div>
-      </div>
+        </template>
+      </ConfirmationDialog>
       <p v-if="busy" class="notice" role="status">Git operation in progress…</p>
       <p v-if="listError" class="notice error" role="alert">{{ listError }}</p>
       <p v-if="actionError" class="notice error" role="alert">{{ actionError }}</p>

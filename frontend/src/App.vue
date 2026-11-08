@@ -8,6 +8,7 @@ import { useKeymap } from './stores/keymap'
 import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
 import { clearSession, readSession, saveSession } from './stores/session'
 import { useWorkspace } from './stores/workspace'
+import ConfirmationDialog from './components/layout/ConfirmationDialog.vue'
 import ContextActions from './components/layout/ContextActions.vue'
 import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
 import CommandPalette from './components/layout/CommandPalette.vue'
@@ -18,7 +19,7 @@ import { navigateDiff } from './components/diff/diffNavigation'
 import CommitLog from './components/git-log/CommitLog.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
-import { compareNames } from './components/changed-files/fileTree'
+import { compareNames, fileTreeRows } from './components/changed-files/fileTree'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
 import RepositoryFiles from './components/editor/RepositoryFiles.vue'
 import FileInspection from './components/history/FileInspection.vue'
@@ -30,6 +31,7 @@ import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
 import type { AmendTarget, Commit, FilePreview, HeadState, OperationState, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
+import appIcon from './git-vela.svg'
 import './styles.css'
 
 const TextDiff = defineAsyncComponent(() => import('./components/diff/TextDiff.vue'))
@@ -63,12 +65,20 @@ const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
 const branchMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
 type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
-const sidebar = ref<Sidebar>('changes')
+const sidebar = ref<Exclude<Sidebar, 'branches'>>('changes')
+const commitTab = ref<'commit' | 'shelf'>('commit')
+const railItems = computed(() => preferences.commitFirst ? ['changes', 'files'] as const : ['files', 'changes'] as const)
+const draggedTool = ref<'files' | 'changes'>()
+
+function dropTool(target: 'files' | 'changes') {
+  if (draggedTool.value && draggedTool.value !== target) preferences.commitFirst = !preferences.commitFirst
+  draggedTool.value = undefined
+}
 const historyVisible = ref(true)
 const restoringSession = ref(false)
 const sidebarTabs: { id: Sidebar; label: string }[] = [
   { id: 'files', label: 'Files' },
-  { id: 'changes', label: 'Changes' },
+  { id: 'changes', label: 'Commit' },
   { id: 'branches', label: 'Branches' },
   { id: 'worktrees', label: 'Worktrees' },
 ]
@@ -81,6 +91,17 @@ const visibleRefs = computed(() => {
   return refs.filter(item => refLabel(item.name).toLowerCase().includes(query))
     .sort((a, b) => rank(a.name) - rank(b.name) || compareNames(refLabel(a.name), refLabel(b.name)))
 })
+
+const collapsedBranches = ref(new Set<string>())
+const branchRows = computed(() => fileTreeRows(visibleRefs.value.map(item => ({
+  item,
+  path: (item.name.startsWith('refs/remotes/') ? 'Remote/' : 'Local/') + refLabel(item.name),
+})), branchFilter.value.trim() ? new Set() : collapsedBranches.value))
+
+function toggleBranchFolder(path: string) {
+  if (collapsedBranches.value.has(path)) collapsedBranches.value.delete(path)
+  else collapsedBranches.value.add(path)
+}
 
 function refLabel(ref: string) {
   return ref.replace(/^refs\/(heads|remotes|tags)\//, '')
@@ -155,7 +176,7 @@ const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
 const amendTarget = ref<AmendTarget>()
 let draftBeforeAmend = ''
-type DailyPanel = 'stash' | 'sync' | 'init' | 'remotes' | 'publish'
+type DailyPanel = 'sync' | 'init' | 'remotes' | 'publish'
 type SyncIntent = 'fetch' | 'pull' | 'push'
 const dailyPanel = ref<DailyPanel>()
 const syncIntent = ref<SyncIntent>('fetch')
@@ -219,6 +240,7 @@ watch(() => store.repository?.path, repo => {
   branchNotice.value = ''
   branchName.value = ''
   branchFilter.value = ''
+  collapsedBranches.value.clear()
   branchForm.value = undefined
   managedBranch.value = ''
   branchBase.value = ''
@@ -595,7 +617,10 @@ async function runAdvanced() {
   } finally {
     try {
       await Promise.all([refreshAfterDailyOperation(), loadOperationState()])
-      if (operation.value?.conflicts?.length) sidebar.value = 'changes'
+      if (operation.value?.conflicts?.length) {
+        sidebar.value = 'changes'
+        commitTab.value = 'commit'
+      }
     } finally {
       indexBusy.value = false
     }
@@ -759,6 +784,7 @@ async function initializeProject() {
     const repo = await api.Initialize(projectPath.value.trim())
     await store.open(repo.path)
     sidebar.value = 'changes'
+    commitTab.value = 'commit'
   } catch (cause) {
     projectError.value = String(cause)
   } finally {
@@ -785,7 +811,7 @@ async function stageAll() {
   }
 }
 
-async function commitChanges() {
+async function commitChanges(reviewPush = false) {
   const repo = store.repository?.path
   const message = commitMessage.value
   const target = amendTarget.value
@@ -804,6 +830,10 @@ async function commitChanges() {
     await Promise.all([store.open(repo), loadWorking()])
     if (repo === store.repository?.path && (view.value === 'staged' || view.value === 'unstaged')) {
       void selectView(view.value)
+    }
+    if (reviewPush && repo === store.repository?.path) {
+      syncIntent.value = 'push'
+      dailyPanel.value = 'sync'
     }
   } catch (error) {
     if (repo === store.repository?.path) indexError.value = String(error)
@@ -959,8 +989,20 @@ function openSync(intent: SyncIntent) {
 function openSidebar(panel: Sidebar) {
   if (indexBusy.value) return
   closeBranchMenu()
-  sidebar.value = panel
+  if (panel === 'branches') {
+    historyVisible.value = true
+    void nextTick(() => content.value?.querySelector<HTMLInputElement>('[aria-label="Filter branches or tags"]')?.focus())
+  } else {
+    sidebar.value = panel
+    if (panel === 'changes') commitTab.value = 'commit'
+  }
   diffExpanded.value = false
+}
+
+function openShelf() {
+  if (indexBusy.value || store.opening) return
+  openSidebar('changes')
+  commitTab.value = 'shelf'
 }
 
 function focusCommit() {
@@ -1129,8 +1171,8 @@ async function restoreSession() {
       restoreNotice.value = 'The last repository is no longer available. Choose a repository to continue.'
       return
     }
-    sidebar.value = saved.sidebar ?? 'changes'
-    historyVisible.value = saved.historyVisible ?? true
+    sidebar.value = !saved.sidebar || saved.sidebar === 'branches' ? 'changes' : saved.sidebar
+    historyVisible.value = saved.sidebar === 'branches' || (saved.historyVisible ?? true)
     // Sessions written without a view used the revision to choose the preview.
     const savedView = saved.view ?? (saved.hash || saved.range ? 'commit' : 'working')
     const nextView = savedView === 'commit' || savedView === 'staged' || savedView === 'unstaged'
@@ -1216,7 +1258,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     add('fetch', 'Fetch…', 'Git operations', () => openSync('fetch'), { disabled: busy })
     add('pull', 'Pull…', 'Git operations', () => openSync('pull'), { disabled: busy })
     add('push', 'Push…', 'Git operations', () => openSync('push'), { disabled: busy })
-    add('stash', 'Stash…', 'Git operations', () => toggleDailyPanel('stash'), { disabled: busy })
+    add('stash', 'Stash…', 'Git operations', openShelf, { disabled: busy })
     add('remotes', 'Manage Remotes…', 'Git operations', () => toggleDailyPanel('remotes'), { disabled: busy })
     add('publish', 'Publish to GitHub…', 'Git operations', () => toggleDailyPanel('publish'), { disabled: busy })
     add('new-branch', 'New Branch…', 'Git operations', createBranchFromCommit, { disabled: busy || !store.selected })
@@ -1259,9 +1301,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     <header class="topbar">
       <div class="brand">
         <span class="brand-icon">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.8 10.6 17.2 3l-4.4 14-3.1-5.3zM9.7 11.7 17.2 3" />
-          </svg>
+          <img :src="appIcon" alt="" />
         </span>
         <strong>GitVela</strong>
       </div>
@@ -1281,7 +1321,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <button :disabled="indexBusy" @click="gitAction(() => openSync('push'))">Push…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('pull'))">Pull…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('stash'))">Stash…</button>
+            <button :disabled="indexBusy" @click="gitAction(openShelf)">Stash…</button>
             <div class="command-divider"></div>
             <button :disabled="indexBusy" @click="gitAction(() => { openSidebar('branches'); refKind = 'branches' })">Branches</button>
             <button :disabled="indexBusy || !store.selected" @click="gitAction(createBranchFromCommit)">New Branch…</button>
@@ -1342,23 +1382,30 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <p v-if="projectError" class="notice error" role="alert">{{ projectError }}</p>
       <p v-else class="notice">{{ indexBusy ? 'Initializing…' : 'Create a Git repository in an existing project folder.' }}</p>
     </section>
-    <RemotesPanel v-if="(dailyPanel === 'remotes' || dailyPanel === 'publish') && store.repository"
-                  :key="store.repository.path + ':' + dailyPanel" :path="store.repository.path" :name="store.repository.name"
-                  :branch="store.repository.head" :has-head="hasLocalHead" :publish="dailyPanel === 'publish'"
-                  :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
-    <StashPanel v-if="dailyPanel === 'stash' && store.repository" :key="store.repository.path"
-                :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <ConfirmationDialog v-if="dailyPanel === 'remotes' && store.repository" title="Git Remotes" :busy="indexBusy"
+                        @cancel="dailyPanel = undefined">
+      <RemotesPanel :key="store.repository.path" :path="store.repository.path" :name="store.repository.name"
+                    :branch="store.repository.head" :has-head="hasLocalHead" :publish="false"
+                    :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+      <template #actions>
+        <button data-cancel class="primary" :disabled="indexBusy" @click="dailyPanel = undefined">Done</button>
+      </template>
+    </ConfirmationDialog>
+    <RemotesPanel v-if="dailyPanel === 'publish' && store.repository" :key="store.repository.path"
+                  :path="store.repository.path" :name="store.repository.name" :branch="store.repository.head"
+                  :has-head="hasLocalHead" publish :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
                :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
-    <div v-if="pendingEditorAction" class="daily-panel daily-confirm" role="group" aria-label="Unsaved file changes">
-      <span>Discard unsaved changes in <strong>{{ editorPath }}</strong> before {{ pendingEditorLabel }}?</span>
-      <button @click="pendingEditorAction = undefined">Keep editing</button>
-      <button class="danger-button" @click="discardEditorChanges">Discard changes</button>
-    </div>
-    <section v-if="advanced || preparingOperation || operation?.kind || operation?.conflicts?.length || operationError || operationNotice"
-             class="daily-panel advanced-panel" aria-label="Git history operation">
-      <p v-if="preparingOperation" class="notice" role="status">Checking current HEAD…</p>
-      <div v-if="advanced" class="daily-controls">
+    <ConfirmationDialog v-if="pendingEditorAction" title="Unsaved file changes" @cancel="pendingEditorAction = undefined">
+      <p>Discard unsaved changes in <strong>{{ editorPath }}</strong> before {{ pendingEditorLabel }}?</p>
+      <template #actions>
+        <button data-cancel @click="pendingEditorAction = undefined">Keep editing</button>
+        <button class="danger-button" @click="discardEditorChanges">Discard changes</button>
+      </template>
+    </ConfirmationDialog>
+    <ConfirmationDialog v-if="advanced" :title="'Confirm ' + advancedLabels[advanced.action]"
+                        :busy="indexBusy" @cancel="advanced = undefined">
+      <div class="daily-controls">
         <strong>{{ advancedLabels[advanced.action] }} {{ advanced.label }} ({{ advanced.hash.slice(0, 8) }})</strong>
         <span class="muted">Current {{ refLabel(advanced.head.ref) || 'detached HEAD' }} · {{ advanced.head.hash.slice(0, 8) }}</span>
         <label v-if="advanced.action === 'reset'">Mode
@@ -1372,10 +1419,6 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           <input v-model="hardResetConfirmed" type="checkbox" /> Discard tracked changes
         </label>
         <span v-if="advanced.action === 'rebase'" class="notice">Rewrites the current branch's commits.</span>
-        <button :disabled="indexBusy" @click="advanced = undefined">Cancel</button>
-        <button :class="advanced.action === 'reset' && resetMode === 'hard' ? 'danger-button' : 'primary'"
-                :disabled="indexBusy || store.opening || (advanced.action === 'reset' && resetMode === 'hard' && !hardResetConfirmed)"
-                @click="withSavedEditor('changing Git history', () => { void runAdvanced() })">Confirm {{ advancedLabels[advanced.action] }}</button>
       </div>
       <div v-if="advanced?.action === 'rebase'" class="rebase-plan" aria-label="Interactive rebase plan">
         <div v-for="(step, index) in rebasePlan" :key="step.commit.hash" class="rebase-step">
@@ -1391,6 +1434,16 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           <button :disabled="index === rebasePlan.length - 1" :aria-label="'Move ' + step.commit.subject + ' later'" @click="moveRebaseStep(index, 1)">↓</button>
         </div>
       </div>
+      <template #actions>
+        <button data-cancel :disabled="indexBusy" @click="advanced = undefined">Cancel</button>
+        <button :class="advanced.action === 'reset' && resetMode === 'hard' ? 'danger-button' : 'primary'"
+                :disabled="indexBusy || store.opening || (advanced.action === 'reset' && resetMode === 'hard' && !hardResetConfirmed)"
+                @click="withSavedEditor('changing Git history', () => { void runAdvanced() })">Confirm {{ advancedLabels[advanced.action] }}</button>
+      </template>
+    </ConfirmationDialog>
+    <section v-if="preparingOperation || operation?.kind || operation?.conflicts?.length || operationError || operationNotice"
+             class="daily-panel advanced-panel" aria-label="Git history operation">
+      <p v-if="preparingOperation" class="notice" role="status">Checking current HEAD…</p>
       <div v-if="operation?.kind || operation?.conflicts?.length" class="daily-controls">
         <strong>{{ operation.kind ? operation.kind + ' in progress' : 'Unmerged files' }}</strong>
         <span class="muted">{{ operation.conflicts?.length ?? 0 }} unmerged</span>
@@ -1398,84 +1451,54 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <button v-if="operation.kind" :disabled="indexBusy || !!operation.conflicts?.length"
                 @click="withSavedEditor('continuing the Git operation', () => { void finishOperation(false) })">Continue</button>
         <button v-if="operation.kind && !confirmAbort" :disabled="indexBusy" @click="confirmAbort = true">Abort…</button>
-        <template v-if="confirmAbort">
-          <span>Discard the in-progress operation and its resolutions?</span>
-          <button @click="confirmAbort = false">Keep operation</button>
-          <button class="danger-button" :disabled="indexBusy"
-                  @click="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })">Confirm abort</button>
-        </template>
+        <ConfirmationDialog v-if="confirmAbort" title="Confirm abort" :busy="indexBusy" @cancel="confirmAbort = false">
+          <p>Discard the in-progress operation and its resolutions?</p>
+          <template #actions>
+            <button data-cancel :disabled="indexBusy" @click="confirmAbort = false">Keep operation</button>
+            <button class="danger-button" :disabled="indexBusy"
+                    @click="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })">Confirm abort</button>
+          </template>
+        </ConfirmationDialog>
       </div>
       <p v-if="operationError" class="notice error" role="alert">{{ operationError }} <button @click="operationError = ''">Dismiss</button></p>
       <p v-if="operationNotice" class="notice" role="status">{{ operationNotice }} <button @click="operationNotice = ''">Dismiss</button></p>
     </section>
     <div class="workspace">
-      <main v-if="store.repository" class="content" :class="{ 'preview-only': diffExpanded }">
+      <main v-if="store.repository" ref="content" class="content" :class="{ 'preview-only': diffExpanded }"
+            :style="{ gridTemplateRows: historyVisible && !diffExpanded
+              ? 'minmax(0, ' + previewHeight + 'fr) auto minmax(0, ' + (100 - previewHeight) + 'fr)' : 'minmax(0, 1fr)' }">
+        <nav v-show="!diffExpanded" class="workspace-rail" aria-label="Workspace views">
+          <button v-for="tool in railItems" :key="tool" draggable="true" :aria-pressed="sidebar === tool"
+                  :disabled="indexBusy" :title="(tool === 'files' ? 'Files' : 'Commit') + ' · Drag to reorder'"
+                  @dragstart="draggedTool = tool; $event.dataTransfer?.setData('text/plain', tool)"
+                  @dragover.prevent @drop.prevent="dropTool(tool)" @dragend="draggedTool = undefined"
+                  @keydown.alt.up.stop.prevent="preferences.commitFirst = tool === 'changes'"
+                  @keydown.alt.down.stop.prevent="preferences.commitFirst = tool === 'files'"
+                  @click="openSidebar(tool)">{{ tool === 'files' ? 'Files' : 'Commit' }}</button>
+        </nav>
         <aside v-show="!diffExpanded" class="panel workspace-sidebar" aria-label="Repository workspace">
           <div class="sidebar-project">
             <span class="eyebrow">Repository</span>
             <strong class="ellipsis" :title="store.repository.path">{{ store.repository.name }}</strong>
           </div>
-          <nav class="sidebar-segments" aria-label="Workspace views">
-            <button v-for="tab in sidebarTabs" :key="tab.id" :aria-pressed="sidebar === tab.id"
-                    :disabled="indexBusy" @click="openSidebar(tab.id)">{{ tab.label }}</button>
+          <nav v-show="sidebar === 'changes'" class="commit-tabs" aria-label="Commit workspace">
+            <button :aria-pressed="commitTab === 'commit'" :disabled="indexBusy" @click="commitTab = 'commit'">Commit</button>
+            <button :aria-pressed="commitTab === 'shelf'" :disabled="indexBusy" @click="openShelf">Shelf</button>
           </nav>
           <RepositoryFiles v-show="sidebar === 'files'" :key="store.repository.path" :path="store.repository.path"
                            :active="sidebar === 'files' && !diffExpanded" :selected="editorPath" @open="openEditorFile" />
-          <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
+          <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes' && commitTab === 'commit'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy || store.opening || restoringSession" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
-                          @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges"
+                          @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
                           :can-resolve="!!selectedConflict" @resolve="markResolved()" />
+          <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"
+                      class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
-          <aside v-show="sidebar === 'branches'" class="panel branch-panel" aria-label="Branches and tags">
-            <header class="panel-header">
-              <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
-              <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
-                      @click="openBranchForm(branchForm === 'create' ? undefined : 'create')">New…</button>
-            </header>
-            <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
-                  @submit.prevent="updateBranch(branchForm, branchName.trim())">
-              <input v-model="branchName" aria-label="New branch name" placeholder="Branch name" spellcheck="false" />
-              <small v-if="branchForm === 'create' && createBase" class="muted">From {{ createBase.slice(0, 8) }}</small>
-              <small v-if="branchForm === 'rename'" class="muted ellipsis" :title="managedBranch">Rename {{ managedBranch }}</small>
-              <button type="button" :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-              <button type="submit" :disabled="!branchName.trim() || indexBusy || (branchForm === 'create' && !createBase)">
-                {{ branchForm === 'create' ? 'Create' : 'Rename' }}
-              </button>
-            </form>
-            <div v-else-if="branchForm === 'delete'" class="new-branch" aria-label="Confirm branch deletion">
-              <p class="branch-action-label">Delete <strong>{{ managedBranch }}</strong> if it is merged into the current HEAD?</p>
-              <button :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-              <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
-            </div>
-            <div v-else class="ref-filter">
-              <select v-model="refKind" aria-label="Reference type" @change="branchFilter = ''; navigation = ''">
-                <option value="branches">Branches</option>
-                <option value="tags">Tags</option>
-              </select>
-              <input v-model="branchFilter" aria-label="Filter branches or tags" placeholder="Filter" />
-            </div>
-            <div class="branch-scroll" @scroll.passive="closeBranchMenu()">
-              <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
-              <p v-if="branchNotice" class="notice" role="status">{{ branchNotice }}</p>
-              <p v-if="navigation" class="notice" role="status">{{ navigation }}</p>
-              <p v-if="!visibleRefs.length" class="notice">{{ branchFilter ? 'No matching references' : 'No ' + refKind + ' yet' }}</p>
-              <div v-for="item in visibleRefs" :key="item.name" class="branch-row">
-                <button class="side-item ellipsis"
-                        :class="{ active: item.name === 'refs/heads/' + store.repository.head }"
-                        :title="item.name" :aria-expanded="refKind === 'branches' ? branchMenu?.item.name === item.name : undefined"
-                        @click="refKind === 'branches' ? openBranchActions(item, $event) : jump(item.hash)"
-                        @contextmenu.prevent="refKind === 'branches' && openBranchActions(item, $event)"
-                        @keydown.shift.f10.prevent="refKind === 'branches' && openBranchActions(item, $event)">{{ refLabel(item.name) }}</button>
-              </div>
-            </div>
-          </aside>
         </aside>
-        <div ref="content" class="editor-workspace">
-          <div class="upper" :class="{ 'diff-expanded': diffExpanded }"
-               :style="{ flexBasis: diffExpanded || !historyVisible ? '100%' : previewHeight + '%' }">
+          <div class="upper" :class="{ 'diff-expanded': diffExpanded }">
             <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
               <header class="preview-tabs">
                 <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
@@ -1581,18 +1604,78 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
                @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
           <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower">
-            <CommitLog ref="log" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
+            <aside class="panel branch-panel" aria-label="Branches and tags">
+              <header class="panel-header">
+                <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
+                <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
+                        @click="openBranchForm(branchForm === 'create' ? undefined : 'create')">New…</button>
+              </header>
+              <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
+                    @submit.prevent="updateBranch(branchForm, branchName.trim())">
+                <input v-model="branchName" aria-label="New branch name" placeholder="Branch name" spellcheck="false" />
+                <small v-if="branchForm === 'create' && createBase" class="muted">From {{ createBase.slice(0, 8) }}</small>
+                <small v-if="branchForm === 'rename'" class="muted ellipsis" :title="managedBranch">Rename {{ managedBranch }}</small>
+                <button type="button" :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
+                <button type="submit" :disabled="!branchName.trim() || indexBusy || (branchForm === 'create' && !createBase)">
+                  {{ branchForm === 'create' ? 'Create' : 'Rename' }}
+                </button>
+              </form>
+              <ConfirmationDialog v-else-if="branchForm === 'delete'" title="Confirm branch deletion"
+                                  :busy="indexBusy" @cancel="openBranchForm()">
+                <p>Delete <strong>{{ managedBranch }}</strong> if it is merged into the current HEAD?</p>
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <template #actions>
+                  <button data-cancel :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
+                  <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
+                </template>
+              </ConfirmationDialog>
+              <div v-else class="ref-filter">
+                <select v-model="refKind" aria-label="Reference type" @change="branchFilter = ''; navigation = ''">
+                  <option value="branches">Branches</option>
+                  <option value="tags">Tags</option>
+                </select>
+                <input v-model="branchFilter" aria-label="Filter branches or tags" placeholder="Filter" />
+              </div>
+              <div class="branch-scroll" @scroll.passive="closeBranchMenu()">
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <p v-if="branchNotice" class="notice" role="status">{{ branchNotice }}</p>
+                <p v-if="navigation" class="notice" role="status">{{ navigation }}</p>
+                <p v-if="!visibleRefs.length" class="notice">{{ branchFilter ? 'No matching references' : 'No ' + refKind + ' yet' }}</p>
+                <template v-if="refKind === 'branches'">
+                  <div v-if="store.headHash && !branchFilter.trim()" class="branch-row">
+                    <button class="side-item ellipsis" @click="jump(store.headHash)">HEAD (Current Branch)</button>
+                  </div>
+                  <div v-for="row in branchRows" :key="(row.file ? 'ref:' : 'folder:') + row.path" class="branch-row"
+                       :style="{ paddingInlineStart: row.depth * 12 + 'px' }">
+                    <button v-if="row.file" class="side-item ellipsis"
+                            :class="{ active: row.file.item.name === 'refs/heads/' + store.repository.head }"
+                            :title="row.file.item.name" :aria-expanded="branchMenu?.item.name === row.file.item.name"
+                            @click="openBranchActions(row.file.item, $event)"
+                            @contextmenu.prevent="openBranchActions(row.file.item, $event)"
+                            @keydown.shift.f10.prevent="openBranchActions(row.file.item, $event)">
+                      <span v-if="row.file.item.name === 'refs/heads/' + store.repository.head" class="current-ref-marker" aria-hidden="true">●</span>{{ row.name }}
+                    </button>
+                    <button v-else class="side-item ellipsis branch-folder" :disabled="!!branchFilter.trim()"
+                            :aria-expanded="!!branchFilter.trim() || !collapsedBranches.has(row.path)"
+                            @click="toggleBranchFolder(row.path)">
+                      <span aria-hidden="true">{{ !branchFilter.trim() && collapsedBranches.has(row.path) ? '▸' : '▾' }}</span> {{ row.name }}
+                    </button>
+                  </div>
+                </template>
+                <div v-else v-for="item in visibleRefs" :key="item.name" class="branch-row">
+                  <button class="side-item ellipsis" :title="item.name" @click="jump(item.hash)">{{ refLabel(item.name) }}</button>
+                </div>
+              </div>
+            </aside>
+            <CommitLog ref="log" @refresh="refresh" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
                        @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
             <ChangedFiles ref="filesPanel" @edit="openEditorFile" @select="view = 'commit'" @maximize="maximizeDiff" />
           </div>
-        </div>
       </main>
       <main v-else class="empty">
         <div class="brand-icon empty-icon">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.8 10.6 17.2 3l-4.4 14-3.1-5.3zM9.7 11.7 17.2 3" />
-          </svg>
+          <img :src="appIcon" alt="" />
         </div>
         <span class="eyebrow">LOCAL GIT WORKSPACE</span>
         <h1>Open a Git repository</h1>

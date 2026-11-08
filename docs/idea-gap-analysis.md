@@ -54,8 +54,8 @@
 |---|---|---|---|---|
 | I01 | 单击历史提交会把中央视图强制切到 commit diff，破坏 Editor/Working 视图（违反 T02/T04） | App.vue:1670-1673 `@select="view = 'commit'"`（CommitLog 与 ChangedFiles 均如此） | MainFrame.java:142-156：table selection → `VcsLogTableCommitSelectionListener` → `commitDetailsLoader` 只驱动 details/changes 更新，不抢占编辑器 | select 事件改为：仅当当前已是 commit diff 视图时保持；否则只更新右栏数据 |
 | I02 | 分支**单击**打开操作菜单（与右键相同），非"选择/跳转"语义（T07 偏差） | App.vue:1650-1655 `@click="openBranchActions(...)"` | IDEA 分支单击=在 Log 中定位；菜单在右键/Shift+F10 | 单击→`jump(hash)`；右键/Shift+F10→菜单 |
-| I03 | 双击历史文件=maximize diff，而非在 Editor 打开 Diff 标签（T03） | ChangedFiles.vue:37 `@dblclick="emit('maximize')"` | MainFrame.java:181-189 `FrameDiffPreview` + `VcsLogChangesBrowser.getDiffRequestProducer`（diff 经由 diff preview/编辑器承载，VCS_LOG_VIEW place） | 双击→聚焦 Editor 区的 Commit diff 标签（本轮共享单 Diff 标签；逐文件 Diff 多标签列为后续项） |
-| I04 | 提交列表无 Ctrl/Shift 多选（T06）；以 pin+compare 两步比较替代 | CommitLog.vue:126-135 单选 `store.selected` | `VcsLogGraphTable` 标准 JTable 多选（MULTIPLE_INTERVAL_SELECTION） | 本轮保留 pin+compare，多选列为后续项（在报告中明示） |
+| I03 | 双击历史文件=maximize diff，而非在 Editor 打开 Diff 标签（T03） | ChangedFiles.vue:37 `@dblclick="emit('maximize')"` | MainFrame.java:181-189 `FrameDiffPreview` + `VcsLogChangesBrowser.getDiffRequestProducer`（diff 经由 diff preview/编辑器承载，VCS_LOG_VIEW place） | 双击→Editor 区打开该文件专属 Diff 标签（逐文件 Diff 多标签，已实现，见 §6） |
+| I04 | 提交列表无 Ctrl/Shift 多选（T06）；以 pin+compare 两步比较替代 | CommitLog.vue:126-135 单选 `store.selected` | `VcsLogGraphTable` 标准 JTable 多选（MULTIPLE_INTERVAL_SELECTION） | 已实现（见 §6）：普通点击=单选、Ctrl=加选/减选、Shift=锚点范围；恰好两条时菜单提供 Compare selected，多选时危险写操作禁用 |
 | I05 | Editor 单文件：打开另一文件丢弃当前编辑器（有未保存确认，但无并行标签）（T04） | App.vue:404-441 `editor/editorPath` 单值；`withSavedEditor` 拦截 | S0 多标签并列；IDEA 每标签独立文档 | 实现多标签 EditorTabs（每标签独立 file/draft/dirty，v-show 保活） |
 | I06 | Git 工具窗口无 Console/操作状态标签、无最大化/恢复（T16 部分） | App.vue:1444-1465 操作面板在顶部 daily-panel；historyVisible 无最大化 | MainFrame.java:245 `showDetails(boolean)`；工具窗口可最大化 | 增加 Log/Console 标签（Console 承载进行中操作/错误），最大化按钮 |
 | I07 | 会话恢复缺 Editor 打开标签、各 splitter 尺寸（T15 部分） | session.ts:1-98（path/hash/file/sidebar/view/historyVisible） | splitter proportion 持久化（MainFrame.java:60-62） | 扩展 session + preferences 持久化字段 |
@@ -86,7 +86,7 @@
 
 - `npm --prefix frontend run typecheck`、`npm --prefix frontend test`、`go test ./...`。
 - 按 spec §7.2 T01–T18 手工核对；布局与 S0 同尺寸对照。
-- 明示残余差距：提交多选（I04）、逐文件 Diff 多标签、状态栏行列信息、App.vue 进一步拆分。
+- 明示残余差距：Diff 标签会话持久化、状态栏编码/换行符、App.vue 进一步拆分。
 
 ## 5. 待验证项（无源码/截图证据，不凭空实现）
 
@@ -106,7 +106,8 @@
 | 顶栏分支徽章（L06） | ✅ | 顶栏新增当前分支 chip，点击定位 Branches 过滤框 |
 | 单击提交不抢编辑器（I01/T02） | ✅ | `handleHistorySelect`：编辑器/冲突/检查视图中不切换；其余显示 commit diff（与 IDEA 变更浏览器跟随选择一致，经冒烟实测校准） |
 | 分支单击=跳转（I02/T07） | ✅ | 单击 `jump(hash)` 定位 Log；右键/Shift+F10 才出操作菜单 |
-| 双击历史文件开 Diff（I03/T03） | ✅ | `ChangedFiles` 双击 → `openDiff` → Editor 区 commit diff 标签聚焦（Diff 为共享单标签，逐文件 Diff 多标签列为后续项） |
+| 双击历史文件开 Diff（I03/T03） | ✅ | `ChangedFiles` 双击 → `openHistoryDiff(file)` → Editor 区打开该文件专属 Diff 标签（`DiffTab` 逐文件多标签：独立比较数据、可关闭/切换/聚焦，随 Git Log 选择移动让出焦点）；共享的 "Commit diff" 标签继续跟随选择 |
+| 提交多选（I04/T06） | ✅ | `commitSelection.ts`（纯逻辑，7 个单元测试）+ `CommitLog` 接线：普通点击=单选重置、Ctrl/Cmd=加选/减选、Shift=锚点范围（点击与 Shift+Up/Down）；右键已选中行保留多选；恰好两条时菜单提供 "Compare selected (older → newer)"；多选时 Cherry-pick/Revert/Reset 禁用（T06 防误写）；pin+compare 保留 |
 | 多标签 Editor（I05/T04） | ✅ | `editorTabs` 多实例 + preview-tabs 内文件标签条（脏标记 •、关闭需确认、v-show 保活滚动/撤销状态）；会话保存/恢复打开的标签与活动标签 |
 | 会话持久化扩展（I07/T15） | ✅ | session 新增 `historyMaximized/editorFiles/editorActive`；preferences 新增 4 个布局尺寸键 |
 | 提交多选（I04/T06） | ⏸ 未实施 | 保留 pin+compare 两步比较；真实 Ctrl/Shift 多选列为后续项 |
@@ -114,10 +115,11 @@
 ### 验证结果
 
 - `npm --prefix frontend run typecheck` ✅
-- `npm --prefix frontend test`：7 文件 35 用例全过 ✅
-- `go test ./...`：`internal/git` ok（152s，Windows 顺序运行）✅
+- `npm --prefix frontend test`：8 文件 42 用例全过（含 commitSelection 7 例）✅
+- `go test ./...`：`internal/git` ok（134s，Windows 顺序运行）✅
 - 桌面冒烟（`wails3 dev -tags desktop_smoke` + `node tests/desktop-smoke.mjs`，隔离 WebView2 配置）：
-  - 基础流程（Go 绑定/仓库/Graph 画布/Changed Files/只读 Diff）✅
+  - 基础流程 + 新增用例（双击文件开独立 Diff 标签：开/切/关；Ctrl 多选 + Compare selected + 多选下危险操作禁用）✅
   - `GITVELA_SMOKE_MVP=1`（一次性克隆：历史搜索、提交动作、设置、文件树、Diff 最大化）✅
-  - 几何断言（activity bar/sidebar/preview/lower/branches/log/files 同线关系）通过 CDP 实测确认 ✅
-- 残余差距：提交列表 Ctrl/Shift 多选、逐文件 Diff 多标签、状态栏行列信息、App.vue 进一步按 spec §6 拆分。
+  - `GITVELA_SMOKE_M4=1`（命令面板、快捷键、紧凑行、会话持久化）✅
+- 冒烟脚本改进：启动时清空 localStorage 并重载，消除陈旧会话恢复与首次点击的竞态（曾导致 "GitVela.md in Changed Files" 超时）；`Unified/Side by side` 切换改为等待式点击（比较视图切换后 Diff 异步加载）。
+- 残余差距：Diff 标签不持久化到会话（重开仓库后清空）、状态栏编码/换行符、App.vue 进一步按 spec §6 拆分。

@@ -10,7 +10,7 @@ import { expandAncestors, fileTreeRows } from './fileTree'
 import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: []; openDiff: []; maximize: []; edit: [path: string] }>()
+const emit = defineEmits<{ select: []; openDiff: [file: Change]; maximize: []; edit: [path: string] }>()
 const list = useTemplateRef<HTMLElement>('list')
 const preferences = usePreferences()
 const { fileTree: tree } = storeToRefs(preferences)
@@ -47,7 +47,7 @@ function select(file: Change) {
 
 function openDiff(file: Change) {
   select(file)
-  emit('openDiff')
+  emit('openDiff', file)
 }
 
 /** Alt+Up/Down navigation over changed files, independent of tree folders. */

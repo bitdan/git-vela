@@ -32,7 +32,7 @@ import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
-import type { AmendTarget, Commit, FilePreview, HeadState, OperationState, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
+import type { AmendTarget, Change, Commit, Comparison, FilePreview, HeadState, OperationState, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
 import appIcon from './git-vela.svg'
 import './styles.css'
@@ -169,6 +169,37 @@ const editorSaving = ref(false)
 const editorRequest = new LatestRequest()
 const editorDirty = computed(() => !!activeEditorTab.value && activeEditorTab.value.draft !== activeEditorTab.value.file.content)
 
+/* ---- Pinned per-file diff tabs (spec T03 / gap I03) ------------------ */
+
+/** Double-clicking a history file opens a dedicated diff tab in the editor
+ *  workspace; each tab keeps its own comparison payload and stays open while
+ *  the Git Log selection moves on, like IDEA's diff tabs. */
+type DiffTab = {
+  /** Stable identity: comparison range or commit+parent, plus change index. */
+  key: string
+  path: string
+  hash: string
+  parent: number
+  index: number
+  range?: { before: string; after: string; label: string }
+  expanded?: boolean
+  loading?: boolean
+  error?: string
+  comparison?: Comparison
+}
+
+const diffTabs = ref<DiffTab[]>([])
+const activeDiffKey = ref('')
+const activeDiffTab = computed(() => diffTabs.value.find(tab => tab.key === activeDiffKey.value))
+/** The commit diff area renders the active pinned tab when one is focused,
+ *  otherwise the selection-driven diff that follows the Git Log selection. */
+const commitDiff = computed(() => {
+  const tab = activeDiffTab.value
+  return tab
+    ? { comparison: tab.comparison, loading: !!tab.loading, error: tab.error, path: tab.path, pinned: true, expanded: !!tab.expanded }
+    : { comparison: store.comparison, loading: store.loadingDiff, error: store.diffError, path: store.file?.path ?? '', pinned: false, expanded: expandedDiff.value }
+})
+
 function editorTabFor(path: string) {
   return editorTabs.value.find(tab => tab.path === path)
 }
@@ -238,7 +269,7 @@ const operationRequest = new LatestRequest()
 const headRequest = new LatestRequest()
 const inspectionPath = computed(() => view.value === 'editor' ? editorPath.value :
   (view.value === 'working' || view.value === 'staged' || view.value === 'unstaged') ? workingSelection.value?.path : undefined)
-const previewPath = computed(() => view.value === 'conflict' ? conflictFile.value : view.value === 'inspection' ? inspection.value?.file : view.value === 'editor' ? editorPath.value : view.value === 'commit' ? store.file?.path : workingSelection.value?.path)
+const previewPath = computed(() => view.value === 'conflict' ? conflictFile.value : view.value === 'inspection' ? inspection.value?.file : view.value === 'editor' ? editorPath.value : view.value === 'commit' ? commitDiff.value.path : workingSelection.value?.path)
 const workingView = computed(() => view.value === 'working' || view.value === 'staged' || view.value === 'unstaged' ? view.value : undefined)
 const diffExpanded = ref(false)
 const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
@@ -281,16 +312,56 @@ watch(view, value => {
 watch(() => store.file?.path, () => { submoduleError.value = ''; expandedDiff.value = false })
 watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange], () => { expandedDiff.value = false })
 const imageSides = computed(() => [
-  { label: 'Before', src: store.comparison?.before ?? '' },
-  { label: 'After', src: store.comparison?.after ?? '' },
+  { label: 'Before', src: commitDiff.value.comparison?.before ?? '' },
+  { label: 'After', src: commitDiff.value.comparison?.after ?? '' },
 ])
 function isDataImage(src: string) {
   return /^data:image\/(png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/=]+$/.test(src)
 }
 function loadFullDiff() {
+  const tab = activeDiffTab.value
+  if (tab) {
+    if (tab.loading) return
+    const repo = store.repository?.path
+    tab.expanded = true
+    if (repo) void loadDiffTab(tab, repo)
+    return
+  }
   if (!store.file || store.loadingDiff) return
   expandedDiff.value = true
   void store.selectFile(store.file, true)
+}
+
+/** Re-fetch one pinned diff tab, guarded against repository switches. */
+async function loadDiffTab(tab: DiffTab, repo: string) {
+  tab.loading = true
+  tab.error = ''
+  const call = tab.range
+    ? tab.expanded
+      ? api.CompareDiffExpanded(repo, tab.range.before, tab.range.after, tab.index)
+      : api.CompareDiff(repo, tab.range.before, tab.range.after, tab.index)
+    : tab.expanded
+      ? api.DiffExpanded(repo, tab.hash, tab.parent, tab.index)
+      : api.Diff(repo, tab.hash, tab.parent, tab.index)
+  try {
+    const result = await call
+    if (store.repository?.path !== repo) return
+    tab.comparison = result
+  } catch (error) {
+    if (store.repository?.path === repo) tab.error = String(error)
+  } finally {
+    if (store.repository?.path === repo) tab.loading = false
+  }
+}
+
+function closeDiffTab(key: string) {
+  const at = diffTabs.value.findIndex(tab => tab.key === key)
+  if (at < 0) return
+  diffTabs.value.splice(at, 1)
+  if (activeDiffKey.value === key) {
+    const next = diffTabs.value[at] ?? diffTabs.value[at - 1]
+    activeDiffKey.value = next?.key ?? ''
+  }
 }
 function loadFullWorkingPreview() {
   const next = workingView.value
@@ -399,7 +470,11 @@ function selectWorking(file: WorkingFile, next: FileView = 'working') {
 
 async function selectView(next: FileView | 'commit', background = false, expanded = false) {
   view.value = next
-  if (next === 'commit') return
+  if (next === 'commit') {
+    // The explicit "Commit diff" tab always follows the Git Log selection.
+    activeDiffKey.value = ''
+    return
+  }
   const repo = store.repository?.path
   const file = workingSelection.value
   if (!repo || !file) return
@@ -441,6 +516,8 @@ function clearEditor() {
   editorError.value = ''
   editorLoading.value = false
   pendingEditorAction.value = undefined
+  diffTabs.value = []
+  activeDiffKey.value = ''
   if (view.value === 'editor' || view.value === 'conflict') view.value = 'working'
 }
 
@@ -555,14 +632,14 @@ function closeConflict() {
 
 async function openSubmodule() {
   const repo = store.repository?.path
-  const file = store.file?.path
+  const file = commitDiff.value.path
   if (!repo || !file || indexBusy.value) return
   submoduleError.value = ''
   try {
     const path = await api.SubmodulePath(repo, file)
-    if (repo === store.repository?.path && file === store.file?.path) openRepository(path)
+    if (repo === store.repository?.path && file === commitDiff.value.path) openRepository(path)
   } catch (cause) {
-    if (repo === store.repository?.path && file === store.file?.path) submoduleError.value = String(cause)
+    if (repo === store.repository?.path && file === commitDiff.value.path) submoduleError.value = String(cause)
   }
 }
 
@@ -609,6 +686,11 @@ function compareCommit(commit: Commit) {
   const base = pinnedCommit.value
   compareRevisions(base?.hash ?? store.headHash, commit.hash,
     (base?.hash.slice(0, 8) ?? 'HEAD') + ' → ' + commit.hash.slice(0, 8))
+}
+
+/** Compare the two rows of a Ctrl/Shift multi-selection directly (T06). */
+function compareCommits(before: Commit, after: Commit) {
+  compareRevisions(before.hash, after.hash, before.hash.slice(0, 8) + ' → ' + after.hash.slice(0, 8))
 }
 
 async function loadOperationState() {
@@ -1222,13 +1304,31 @@ function resizeDetailsWithKey(event: KeyboardEvent) {
  *  to at any time. */
 function handleHistorySelect() {
   if (view.value === 'editor' || view.value === 'conflict' || view.value === 'inspection') return
+  // A selection move in the Git Log activates the selection-driven diff tab;
+  // pinned per-file diff tabs stay open but hand over focus.
+  activeDiffKey.value = ''
   view.value = 'commit'
 }
 
-/** Double-clicking a history file opens (or focuses) the commit diff tab in
- *  the editor workspace instead of maximizing the preview. */
-function openHistoryDiff() {
+/** Double-clicking a history file opens (or focuses) a pinned diff tab for
+ *  that file in the editor workspace instead of stealing the whole preview. */
+function openHistoryDiff(file: Change) {
+  const repo = store.repository?.path
+  if (!repo) return
+  const range = store.comparisonRange
+  const hash = store.selected?.hash ?? ''
+  const parent = store.parent
+  const key = (range ? range.before + '..' + range.after : hash + '~' + parent) + ':' + file.index
+  historyVisible.value = true
+  diffExpanded.value = false
   view.value = 'commit'
+  let tab = diffTabs.value.find(item => item.key === key)
+  if (!tab) {
+    tab = { key, path: file.path, hash, parent, index: file.index, range: range ? { ...range } : undefined, loading: true }
+    diffTabs.value.push(tab)
+    void loadDiffTab(tab, repo)
+  }
+  activeDiffKey.value = tab.key
 }
 
 /** The workspace geometry: activity bar + Commit tool window + editor on
@@ -1687,7 +1787,16 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                           @click.stop="requestCloseEditorTab(tab.path)">×</button>
                 </div>
                 <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
-                <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
+                <button v-show="!diffExpanded" :aria-pressed="view === 'commit' && !activeDiffTab" @click="selectView('commit')">Commit diff</button>
+                <div v-for="tab in diffTabs" v-show="!diffExpanded" :key="tab.key" class="editor-tab" role="tab"
+                     :class="{ active: view === 'commit' && activeDiffKey === tab.key }"
+                     :aria-selected="view === 'commit' && activeDiffKey === tab.key" tabindex="0"
+                     :title="tab.path" @click="activeDiffKey = tab.key; view = 'commit'"
+                     @keydown.enter.prevent="activeDiffKey = tab.key; view = 'commit'">
+                  <span class="ellipsis">{{ fileName(tab.path) }}</span>
+                  <button class="editor-close" :aria-label="'Close diff ' + fileName(tab.path)"
+                          @click.stop="closeDiffTab(tab.key)">×</button>
+                </div>
                 <span class="ellipsis muted" :title="previewPath">{{ previewPath }}</span>
                 <button v-if="view === 'working' && workingSelection && preview?.kind === 'text'"
                         @click="openEditorFile(workingSelection.path)">Edit file</button>
@@ -1700,7 +1809,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 <button v-if="!diffExpanded" class="history-toggle" aria-controls="history-dock" :aria-pressed="historyVisible"
                         @click="historyVisible = !historyVisible">History</button>
                 <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
-                <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
+                <button v-else-if="view === 'commit' && (store.file || activeDiffTab)" class="diff-size" @click="maximizeDiff">Maximize diff</button>
               </header>
               <p v-if="(view === 'editor' || view === 'conflict') && editorError" class="notice error" role="alert">{{ editorError }}</p>
               <p v-if="(view === 'editor' || view === 'conflict') && editorLoading" class="notice" role="status">Opening text file…</p>
@@ -1747,43 +1856,43 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 <p v-else class="notice">Select a working change to preview its current contents.</p>
               </template>
               <template v-else-if="view === 'commit'">
-                <p v-if="store.loadingDiff" class="notice" role="status">Loading file comparison…</p>
-                <p v-else-if="store.diffError" class="notice error" role="alert">{{ store.diffError }}</p>
-                <p v-else-if="!store.comparison" class="notice">Select a file from the commit changes below.</p>
-                <template v-else-if="store.comparison.kind === 'text' || store.comparison.kind === 'lfs'">
-                  <div v-if="store.comparison.kind === 'lfs'" class="lfs-details notice">
+                <p v-if="commitDiff.loading" class="notice" role="status">Loading file comparison…</p>
+                <p v-else-if="commitDiff.error" class="notice error" role="alert">{{ commitDiff.error }}</p>
+                <p v-else-if="!commitDiff.comparison" class="notice">{{ commitDiff.pinned ? 'This diff is no longer available.' : 'Select a file from the commit changes below.' }}</p>
+                <template v-else-if="commitDiff.comparison.kind === 'text' || commitDiff.comparison.kind === 'lfs'">
+                  <div v-if="commitDiff.comparison.kind === 'lfs'" class="lfs-details notice">
                     <strong>Git LFS pointer</strong>
                     <div v-for="side in (['before', 'after'] as const)" :key="side">
-                      <template v-if="lfsPointer(store.comparison[side])">
+                      <template v-if="lfsPointer(commitDiff.comparison[side])">
                         {{ side === 'before' ? 'Before' : 'After' }}
-                        <code>{{ lfsPointer(store.comparison[side])?.oid }}</code>
-                        · {{ lfsPointer(store.comparison[side])?.size }} bytes
+                        <code>{{ lfsPointer(commitDiff.comparison[side])?.oid }}</code>
+                        · {{ lfsPointer(commitDiff.comparison[side])?.size }} bytes
                       </template>
                     </div>
                   </div>
-                  <TextDiff :comparison="store.comparison" :path="store.file?.path ?? ''" :dark="dark" />
+                  <TextDiff :comparison="commitDiff.comparison" :path="commitDiff.path ?? ''" :dark="dark" />
                 </template>
-                <div v-else-if="store.comparison.kind === 'image'" class="image-diff">
+                <div v-else-if="commitDiff.comparison.kind === 'image'" class="image-diff">
                   <figure v-for="side in imageSides" :key="side.label">
                     <figcaption>{{ side.label }}</figcaption>
                     <div class="image-frame">
-                      <img v-if="isDataImage(side.src)" :src="side.src" :alt="side.label + ' version of ' + (store.file?.path ?? 'file')" />
+                      <img v-if="isDataImage(side.src)" :src="side.src" :alt="side.label + ' version of ' + (commitDiff.path ?? 'file')" />
                       <p v-else class="notice">{{ side.src ? 'Unsupported image format.' : 'No image on this side.' }}</p>
                     </div>
                   </figure>
                 </div>
-                <p v-else-if="store.comparison.kind === 'large'" class="notice">
+                <p v-else-if="commitDiff.comparison.kind === 'large'" class="notice">
                   Preview limit reached (512 KiB or 12,000 lines per side).
-                  <button v-if="!expandedDiff" :disabled="store.loadingDiff" @click="loadFullDiff">Load full preview (up to 8 MiB)</button>
+                  <button v-if="!commitDiff.expanded" :disabled="commitDiff.loading" @click="loadFullDiff">Load full preview (up to 8 MiB)</button>
                   <span v-else>This file exceeds the expanded preview limit (8 MiB or 120,000 lines per side).</span>
                 </p>
-                <p v-else-if="store.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
-                <div v-else-if="store.comparison.kind === 'submodule'" class="notice submodule">
+                <p v-else-if="commitDiff.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
+                <div v-else-if="commitDiff.comparison.kind === 'submodule'" class="notice submodule">
                   <strong>Submodule update</strong>
                   <button :disabled="indexBusy" @click="openSubmodule">Open submodule</button>
                   <p v-if="submoduleError" class="error" role="alert">{{ submoduleError }}</p>
-                  <div>Before <code>{{ store.comparison.before || '—' }}</code></div>
-                  <div>After <code>{{ store.comparison.after || '—' }}</code></div>
+                  <div>Before <code>{{ commitDiff.comparison.before || '—' }}</code></div>
+                  <div>After <code>{{ commitDiff.comparison.after || '—' }}</code></div>
                 </div>
               </template>
             </section>
@@ -1881,6 +1990,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                  @pointerdown="trackDrag" @pointermove="resizeBranches" @keydown="resizeBranchesWithKey"></div>
             <CommitLog ref="log" @refresh="refresh" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
                        @select="handleHistorySelect" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
+                       @compare-commits="compareCommits"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
             <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Changed Files panel" tabindex="0"
                  @pointerdown="trackDrag" @pointermove="resizeFiles" @keydown="resizeFilesWithKey"></div>

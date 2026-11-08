@@ -108,6 +108,13 @@ const inputValue = (selector, value) => evaluate(`(() => {
 
 let shortcutRepo
 try {
+  // Previous runs persist their selection, tool-window state and compare
+  // ranges in localStorage; the session restore then races this script's
+  // first clicks and can re-select a stale commit (seen 2026-11-08). Always
+  // start from a clean slate and reload before touching the UI.
+  await evaluate("localStorage.clear()")
+  try { await evaluate("location.reload()") } catch { /* context tears down on reload */ }
+  await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
   await evaluate(`(() => {
     window.smokeRejections = []
@@ -262,6 +269,31 @@ try {
       editors[1].textContent.includes('GitVela') && editors[1].getAttribute('contenteditable') !== 'true'
   })()`), 'read-only side-by-side Diff with the real root blob')
 
+  // Pinned per-file diff tabs (T03/I03): double-clicking a history file opens
+  // a dedicated diff tab instead of stealing the shared preview.
+  await evaluate(`(() => {
+    const row = document.querySelector('.files-panel .file-row[title="GitVela.md"]')
+    row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))
+  })()`)
+  await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'GitVela.md' && tab.classList.contains('active'))"), 'pinned diff tab opens and activates')
+  await evaluate("[...document.querySelectorAll('.preview-tabs button')].find(button => button.innerText === 'Commit diff').click()")
+  await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].every(tab => !tab.classList.contains('active'))"), 'selection-driven tab takes over')
+  await evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].find(tab => tab.title === 'GitVela.md').click()")
+  await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'GitVela.md' && tab.classList.contains('active'))"), 'pinned diff tab refocuses')
+  await evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].find(tab => tab.title === 'GitVela.md').querySelector('.editor-close').click()")
+  await until(() => evaluate("document.querySelectorAll('.preview-tabs .editor-tab').length === 0"), 'pinned diff tab closes')
+
+  // Ctrl/Shift multi-selection (T06/I04): compare selected, write ops guarded.
+  await evaluate("document.querySelectorAll('.commit-row')[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))")
+  await until(() => evaluate("document.querySelectorAll('.commit-row.active').length === 1"), 'plain click resets selection')
+  await evaluate("document.querySelectorAll('.commit-row')[1].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))")
+  await until(() => evaluate("document.querySelectorAll('.commit-row.active').length === 2"), 'ctrl-click extends selection')
+  await evaluate("document.querySelectorAll('.commit-row')[1].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
+  await until(() => evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].some(button => button.innerText.startsWith('Compare selected') && !button.disabled)"), 'compare selected available')
+  assert.ok(await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText.includes('Cherry-pick'))?.disabled"), 'write ops disabled on multi-selection')
+  await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText.startsWith('Compare selected')).click()")
+  await until(() => evaluate("document.querySelector('.files-panel .eyebrow')?.innerText === 'COMPARE REVISIONS'"), 'comparison opens from multi-selection')
+
   if (testMvp) {
     if (worktreeTarget) {
       await gitMenuAction('Branches')
@@ -315,9 +347,9 @@ try {
     await evaluate("document.querySelector('.preview-tabs .diff-size').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!document.querySelector('.upper').classList.contains('diff-expanded')"), 'restored workspace')
   }
-  await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Unified').click()")
+  await clickButton('.diff-actions', 'Unified')
   await until(() => evaluate("document.querySelectorAll('.diff-host .cm-editor').length === 1"), 'unified Diff')
-  await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Side by side').click()")
+  await clickButton('.diff-actions', 'Side by side')
   await until(() => evaluate("document.querySelectorAll('.cm-mergeView .cm-editor').length === 2"), 'side-by-side Diff restored')
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   if (dailyRemote) {

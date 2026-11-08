@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { Clipboard } from '@wailsio/runtime'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
 import type { Commit, Cursor, HistoryFilter } from '../../../bindings/gitvela/internal/git'
@@ -11,12 +11,13 @@ import { useKeymap } from '../../stores/keymap'
 import ContextActions from '../layout/ContextActions.vue'
 import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import GraphCell from './GraphCell.vue'
+import { CommitSelection, comparePair } from './commitSelection'
 
 const store = useWorkspace()
 const preferences = usePreferences()
 const keymap = useKeymap()
 const props = defineProps<{ pinned?: string; busy?: boolean; restoring?: boolean }>()
-const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit]; refresh: [] }>()
+const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit]; compareCommits: [before: Commit, after: Commit]; refresh: [] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
 const emptyFilter = (): HistoryFilter => ({ message: '', author: '', branch: '', from: '', through: '', hash: '' })
 const draft = ref(emptyFilter())
@@ -78,6 +79,12 @@ let historyScroll = 0
 const menu = ref<Commit>()
 const menuAnchor = shallowRef<ContextAnchor>()
 const copyStatus = ref('')
+/** IDEA-style multi-selection state (T06); `store.selected` stays the focused
+ *  row driving Changed Files and Commit Details. */
+const selection = reactive(new CommitSelection())
+const selectedPair = computed(() => comparePair(commits.value, selection.hashes))
+const isActive = (commit: Commit) =>
+  selection.size ? selection.has(commit.hash) : store.selected?.hash === commit.hash
 const commits = computed(() => filter.value ? matches.value : store.commits)
 const graphVisible = computed(() => !filter.value || filteredGraphWidth.value > 0)
 const graphPixels = computed(() => graphVisible.value
@@ -112,13 +119,25 @@ watch([() => rows.value.at(-1)?.item.index, () => props.restoring], ([index, res
   if (!restoring && !filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
 })
 
-function select(index: number, reveal = true) {
+function select(index: number, reveal = true, event?: MouseEvent) {
   const commit = commits.value[index]
   if (!commit) return
   menu.value = undefined
   if (reveal) void nextTick(() => virtual.value.scrollToIndex(index, { align: 'auto' }))
   emit('select')
-  void store.selectCommit(commit)
+  if (event?.shiftKey) {
+    selection.extend(commits.value, index)
+    void store.selectCommit(commit)
+  } else if (event?.ctrlKey || event?.metaKey) {
+    if (!selection.toggle(commits.value, index)) {
+      // Deselecting the focused row: follow the remaining selection like IDEA.
+      const next = commits.value.find(item => selection.has(item.hash))
+      if (next) void store.selectCommit(next)
+    }
+  } else {
+    selection.reset(commits.value, index)
+    void store.selectCommit(commit)
+  }
 }
 
 function jump(hash: string) {
@@ -131,20 +150,28 @@ function jump(hash: string) {
   return false
 }
 
-function step(direction: number) {
+function step(direction: number, extend = false) {
   if (!commits.value.length) return
   const index = commits.value.findIndex(item => item.hash === store.selected?.hash)
   const base = index < 0 ? (direction > 0 ? -1 : commits.value.length) : index
-  select(Math.max(0, Math.min(commits.value.length - 1, base + direction)))
+  const next = Math.max(0, Math.min(commits.value.length - 1, base + direction))
+  if (!extend) {
+    select(next)
+    return
+  }
+  if (index < 0) return
+  selection.extend(commits.value, next)
+  void store.selectCommit(commits.value[next]!)
 }
 
 function navigate(event: KeyboardEvent, direction: number) {
   // Modifier combos such as Alt+Up/Down belong to the global dispatcher;
-  // handling them here too would dispatch one keypress twice.
+  // handling them here too would dispatch one keypress twice. Shift+Up/Down
+  // extends the multi-selection instead of moving a lone focus (T06).
   if (event.altKey || event.ctrlKey || event.metaKey) return
   if (!commits.value.length) return
   event.preventDefault()
-  step(direction)
+  step(direction, event.shiftKey)
 }
 
 function openSearch() {
@@ -190,6 +217,7 @@ function restartSearch() {
   cursor.value = undefined
   searchMore.value = false
   menu.value = undefined
+  selection.clear()
   if (scroll.value) scroll.value.scrollTop = 0
   void loadMatches()
 }
@@ -229,6 +257,7 @@ function clearSearch(restoreScroll = true) {
   searchError.value = ''
   matches.value = []
   menu.value = undefined
+  selection.clear()
   if (hadSearch && restoreScroll) {
     void nextTick(() => { if (scroll.value) scroll.value.scrollTop = historyScroll })
   }
@@ -237,6 +266,7 @@ function clearSearch(restoreScroll = true) {
 watch(() => store.repository, (repo, previous) => {
   menu.value = undefined
   copyStatus.value = ''
+  selection.clear()
   if (repo?.path !== previous?.path) {
     clearSearch(false)
     recentAuthors.value = []
@@ -254,7 +284,9 @@ function showCommitActions(index: number, event: MouseEvent | KeyboardEvent) {
   const commit = commits.value[index]
   if (!commit) return
   tool.value = undefined
-  select(index, false)
+  // Right-clicking an already selected row keeps the multi-selection intact,
+  // so "Compare selected" stays available; an unselected row starts fresh.
+  if (!isActive(commit)) select(index, false)
   menu.value = commit
   copyStatus.value = ''
   menuAnchor.value = contextAnchor(event)
@@ -378,6 +410,10 @@ defineExpose({ jump, step, openSearch })
       </template>
     </ContextActions>
     <ContextActions v-if="menu && menuAnchor" :anchor="menuAnchor" label="Commit actions" @close="menu = undefined">
+      <button v-if="selectedPair" :disabled="store.opening"
+              @click="emit('compareCommits', selectedPair.before, selectedPair.after); closeCommitActions()">
+        Compare selected ({{ selectedPair.before.hash.slice(0, 8) }} → {{ selectedPair.after.hash.slice(0, 8) }})
+      </button>
       <button @click="copyCommit(menu, false)">Copy hash</button>
       <button @click="copyCommit(menu, true)">Copy message</button>
       <hr />
@@ -387,9 +423,11 @@ defineExpose({ jump, step, openSearch })
         {{ props.pinned ? 'Compare with base' : 'Compare with HEAD' }}
       </button>
       <hr />
-      <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
-      <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
-      <button :disabled="props.busy" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
+      <!-- Write operations stay disabled on a multi-selection (T06): a range
+           selection must never silently become the target of a rewrite. -->
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
+      <button :disabled="props.busy || selection.size > 1" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
     </ContextActions>
     <p v-if="copyStatus" class="notice" role="status">{{ copyStatus }}</p>
     <p v-if="searchError" class="notice error" role="alert">{{ searchError }}</p>
@@ -399,9 +437,9 @@ defineExpose({ jump, step, openSearch })
       <div class="log-grid log-heading"><span>{{ graphVisible ? 'Graph' : '' }}</span><span>Commit message</span><span v-if="showAuthor">Author</span><span v-if="showDate">{{ filter ? 'Commit date' : 'Date' }}</span><span v-if="showHash">Hash</span></div>
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
         <button v-for="{ item, commit } in rows" :key="commit.hash"
-                class="log-grid commit-row" :class="{ active: store.selected?.hash === commit.hash, 'highlight-merge': highlightMerges && (commit.parents?.length ?? 0) > 1 }"
-                :aria-pressed="store.selected?.hash === commit.hash"
-                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index)"
+                class="log-grid commit-row" :class="{ active: isActive(commit), 'highlight-merge': highlightMerges && (commit.parents?.length ?? 0) > 1 }"
+                :aria-pressed="isActive(commit)"
+                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index, true, $event)"
                 @contextmenu.prevent="showCommitActions(item.index, $event)"
                 @keydown.shift.f10.prevent="showCommitActions(item.index, $event)">
           <span v-if="!graphVisible" aria-hidden="true"></span>

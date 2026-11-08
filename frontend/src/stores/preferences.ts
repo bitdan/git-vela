@@ -46,7 +46,6 @@ export const usePreferences = defineStore('preferences', () => {
   const previewHeight = ref(Math.min(70, Math.max(28, Number(preference('gitvela.previewHeight')) || defaultPreviewHeight)))
   const fileTree = ref(preference('gitvela.fileTree') !== 'false')
   const density = ref<Density>(preference('gitvela.density') === 'compact' ? 'compact' : 'comfortable')
-  const commitFirst = ref(preference('gitvela.commitFirst') === 'true')
   const resumeOnStart = ref(preference('gitvela.resumeOnStart') !== 'false')
   const sidebarWidth = ref(clampLayout(Number(preference('gitvela.sidebarWidth')) || null, layoutBounds.sidebar))
   const branchesWidth = ref(clampLayout(Number(preference('gitvela.branchesWidth')) || null, layoutBounds.branches))
@@ -60,7 +59,6 @@ export const usePreferences = defineStore('preferences', () => {
   watch(previewHeight, value => persist('gitvela.previewHeight', String(value)))
   watch(fileTree, value => persist('gitvela.fileTree', String(value)))
   watch(density, value => persist('gitvela.density', value))
-  watch(commitFirst, value => persist('gitvela.commitFirst', String(value)))
   watch(resumeOnStart, value => persist('gitvela.resumeOnStart', String(value)))
   watch(sidebarWidth, value => persist('gitvela.sidebarWidth', String(value)))
   watch(branchesWidth, value => persist('gitvela.branchesWidth', String(value)))
@@ -79,5 +77,5 @@ export const usePreferences = defineStore('preferences', () => {
     density.value = density.value === 'compact' ? 'comfortable' : 'compact'
   }
 
-  return { dark, previewHeight, fileTree, density, commitFirst, resumeOnStart, sidebarWidth, branchesWidth, filesWidth, detailsHeight, rowHeight, repoRowHeight, workingRowHeight, toggleDensity, resetLayout }
+  return { dark, previewHeight, fileTree, density, resumeOnStart, sidebarWidth, branchesWidth, filesWidth, detailsHeight, rowHeight, repoRowHeight, workingRowHeight, toggleDensity, resetLayout }
 })

@@ -84,7 +84,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 }
 .sidebar-project { display: grid; gap: 2px; padding: 10px 12px 6px; }
 .sidebar-project strong { font-size: 14px; }
-.workspace-rail { display: none; }
 .commit-tabs { display: flex; flex: none; gap: 3px; padding: 3px 8px 0; border-bottom: 1px solid var(--border); }
 .commit-tabs button { padding-inline: 9px; border-radius: 4px 4px 0 0; }
 .commit-tabs button[aria-pressed="true"] { background: var(--select); color: var(--accent); }
@@ -241,6 +240,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .diff-host .cm-scroller { font-family: Consolas, "Cascadia Code", monospace; }
 .statusbar { justify-content: space-between; padding-block: 5px; color: var(--muted); font-size: 11px; }
 .statusbar > :last-child { flex: none; display: flex; align-items: center; gap: 5px; }
+.statusbar .editor-cursor { flex: none; font-variant-numeric: tabular-nums; }
 .status-dot { width: 6px; height: 6px; background: var(--good); border-radius: 50%; }
 .status-dot.busy { background: var(--accent); }
 
@@ -345,32 +345,35 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .diff-size { white-space: nowrap; }
 .diff-expanded .diff-size { margin-inline-start: auto; }
 
-.preferences {
-  position: relative;
-}
-
-.preferences summary {
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.preferences-panel {
-  position: absolute;
-  z-index: 3;
-  inset-inline-end: 0;
-  top: calc(100% + 8px);
+.settings-group {
   display: grid;
-  gap: 8px;
-  min-width: 220px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  background: var(--panel);
+  gap: 7px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
 }
 
-.preferences-panel label {
+.settings-group:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.settings-group h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-group label {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.settings-group button {
+  justify-self: start;
 }
 
 .daily-panel {
@@ -704,10 +707,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .palette-footer { flex: none; padding: 6px 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
 
 /* Shortcut editor */
-.preferences-panel { min-width: 262px; max-height: calc(100vh - 70px); overflow: auto; }
-.shortcut-details { border-top: 1px solid var(--border); padding-top: 6px; }
-.shortcut-details > summary { cursor: pointer; }
-.shortcut-settings { display: grid; gap: 8px; margin-top: 6px; width: min(350px, 70vw); }
+.shortcut-settings { display: grid; gap: 8px; margin-top: 6px; width: min(460px, 100%); }
 .shortcut-settings > p { font-size: 11px; }
 .shortcut-group { display: grid; gap: 3px; }
 .shortcut-group > strong { color: var(--muted); font-size: 11px; }
@@ -734,6 +734,25 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   box-shadow: 0 16px 54px #0005;
 }
 .confirmation-dialog::backdrop { background: #0a14224d; }
+
+.settings-dialog {
+  width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  padding: 0; color: var(--text); background: var(--popup);
+  border: 1px solid var(--border); border-radius: var(--panel-radius);
+  box-shadow: 0 16px 54px #0005;
+}
+.settings-dialog::backdrop { background: #0a14224d; }
+.settings-dialog > header, .settings-dialog > .dialog-actions {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--header);
+}
+.settings-dialog > header { justify-content: space-between; border-bottom: 1px solid var(--border); }
+.settings-dialog > header button { font-size: 16px; line-height: 1; }
+.settings-dialog > header h2 { margin: 0; font-size: 13px; }
+.settings-body {
+  display: grid; gap: 12px; padding: 12px;
+  overflow: auto;
+}
 .confirmation-dialog > header, .dialog-actions {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   background: var(--header);

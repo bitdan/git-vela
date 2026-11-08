@@ -293,15 +293,18 @@ try {
     await clickButton('[aria-label="view options"]', 'Hash')
     await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!!document.querySelector('.commit-row canvas')"), 'return to history graph')
-    await click('.preferences summary')
-    await click('.preferences-panel label:first-child input')
+    // Settings opens as a modal dialog; toggles apply live.
+    await click('.activity-bar button[aria-label="Settings"]')
+    await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog opens')
+    await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Dark theme')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.theme === 'dark'"), 'dark theme from Settings')
-    await click('.preferences-panel label:first-child input')
-    const treeWasOn = await evaluate("document.querySelector('.preferences-panel label:nth-child(2) input').checked")
-    if (!treeWasOn) await click('.preferences-panel label:nth-child(2) input')
+    await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Dark theme')).querySelector('input').click()")
+    const treeWasOn = await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('as a tree')).querySelector('input').checked")
+    if (!treeWasOn) await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('as a tree')).querySelector('input').click()")
     await until(() => evaluate("!!document.querySelector('.files-panel .folder-row')"), 'file tree from Settings')
-    if (!treeWasOn) await click('.preferences-panel label:nth-child(2) input')
-    await click('.preferences summary')
+    if (!treeWasOn) await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('as a tree')).querySelector('input').click()")
+    await click('.settings-dialog .dialog-actions button')
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed')
     await until(() => evaluate("!!document.querySelector('.diff-host .cm-editor')"), 'commit diff available')
     await click('.preview-tabs .history-toggle')
     await until(() => evaluate("getComputedStyle(document.querySelector('#history-dock')).display === 'none' && getComputedStyle(document.querySelector('.workspace-sidebar')).display !== 'none'"), 'history hidden with sidebar open')
@@ -344,7 +347,7 @@ try {
     config(repo)
     git(repo, 'switch', '-c', dailyBranch)
     await text('.statusbar', dailyBranch)
-    await clickButton('.workspace-rail', 'Commit')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
     await click('.commit-form', 'Amend…')
     await text('.amend-warning', 'Rewrites HEAD')
     assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))
@@ -373,7 +376,7 @@ try {
     git(repo, 'remote', 'add', 'm2-smoke', dailyRemote)
     await writeFile(join(repo, 'commit-and-push-smoke.txt'), 'local commit before push review')
     git(repo, 'add', '--', 'commit-and-push-smoke.txt')
-    await clickButton('.workspace-rail', 'Commit')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
     await set('#commit-message', 'Commit and push review')
     await click('.commit-form', 'Commit and Push…')
     await until(() => git(repo, 'log', '-1', '--format=%s') === 'Commit and push review', 'local commit created')
@@ -432,7 +435,7 @@ try {
       await clickButton('.repository-files .file-scroll', path)
     }
 
-    await clickButton('.workspace-rail', 'Files')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile(file)
     await editorStatus('Saved')
     await clickButton('.editor-tools', 'Find / Replace')
@@ -449,7 +452,7 @@ try {
     assert.equal(await readFile(target, 'utf8'), savedContent)
     assert.equal(git('diff', '--cached', '--name-only', '--', file), '')
 
-    await clickButton('.workspace-rail', 'Commit')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
     await until(() => evaluate(`(() => {
       const row = document.querySelector('.working-row[title="greetservice.go"]')
       if (!row) return false
@@ -469,7 +472,7 @@ try {
     await until(() => evaluate("document.querySelector('.preview-panel [role=alert]')?.innerText.includes('changed on disk')"), 'external change blocked save')
     assert.equal(await readFile(target, 'utf8'), 'external update')
 
-    await clickButton('.workspace-rail', 'Files')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile('README.md')
     await clickButton('[aria-label="Unsaved file changes"]', 'Keep editing')
     assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'unsaved draft')
@@ -567,7 +570,7 @@ try {
     assert.equal(git('show', 'HEAD:m3.txt'), 'resolved')
 
     await writeFile(target, 'pending change\n')
-    await clickButton('.workspace-rail', 'Files')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await until(() => evaluate("!!document.querySelector('.repository-files .folder-row[aria-expanded]')"), 'default repository tree')
     await inputValue('[aria-label="Filter repository files"]', 'm3.txt')
     await clickButton('.repository-files .file-scroll', 'm3.txt')
@@ -577,7 +580,7 @@ try {
     await text('.blame-row', 'Uncommitted')
     await clickButton('.file-inspection', 'Close')
 
-    await clickButton('.workspace-rail', 'Commit')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
     await until(() => evaluate(`(() => {
       const row = document.querySelector('.working-row[title="m3.txt"]')
       if (!row) return false
@@ -670,18 +673,11 @@ try {
     await clickButton(changedMenu, 'Show Diff')
     await gitMenuAction('Branches')
     await dismissContext(await openContext('.branch-row .side-item.active', 'Branch actions'))
-    await clickButton('.workspace-rail', 'Commit')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
 
     await clickButton('.commit-tabs', 'Shelf')
     await until(() => evaluate("document.querySelector('.workspace-sidebar [aria-label=Stashes]')?.innerText.includes('Save stash')"), 'Shelf in the Commit workspace')
     await clickButton('.commit-tabs', 'Commit')
-    await evaluate(`(() => {
-      const [files, commit] = document.querySelectorAll('.workspace-rail button')
-      const dataTransfer = new DataTransfer()
-      commit.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }))
-      files.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }))
-    })()`)
-    await until(() => evaluate("document.querySelector('.workspace-rail button').innerText === 'Commit' && localStorage.getItem('gitvela.commitFirst') === 'true'"), 'persistent tool order')
 
     // The configured Ctrl+K shortcut opens the command palette.
     await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))")
@@ -693,10 +689,9 @@ try {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.commit-row')).height"), '27px')
 
     // Restore the comfortable layout, then rebind a shortcut through Settings.
-    await evaluate("document.querySelector('.preferences summary').click()")
-    await evaluate("[...document.querySelectorAll('.preferences-panel label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
+    await evaluate("document.querySelector('.activity-bar button[aria-label=\"Settings\"]').click()")
+    await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.density === 'comfortable'"), 'comfortable row density')
-    await evaluate("document.querySelector('.shortcut-details summary').click()")
     await until(() => evaluate("document.querySelectorAll('.shortcut-group button').length >= 16"), 'editable shortcut list')
     await evaluate(`(() => {
       const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
@@ -714,6 +709,8 @@ try {
       button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
     })()`)
     await until(() => evaluate("(() => { const map = JSON.parse(localStorage.getItem('gitvela.keymap') || '{}'); return !Object.values(map).includes('Tab') && !document.querySelector('.shortcut-settings .recording') })()"), 'Tab moves focus without becoming a shortcut')
+    await clickButton('.settings-dialog .dialog-actions', 'Close')
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed for repository interactions')
 
     // Use a fresh repository with a genuinely committable index and message.
     const tempRoot = resolve(tmpdir())
@@ -777,6 +774,16 @@ try {
       field.focus()
       return field.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key, ...modifiers, bubbles: true, cancelable: true })}))
     })()`)
+    // Bind every chord in one settings session, then close the dialog: the
+    // modal traps focus, so the commit field interactions below need it gone.
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened for shortcuts')
+    await bindCommit('A', 'a')
+    await bindCommit('Enter', 'Enter')
+    await bindCommit('Shift+A', 'A', { shiftKey: true })
+    await bindCommit('Ctrl+Shift+S', 's', { ctrlKey: true, shiftKey: true })
+    await clickButton('.settings-dialog .dialog-actions', 'Close')
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed for page interactions')
     const message = 'Shortcut integration commit'
     await inputValue('#commit-message', message)
     await until(() => evaluate("!!document.querySelector('#commit-message')?.form.querySelector('button[type=submit]:enabled')"), 'enabled commit')
@@ -785,7 +792,6 @@ try {
       ['Enter', 'Enter', 'Enter', '\n', 0],
       ['Shift+A', 'A', 'KeyA', 'A', 8],
     ]) {
-      await bindCommit(binding, key, { shiftKey: modifiers === 8 })
       assert.equal(await pressCommitField(key, { shiftKey: modifiers === 8 }), true, binding + ' must keep normal text input behavior')
       await evaluate("document.getElementById('commit-message').setSelectionRange(1000, 1000)")
       await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code, text: key === 'Enter' ? '\r' : typed, modifiers })
@@ -795,7 +801,6 @@ try {
       assert.equal(git('diff', '--cached', '--name-only'), file)
       await inputValue('#commit-message', message)
     }
-    await bindCommit('Ctrl+Shift+S', 's', { ctrlKey: true, shiftKey: true })
     assert.equal(await pressCommitField('Enter', { ctrlKey: true }), true, 'old binding must not submit')
     assert.equal(git('rev-parse', 'HEAD'), head)
     assert.equal(await pressCommitField('s', { ctrlKey: true, shiftKey: true }), false, 'configured chord must dispatch')
@@ -803,8 +808,13 @@ try {
     assert.equal(git('log', '-1', '--format=%s'), 'Shortcut integration commit')
     assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), file)
     assert.equal(git('diff', '--cached', '--name-only'), '')
+    // Reopen Settings to restore the default shortcuts.
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened')
     await clickButton('.shortcut-settings', 'Reset to defaults')
-    await evaluate("document.querySelector('.preferences').open = false")
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
+    await evaluate("document.querySelector('.settings-dialog .dialog-actions button').click()")
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed after shortcut reset')
 
     // Reload the WebView and inspect actual session writes, including any
     // intermediate state that might otherwise be overwritten by the last save.

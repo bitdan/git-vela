@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, reactive, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { Events, Window } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
-import { defaultPreviewHeight, layoutBounds, usePreferences } from './stores/preferences'
+import { layoutBounds, usePreferences } from './stores/preferences'
 import { useKeymap } from './stores/keymap'
 import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
 import { clearSession, readSession, saveSession } from './stores/session'
@@ -13,7 +13,7 @@ import ContextActions from './components/layout/ContextActions.vue'
 import ActivityBar, { type ActivityItem } from './components/layout/ActivityBar.vue'
 import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
 import CommandPalette from './components/layout/CommandPalette.vue'
-import ShortcutSettings from './components/layout/ShortcutSettings.vue'
+import SettingsDialog from './components/layout/SettingsDialog.vue'
 import type { PaletteCommand } from './components/layout/commandFilter'
 import { exceedsRenderLimit } from './components/diff/renderGuard'
 import { navigateDiff } from './components/diff/diffNavigation'
@@ -45,7 +45,7 @@ const preferences = usePreferences()
 const log = useTemplateRef<InstanceType<typeof CommitLog>>('log')
 const filesPanel = useTemplateRef<{ step: (direction: number) => void }>('filesPanel')
 const changesPanel = useTemplateRef<InstanceType<typeof WorkingChanges>>('changes-panel')
-const settings = useTemplateRef<HTMLDetailsElement>('settings')
+const settingsOpen = ref(false)
 const paletteTrigger = useTemplateRef<HTMLButtonElement>('paletteTrigger')
 const content = useTemplateRef<HTMLElement>('content')
 const paletteOpen = ref(false)
@@ -156,6 +156,10 @@ const view = ref<FileView | 'commit' | 'editor' | 'inspection' | 'conflict'>('wo
 type EditorTab = { path: string; file: TextFile; draft: string }
 const editorTabs = ref<EditorTab[]>([])
 const activeEditorPath = ref('')
+/** Last caret position per open tab, reported by WorkspaceEditor; the status
+ *  bar shows the active tab's cursor like the IDEA editor status widget. */
+const editorCursors = reactive<Record<string, { line: number; col: number }>>({})
+const editorCursor = computed(() => editorCursors[activeEditorPath.value])
 const activeEditorTab = computed(() => editorTabs.value.find(tab => tab.path === activeEditorPath.value))
 const editor = computed(() => activeEditorTab.value?.file)
 const editorPath = computed(() => activeEditorPath.value)
@@ -432,6 +436,7 @@ async function selectView(next: FileView | 'commit', background = false, expande
 function clearEditor() {
   editorRequest.clear()
   editorTabs.value = []
+  for (const key of Object.keys(editorCursors)) delete editorCursors[key]
   activeEditorPath.value = ''
   editorError.value = ''
   editorLoading.value = false
@@ -1325,10 +1330,7 @@ function closePalette() {
 
 function openSettings() {
   paletteOpen.value = false
-  void nextTick(() => {
-    if (settings.value) settings.value.open = true
-    settings.value?.querySelector('summary')?.focus()
-  })
+  settingsOpen.value = true
 }
 
 function runPalette(id: string) {
@@ -1477,7 +1479,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
   add('history', 'Show or hide history', 'View', () => { historyVisible.value = !historyVisible.value; diffExpanded.value = false }, { hint: hint('toggleHistory') })
   add('diff', diffExpanded.value ? 'Restore diff layout' : 'Maximize diff', 'View', () => diffExpanded.value ? restoreDiffLayout() : maximizeDiff(), { hint: hint('maximizeDiff'), disabled: !diffExpanded.value && (view.value !== 'commit' || !store.file) })
   add('file-tree', fileTree.value ? 'Show Changed Files flat' : 'Show Changed Files as a tree', 'View', () => { fileTree.value = !fileTree.value })
-  add('reset-size', 'Reset panel sizes', 'View', () => { previewHeight.value = defaultPreviewHeight })
+  add('reset-size', 'Reset panel sizes', 'View', () => preferences.resetLayout())
   add('shortcuts', 'Keyboard shortcuts…', 'Settings', openSettings)
   add('forget-session', 'Forget saved session', 'Settings', forgetSession)
   if (store.repository) {
@@ -1551,23 +1553,6 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
       <button ref="paletteTrigger" :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
               @click="paletteOpen = !paletteOpen">Commands…</button>
-      <details ref="settings" class="preferences">
-        <summary>Settings</summary>
-        <div class="preferences-panel">
-          <label><input v-model="dark" type="checkbox" /> Dark theme</label>
-          <label><input type="checkbox" :checked="density === 'compact'" @change="preferences.toggleDensity()" /> Compact rows</label>
-          <label><input v-model="fileTree" type="checkbox" /> Show Changed Files as a tree</label>
-          <label><input v-model="resumeOnStart" type="checkbox" /> Reopen last repository on startup</label>
-          <button @click="previewHeight = defaultPreviewHeight">Reset panel sizes</button>
-          <button @click="toggleFullscreen">Toggle fullscreen</button>
-          <button @click="forgetSession">Forget saved session</button>
-          <p v-if="sessionNotice" class="notice" role="status">{{ sessionNotice }}</p>
-          <details class="shortcut-details">
-            <summary>Keyboard shortcuts</summary>
-            <ShortcutSettings />
-          </details>
-        </div>
-      </details>
     </header>
     <div v-if="workspaceError" class="notice error top-error" role="alert">
       {{ workspaceError }}
@@ -1588,6 +1573,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <p v-if="projectError" class="notice error" role="alert">{{ projectError }}</p>
       <p v-else class="notice">{{ indexBusy ? 'Initializing…' : 'Create a Git repository in an existing project folder.' }}</p>
     </section>
+    <SettingsDialog v-if="settingsOpen" :session-notice="sessionNotice" @close="settingsOpen = false"
+                    @forget-session="forgetSession" @toggle-fullscreen="toggleFullscreen" />
     <ConfirmationDialog v-if="dailyPanel === 'remotes' && store.repository" title="Git Remotes" :busy="indexBusy"
                         @cancel="dailyPanel = undefined">
       <RemotesPanel :key="store.repository.path" :path="store.repository.path" :name="store.repository.name"
@@ -1727,6 +1714,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                                  :dirty="isTabDirty(tab)" :saving="editorSaving"
                                  :loading="editorLoading && activeEditorPath === tab.path" :blocked="indexBusy || store.opening"
                                  @change="tab.draft = $event" @save="saveEditor(tab.path)" @reload="reloadEditor"
+                                 @cursor="(line, col) => editorCursors[tab.path] = { line, col }"
                                  @close="requestCloseEditorTab(tab.path)" />
               </template>
               <p v-if="view === 'editor' && !editorTabs.length && !editorLoading" class="notice">No open editor tabs. Open a file from the Changes tree or the Files panel.</p>
@@ -1949,6 +1937,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
+      <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>
       <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
     </footer>
   </div>

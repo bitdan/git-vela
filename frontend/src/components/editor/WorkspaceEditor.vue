@@ -11,7 +11,7 @@ const props = defineProps<{
   path: string; initialContent: string; dark: boolean; lineEnding: string; bom: boolean
   dirty: boolean; saving: boolean; loading: boolean; blocked: boolean
 }>()
-const emit = defineEmits<{ change: [content: string]; save: []; reload: []; close: [] }>()
+const emit = defineEmits<{ change: [content: string]; save: []; reload: []; close: []; cursor: [line: number, col: number] }>()
 const host = useTemplateRef<HTMLElement>('host')
 const theme = new Compartment()
 let editor: EditorView | undefined
@@ -34,6 +34,11 @@ onMounted(() => {
         ]),
         EditorView.updateListener.of(update => {
           if (update.docChanged) emit('change', update.state.doc.toString())
+          if (update.docChanged || update.selectionSet) {
+            const head = update.state.selection.main.head
+            const line = update.state.doc.lineAt(head)
+            emit('cursor', line.number, head - line.from + 1)
+          }
         }),
       ],
     }),

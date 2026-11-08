@@ -286,11 +286,15 @@ const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 
 const commitNotice = ref('')
 const patchTooLarge = computed(() => preview.value?.kind === 'text' && exceedsRenderLimit('', preview.value.content))
 const patchLines = computed(() => preview.value?.content.replace(/\n$/, '').split('\n') ?? [])
-const workingTabs: { id: FileView; title: string }[] = [
-  { id: 'working', title: 'Working file' },
-  { id: 'unstaged', title: 'Unstaged diff' },
-  { id: 'staged', title: 'Staged diff' },
-]
+/** IDEA-style per-file working tabs: one tab per working change opened from
+ *  the Commit tool window (spec §4.4). The tab carries the view mode — the
+ *  working file itself or its staged/unstaged diff — so no fixed mode
+ *  buttons are needed in the tab strip. */
+const workingTabs = ref<{ path: string; mode: FileView }[]>([])
+const activeWorkingTab = computed(() =>
+  workingView.value && workingSelection.value
+    ? workingTabs.value.find(tab => tab.path === workingSelection.value?.path && tab.mode === workingView.value)
+    : undefined)
 
 function patchClass(line: string) {
   if (line.startsWith('@@')) return 'patch-hunk'
@@ -460,12 +464,44 @@ async function loadWorking() {
   }
 }
 
-function selectWorking(file: WorkingFile, next: FileView = 'working') {
+function selectWorking(file: WorkingFile, next?: FileView) {
   workingSelection.value = file
   showHunks.value = false
   indexError.value = ''
   expandedPreview.value = false
-  void selectView(next)
+  // Row clicks reuse the tab's existing mode; the context menu passes an
+  // explicit one to switch the working file / staged / unstaged view.
+  const tab = workingTabs.value.find(tab => tab.path === file.path)
+  const mode = next ?? tab?.mode ?? 'working'
+  if (tab) tab.mode = mode
+  else workingTabs.value.push({ path: file.path, mode })
+  void selectView(mode)
+}
+
+function closeWorkingTab(path: string) {
+  const at = workingTabs.value.findIndex(tab => tab.path === path)
+  if (at < 0) return
+  workingTabs.value.splice(at, 1)
+  if (workingSelection.value?.path !== path || !workingView.value) return
+  const next = workingTabs.value[at] ?? workingTabs.value[at - 1]
+  const file = next && workingFiles.value.find(item => item.path === next.path)
+  if (file) {
+    selectWorking(file)
+    return
+  }
+  workingSelection.value = undefined
+  preview.value = undefined
+  previewError.value = ''
+  previewLoading.value = false
+  expandedPreview.value = false
+  showHunks.value = false
+  view.value = store.selected || store.comparisonRange ? 'commit' : 'working'
+}
+
+/** Re-activate a working tab by path; no-op when the file left the working tree. */
+function activateWorkingTab(path: string, mode?: FileView) {
+  const file = workingFiles.value.find(item => item.path === path)
+  if (file) selectWorking(file, mode)
 }
 
 async function selectView(next: FileView | 'commit', background = false, expanded = false) {
@@ -518,7 +554,9 @@ function clearEditor() {
   pendingEditorAction.value = undefined
   diffTabs.value = []
   activeDiffKey.value = ''
-  if (view.value === 'editor' || view.value === 'conflict') view.value = 'working'
+  workingTabs.value = []
+  workingSelection.value = undefined
+  if (view.value === 'editor' || view.value === 'conflict' || workingView.value) view.value = 'working'
 }
 
 function withSavedEditor(label: string, action: () => void) {
@@ -552,7 +590,9 @@ function openEditorFile(file: string) {
     activateEditorTab(file)
     return
   }
-  void loadEditor(file)
+  // Switching files must not silently drop an unsaved draft (spec §2.4);
+  // IDEA shows the same confirmation before replacing a dirty editor.
+  withSavedEditor('opening ' + fileName(file), () => void loadEditor(file))
 }
 
 function reloadEditor() {
@@ -1487,6 +1527,22 @@ async function restoreSession() {
       workingSelection.value = workingFiles.value.find(item => item.path === saved.workingFile)
         ?? workingFiles.value.find(item => item.oldPath === saved.workingFile)
     }
+    // Reopen the working tabs from the previous session (preview state is not
+    // saved; activating a tab re-requests it from Git).
+    if (saved.workingTabs?.length) {
+      workingTabs.value = saved.workingTabs
+        .filter(tab => workingFiles.value.some(item => item.path === tab.path))
+        .map(tab => ({ path: tab.path, mode: tab.mode }))
+    } else if (workingSelection.value) {
+      workingTabs.value = [{ path: workingSelection.value.path, mode: 'working' }]
+    }
+    // Align the active tab's mode with the restored view; sessions saved
+    // before per-file working tabs carry only a view field.
+    if ((savedView === 'working' || savedView === 'unstaged' || savedView === 'staged') && workingSelection.value) {
+      const tab = workingTabs.value.find(item => item.path === workingSelection.value?.path)
+      if (tab) tab.mode = savedView
+      else workingTabs.value.push({ path: workingSelection.value.path, mode: savedView })
+    }
     // Reopen the editor tabs from the previous session (drafts are not saved).
     for (const file of saved.editorFiles ?? []) {
       if (repo.path !== store.repository?.path) break
@@ -1519,6 +1575,7 @@ function scheduleSessionSave(attempt = 0) {
       parent: store.parent,
       file: store.file?.path,
       workingFile: workingSelection.value?.path,
+      workingTabs: workingTabs.value.map(tab => ({ path: tab.path, mode: tab.mode })),
       range: store.comparisonRange ? { ...store.comparisonRange } : undefined,
       sidebar: sidebar.value,
       view: view.value,
@@ -1533,6 +1590,7 @@ watch([
   () => store.repository?.path, () => store.selected?.hash, () => store.parent,
   () => store.file?.path, () => workingSelection.value?.path, () => store.comparisonRange,
   sidebar, view, historyVisible, historyMaximized, editorTabs.value.length, activeEditorPath,
+  workingTabs.value.length,
 ], () => scheduleSessionSave())
 
 const paletteCommands = computed<PaletteCommand[]>(() => {
@@ -1786,7 +1844,15 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                   <button class="editor-close" :aria-label="'Close ' + fileName(tab.path)"
                           @click.stop="requestCloseEditorTab(tab.path)">×</button>
                 </div>
-                <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
+                <div v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.path" class="editor-tab" role="tab"
+                     :class="{ active: workingView === tab.mode && workingSelection?.path === tab.path }"
+                     :aria-selected="workingView === tab.mode && workingSelection?.path === tab.path" tabindex="0"
+                     :title="tab.path" @click="activateWorkingTab(tab.path)" @keydown.enter.prevent="activateWorkingTab(tab.path)">
+                  <span class="ellipsis">{{ fileName(tab.path) }}</span>
+                  <span v-if="tab.mode !== 'working'" class="tab-mode">{{ tab.mode }}</span>
+                  <button class="editor-close" :aria-label="'Close ' + fileName(tab.path)"
+                          @click.stop="closeWorkingTab(tab.path)">×</button>
+                </div>
                 <button v-show="!diffExpanded" :aria-pressed="view === 'commit' && !activeDiffTab" @click="selectView('commit')">Commit diff</button>
                 <div v-for="tab in diffTabs" v-show="!diffExpanded" :key="tab.key" class="editor-tab" role="tab"
                      :class="{ active: view === 'commit' && activeDiffKey === tab.key }"

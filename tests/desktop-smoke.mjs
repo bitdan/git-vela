@@ -69,6 +69,10 @@ function cdp(method, params) {
   })
 }
 
+// Editor typing relies on the WebView having keyboard focus; a freshly
+// launched window may start unfocused, which silently swallows Input events.
+await cdp('Page.bringToFront', {})
+
 async function evaluate(expression) {
   const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)
@@ -82,6 +86,20 @@ const clickButton = (scope, label) => until(() => evaluate(`(() => {
   button.click()
   return true
 })()`), 'enabled button ' + label)
+
+/** Show a working change's staged/unstaged diff through the row context menu;
+ *  the fixed Working file / Unstaged / Staged buttons became per-file tabs. */
+const showWorkingDiff = async (mode, title) => {
+  await until(() => evaluate(`(() => {
+    const row = ${title
+      ? `document.querySelector('.working-row[title="' + ${JSON.stringify(title)} + '"]')`
+      : `document.querySelector('.working-row.active') ?? [...document.querySelectorAll('.working-row')].find(item => !item.classList.contains('folder-row'))`}
+    if (!row) return false
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    return true
+  })()`), 'working row for ' + (title ?? 'the selected change'))
+  await clickButton('[aria-label="Working file actions"]', mode === 'staged' ? 'Show Staged Diff' : 'Show Unstaged Diff')
+}
 
 async function gitMenuAction(label) {
   await evaluate("if (!document.querySelector('.git-menu').open) document.querySelector('.git-menu summary').click()")
@@ -111,9 +129,11 @@ try {
   // Previous runs persist their selection, tool-window state and compare
   // ranges in localStorage; the session restore then races this script's
   // first clicks and can re-select a stale commit (seen 2026-11-08). Always
-  // start from a clean slate and reload before touching the UI.
+  // start from a clean slate and navigate before touching the UI. Navigation
+  // goes through Page.navigate because calling location.reload() inside a
+  // Runtime.evaluate can deadlock the WebView2 renderer.
   await evaluate("localStorage.clear()")
-  try { await evaluate("location.reload()") } catch { /* context tears down on reload */ }
+  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
   await evaluate(`(() => {
@@ -158,9 +178,9 @@ try {
     await until(() => evaluate(buttons + ".some(button => button.innerText === 'Stage' && !button.disabled)"), 'the selected file unstaged')
   }
   if (testCommit) {
-    for (const [tab, line] of [['Staged diff', '+staged version'], ['Unstaged diff', '+working version']]) {
-      await evaluate(`[...document.querySelectorAll('.preview-tabs button')].find(button => button.innerText === ${JSON.stringify(tab)}).click()`)
-      await until(() => evaluate(`document.querySelector('.patch')?.textContent.includes(${JSON.stringify(line)})`), tab)
+    for (const [mode, line] of [['staged', '+staged version'], ['unstaged', '+working version']]) {
+      await showWorkingDiff(mode)
+      await until(() => evaluate(`document.querySelector('.patch')?.textContent.includes(${JSON.stringify(line)})`), mode + ' diff')
     }
     await evaluate(`(() => {
       const input = document.querySelector('#commit-message')
@@ -456,8 +476,16 @@ try {
         await cdp('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode, modifiers })
       }
     }
-    const editorStatus = (text) =>
-      until(() => evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText.includes(${JSON.stringify(text)})`), text)
+    const editorStatus = (text) => {
+      // Report the last observed status so a hang shows whether the editor
+      // stayed in another state or the whole page went unresponsive.
+      let last = 'unavailable'
+      return until(async () => {
+        last = await evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText ?? 'missing'`)
+        return typeof last === 'string' && last.includes(text)
+      }, 'editor status ' + JSON.stringify(text))
+        .catch(error => { throw new Error(error.message + ' (last observed: ' + last + ')') })
+    }
     const enterText = async (text) => {
       await evaluate("document.querySelector('.editor-host .cm-content').focus()")
       await keyboard('a', 'KeyA', 65, 2)
@@ -492,12 +520,19 @@ try {
       row.click()
       return true
     })()`), 'edited file in Working Changes')
-    await clickButton('.preview-tabs', 'Unstaged diff')
+    await showWorkingDiff('unstaged', 'greetservice.go')
     await until(() => evaluate("document.querySelector('.patch')?.textContent.includes('Edited in GitVela')"), 'saved edit in Git diff')
     await clickButton('.index-actions', 'Stage')
     await until(() => git('diff', '--cached', '--name-only', '--', file) === file, 'edited file staged')
 
-    await clickButton('.preview-tabs', 'Editor')
+    // Re-activate the open editor tab and verify unsaved-draft protection.
+    await until(() => evaluate(`(() => {
+      const tab = [...document.querySelectorAll('.preview-tabs .editor-tab')]
+        .find(item => item.title.endsWith('greetservice.go'))
+      if (!tab) return false
+      tab.click()
+      return true
+    })()`), 'the open editor tab')
     await enterText('unsaved draft')
     await editorStatus('Unsaved changes')
     await writeFile(target, 'external update')
@@ -620,12 +655,12 @@ try {
       row.click()
       return true
     })()`), 'edited file in Changes')
-    await clickButton('.preview-tabs', 'Unstaged diff')
+    await showWorkingDiff('unstaged', 'm3.txt')
     await clickButton('.preview-tabs', 'Hunks')
     await clickButton('.hunk-panel', 'Stage hunk')
     await text('.hunk-panel [role=status]', 'Selection staged.')
     assert.equal(git('show', ':m3.txt'), 'pending change')
-    await clickButton('.preview-tabs', 'Staged diff')
+    await showWorkingDiff('staged', 'm3.txt')
     await clickButton('.preview-tabs', 'Hunks')
     await clickButton('.hunk-panel', 'Unstage hunk')
     await text('.hunk-panel [role=status]', 'Index selection unstaged.')
@@ -870,8 +905,10 @@ try {
           localStorage.setItem('gitvela.session', ${JSON.stringify(JSON.stringify(session))})
           location.reload()
         })()`)
-        await until(() => evaluate(`document.querySelector('.working-row.active')?.title === 'shortcut-test.txt' &&
-          document.querySelector('.preview-tabs [aria-pressed=true]')?.innerText === ${JSON.stringify(tab)}`), 'restored working file and ' + view + ' view')
+        await until(() => evaluate(`(() => {
+          const tab = document.querySelector('.preview-tabs .editor-tab.active')
+          return tab?.title === 'shortcut-test.txt' && tab.innerText.includes(${JSON.stringify(view)})
+        })()`), 'restored working file and ' + view + ' tab')
         await until(() => writes.length > 0, 'restored session saved')
         for (const saved of writes) {
           assert.equal(saved.hash, base)

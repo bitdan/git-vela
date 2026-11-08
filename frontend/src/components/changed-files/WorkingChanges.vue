@@ -119,6 +119,7 @@ defineExpose({ submit })
           <button class="working-row" :class="{ active: active === row.path }"
                   :aria-pressed="active === row.path" :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
                   @click="emit('select', row.file)"
+                  @dblclick="emit('select', row.file, row.file.canStage ? 'unstaged' : 'staged')"
                   @contextmenu.prevent="showActions(row.file, $event)" @keydown.shift.f10.prevent="showActions(row.file, $event)">
             <code class="file-status" :data-status="row.file.status.trim().at(-1)" :title="state(row.file.status)">{{ row.file.status.trim() }}</code>
             <span class="ellipsis">{{ row.name }}</span>

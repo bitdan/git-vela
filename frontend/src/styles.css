@@ -164,6 +164,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .editor-tab.active { background: var(--select); color: var(--accent); }
 .editor-tab > span:first-child { min-width: 0; }
 .editor-dirty { flex: none; color: var(--accent); }
+.tab-mode { flex: none; padding: 0 4px; border-radius: 3px; background: var(--border); color: var(--muted); font-size: 10px; line-height: 14px; }
 .editor-close {
   flex: none; display: grid; place-items: center; width: 16px; height: 16px; padding: 0;
   border: 0; border-radius: 3px; background: transparent; line-height: 1;

@@ -15,12 +15,18 @@ export interface SessionRange {
   label: string
 }
 
+export interface SessionWorkingTab {
+  path: string
+  mode: 'working' | 'unstaged' | 'staged'
+}
+
 export interface SessionState {
   path: string
   hash?: string
   parent?: number
   file?: string
   workingFile?: string
+  workingTabs?: SessionWorkingTab[]
   range?: SessionRange
   sidebar?: SessionSidebar
   view?: SessionView
@@ -57,6 +63,15 @@ export function normalizeSession(raw: unknown): SessionState | undefined {
   if (file) session.file = file
   const workingFile = text(value.workingFile)
   if (workingFile) session.workingFile = workingFile
+  if (Array.isArray(value.workingTabs)) {
+    const modes = ['working', 'unstaged', 'staged']
+    const tabs = value.workingTabs
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+      .map(item => ({ path: text(item.path, 1024), mode: item.mode }))
+      .filter((item): item is SessionWorkingTab => !!item.path && typeof item.mode === 'string' && modes.includes(item.mode))
+      .slice(0, 12)
+    if (tabs.length) session.workingTabs = tabs
+  }
   if (value.range && typeof value.range === 'object' && !Array.isArray(value.range)) {
     const range = value.range as Record<string, unknown>
     const before = revision(range.before)

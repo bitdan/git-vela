@@ -84,10 +84,10 @@ const graphPixels = computed(() => graphVisible.value
   ? Math.max(52, (filter.value ? filteredGraphWidth.value : store.graphWidth) * 13 + 14) : 8)
 const columns = computed(() => ({
   '--log-columns': [graphPixels.value + 'px', 'minmax(155px, 1fr)',
-    ...(showAuthor.value ? ['110px'] : []), ...(showDate.value ? ['96px'] : []), ...(showHash.value ? ['72px'] : []),
+    ...(showAuthor.value ? ['110px'] : []), ...(showDate.value ? ['124px'] : []), ...(showHash.value ? ['72px'] : []),
   ].join(' '),
   '--log-min-width': (graphPixels.value + 175 + (showAuthor.value ? 116 : 0) +
-    (showDate.value ? 102 : 0) + (showHash.value ? 78 : 0)) + 'px',
+    (showDate.value ? 130 : 0) + (showHash.value ? 78 : 0)) + 'px',
 }))
 const virtual = useVirtualizer(computed(() => ({
   count: commits.value.length,
@@ -99,7 +99,13 @@ const rows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
   const commit = commits.value[item.index]
   return commit ? [{ item, commit }] : []
 }))
-const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+/** Compact "2026/11/8 17:03" cell format keeps the Date column readable
+ *  while showing the commit time; the tooltip carries the full locale form. */
+function formatCommitDate(seconds: number) {
+  const value = new Date(seconds * 1000)
+  const pad = (input: number) => String(input).padStart(2, '0')
+  return value.getFullYear() + '/' + (value.getMonth() + 1) + '/' + value.getDate() + ' ' + pad(value.getHours()) + ':' + pad(value.getMinutes())
+}
 const tooltip = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
 watch([() => rows.value.at(-1)?.item.index, () => props.restoring], ([index, restoring]) => {
@@ -407,7 +413,7 @@ defineExpose({ jump, step, openSearch })
             <span class="ellipsis commit-subject">{{ commit.subject || '(no subject)' }}</span>
           </span>
           <span v-if="showAuthor" class="ellipsis muted">{{ commit.author }}</span>
-          <time v-if="showDate" class="muted" :title="tooltip.format(commit.time * 1000)">{{ date.format(commit.time * 1000) }}</time>
+          <time v-if="showDate" class="muted" :title="tooltip.format(commit.time * 1000)">{{ formatCommitDate(commit.time) }}</time>
           <code v-if="showHash" class="muted" :title="commit.hash">{{ commit.hash.slice(0, 8) }}</code>
         </button>
       </div>

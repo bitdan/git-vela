@@ -348,7 +348,8 @@ try {
     git(repo, 'switch', '-c', dailyBranch)
     await text('.statusbar', dailyBranch)
     await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
-    await click('.commit-form', 'Amend…')
+    // Amend is an IDEA-style checkbox above the message field now.
+    await evaluate("document.querySelector('.amend-row input').click()")
     await text('.amend-warning', 'Rewrites HEAD')
     assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))
     await set('#commit-message', 'Amended through GitVela')

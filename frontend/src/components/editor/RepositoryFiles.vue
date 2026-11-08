@@ -77,6 +77,10 @@ onUnmounted(() => { unsubscribe?.(); requests.clear() })
       <h2>Files <small>{{ filtered.length }}</small></h2>
       <button :disabled="loading" @click="load">Refresh</button>
     </header>
+    <p class="files-root" :title="path">
+      <strong class="ellipsis">{{ path.split(/[\\/]/).at(-1) || path }}</strong>
+      <span class="ellipsis muted">{{ path }}</span>
+    </p>
     <div class="ref-filter">
       <input v-model="query" aria-label="Filter repository files" placeholder="Filter by file path" spellcheck="false" />
     </div>

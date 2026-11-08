@@ -71,6 +71,13 @@ function state(status: string) {
   return descriptions.filter(Boolean).join(' · ')
 }
 
+/** Amend is presented as an IDEA-style checkbox; toggling it enters or leaves
+ *  the amend flow driven by the parent. */
+function onAmendToggle(on: boolean) {
+  if (on) emit('startAmend')
+  else emit('cancelAmend')
+}
+
 /** Called by the global shortcut dispatcher when the commit shortcut fires
  *  while the message field has focus. The keymap stays the single source of
  *  truth for the binding, so a rebound or unbound shortcut can never create
@@ -89,7 +96,7 @@ defineExpose({ submit })
         <input type="checkbox" aria-label="Include all changes in commit"
                :checked="groups.get('')?.checked" :indeterminate="groups.get('')?.mixed"
                :disabled="indexBusy || loading || !groups.get('')?.files.length" @click.prevent="toggleGroup('')" />
-        <span>Working Changes <small>{{ files.length }}</small></span>
+        <span>Working Changes <small>{{ files.length }} {{ files.length === 1 ? 'file' : 'files' }}</small></span>
       </label></h2>
       <div class="index-actions">
         <button :disabled="indexBusy || !canStage" title="Stage the selected file" @click="emit('updateIndex', true)">Stage</button>
@@ -131,18 +138,24 @@ defineExpose({ submit })
       </div>
     </div>
     <form class="commit-form" @submit.prevent="canCommit && emit('commit')">
-      <label for="commit-message">{{ amendHash ? 'Amend commit message' : 'Commit message' }}</label>
+      <label class="amend-row">
+        <input type="checkbox" :checked="!!amendHash" :disabled="indexBusy || (!amendHash && !canAmend)"
+               aria-label="Amend last commit"
+               :data-amend-action="amendHash ? 'cancelAmend' : 'startAmend'"
+               @change="onAmendToggle(($event.target as HTMLInputElement).checked)" />
+        <span>Amend last commit</span>
+      </label>
       <p v-if="amendHash" class="amend-warning" role="status">
         Rewrites HEAD {{ amendHash.slice(0, 8) }} and includes staged changes. Check whether the commit has already been shared.
       </p>
-      <textarea id="commit-message" v-model="message" placeholder="Describe the staged changes" rows="2"
+      <textarea id="commit-message" v-model="message" :placeholder="amendHash ? 'Describe the amended changes' : 'Describe the staged changes'" rows="5"
                 :disabled="indexBusy" />
       <div class="commit-actions">
         <span role="status">{{ stagedCount }} staged<template v-if="notice"> · {{ notice }}</template></span>
-        <button class="primary" type="submit" :disabled="!canCommit">{{ amendHash ? 'Amend commit' : 'Commit' }}</button>
-        <button type="button" :disabled="!canCommit" @click="emit('commitAndPush')">Commit and Push…</button>
-        <button v-if="amendHash" type="button" :disabled="indexBusy" @click="emit('cancelAmend')">Cancel amend</button>
-        <button v-else type="button" :disabled="indexBusy || !canAmend" @click="emit('startAmend')">Amend…</button>
+        <div class="commit-buttons">
+          <button class="primary" type="submit" :disabled="!canCommit">{{ amendHash ? 'Amend commit' : 'Commit' }}</button>
+          <button type="button" :disabled="!canCommit" @click="emit('commitAndPush')">Commit and Push…</button>
+        </div>
       </div>
     </form>
     <ContextActions v-if="menu && menuFile" :anchor="menu.anchor" label="Working file actions" @close="menu = undefined">

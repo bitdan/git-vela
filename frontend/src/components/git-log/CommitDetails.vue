@@ -15,7 +15,9 @@ let requestToken = 0
 
 const commit = computed(() => store.selected)
 const commitTime = computed(() => commit.value
-  ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(commit.value.time))
+  // commit.time is a Unix timestamp in seconds; the missing scale here
+  // rendered epoch dates like 1970年1月1日 08:52.
+  ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(commit.value.time * 1000))
   : '')
 
 watch(() => commit.value?.hash, async hash => {

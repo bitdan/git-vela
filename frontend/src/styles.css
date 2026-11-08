@@ -246,12 +246,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 
 .commit-form { flex: none; display: grid; gap: 4px; padding: 6px 8px; border-top: 1px solid var(--border); background: var(--header); }
 .commit-form label, .commit-actions span { color: var(--muted); font-size: 11px; }
+.amend-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
+.amend-row input { margin: 0; }
 .commit-form textarea {
-  width: 100%; min-height: 42px; max-height: 90px; resize: vertical;
+  width: 100%; min-height: 96px; max-height: 220px; resize: vertical;
   padding: 5px 7px; color: inherit; font: inherit; background: var(--panel);
   border: 1px solid var(--border); border-radius: 4px;
 }
 .commit-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 8px; }
+.commit-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.files-root { display: flex; align-items: baseline; gap: 7px; min-width: 0; margin: 0; padding: 0 12px 4px; font-size: 12px; }
+.files-root strong { flex: none; }
+.files-root .muted { font-size: 11px; }
 .patch code > span { display: block; min-height: 1em; }
 .patch-added { color: var(--good); background: color-mix(in srgb, var(--good) 9%, transparent); }
 .patch-removed { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }

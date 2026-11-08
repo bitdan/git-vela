@@ -25,6 +25,9 @@ export interface SessionState {
   sidebar?: SessionSidebar
   view?: SessionView
   historyVisible?: boolean
+  historyMaximized?: boolean
+  editorFiles?: string[]
+  editorActive?: string
 }
 
 const sidebars: SessionSidebar[] = ['files', 'changes', 'branches', 'worktrees']
@@ -68,6 +71,13 @@ export function normalizeSession(raw: unknown): SessionState | undefined {
     session.view = value.view as SessionView
   }
   if (typeof value.historyVisible === 'boolean') session.historyVisible = value.historyVisible
+  if (typeof value.historyMaximized === 'boolean') session.historyMaximized = value.historyMaximized
+  if (Array.isArray(value.editorFiles)) {
+    const files = value.editorFiles.filter((item): item is string => !!text(item, 1024)).slice(0, 12)
+    if (files.length) session.editorFiles = files
+  }
+  const editorActive = text(value.editorActive, 1024)
+  if (editorActive) session.editorActive = editorActive
   return session
 }
 

@@ -3,13 +3,14 @@ import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, o
 import { Events, Window } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
-import { defaultPreviewHeight, usePreferences } from './stores/preferences'
+import { defaultPreviewHeight, layoutBounds, usePreferences } from './stores/preferences'
 import { useKeymap } from './stores/keymap'
 import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
 import { clearSession, readSession, saveSession } from './stores/session'
 import { useWorkspace } from './stores/workspace'
 import ConfirmationDialog from './components/layout/ConfirmationDialog.vue'
 import ContextActions from './components/layout/ContextActions.vue'
+import ActivityBar, { type ActivityItem } from './components/layout/ActivityBar.vue'
 import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
 import CommandPalette from './components/layout/CommandPalette.vue'
 import ShortcutSettings from './components/layout/ShortcutSettings.vue'
@@ -17,6 +18,8 @@ import type { PaletteCommand } from './components/layout/commandFilter'
 import { exceedsRenderLimit } from './components/diff/renderGuard'
 import { navigateDiff } from './components/diff/diffNavigation'
 import CommitLog from './components/git-log/CommitLog.vue'
+import CommitDetails from './components/git-log/CommitDetails.vue'
+import GitConsole from './components/operations/GitConsole.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
 import { compareNames, fileTreeRows } from './components/changed-files/fileTree'
@@ -66,13 +69,28 @@ const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
 const branchMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
 type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
 const sidebar = ref<Exclude<Sidebar, 'branches'>>('changes')
+const sidebarHidden = ref(false)
 const commitTab = ref<'commit' | 'shelf'>('commit')
-const railItems = computed(() => preferences.commitFirst ? ['changes', 'files'] as const : ['files', 'changes'] as const)
-const draggedTool = ref<'files' | 'changes'>()
+const historyMaximized = ref(false)
+const gitTab = ref<'log' | 'console'>('log')
+const activityActive = computed<ActivityItem | undefined>(() => {
+  if (historyVisible.value) return 'git'
+  if (sidebarHidden.value) return undefined
+  return sidebar.value === 'changes' ? 'commit' : sidebar.value
+})
 
-function dropTool(target: 'files' | 'changes') {
-  if (draggedTool.value && draggedTool.value !== target) preferences.commitFirst = !preferences.commitFirst
-  draggedTool.value = undefined
+function onActivitySelect(item: ActivityItem) {
+  if (indexBusy.value) return
+  closeBranchMenu()
+  diffExpanded.value = false
+  if (item === 'git') {
+    historyVisible.value = true
+    return
+  }
+  historyMaximized.value = false
+  sidebarHidden.value = false
+  sidebar.value = item === 'commit' ? 'changes' : item
+  if (item === 'commit') commitTab.value = 'commit'
 }
 const historyVisible = ref(true)
 const restoringSession = ref(false)
@@ -135,15 +153,63 @@ const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
 const view = ref<FileView | 'commit' | 'editor' | 'inspection' | 'conflict'>('working')
-const editor = shallowRef<TextFile>()
-const editorPath = ref('')
-const editorDraft = ref('')
+type EditorTab = { path: string; file: TextFile; draft: string }
+const editorTabs = ref<EditorTab[]>([])
+const activeEditorPath = ref('')
+const activeEditorTab = computed(() => editorTabs.value.find(tab => tab.path === activeEditorPath.value))
+const editor = computed(() => activeEditorTab.value?.file)
+const editorPath = computed(() => activeEditorPath.value)
 const editorError = ref('')
 const editorLoading = ref(false)
 const editorSaving = ref(false)
-const editorKey = ref(0)
 const editorRequest = new LatestRequest()
-const editorDirty = computed(() => !!editor.value && editorDraft.value !== editor.value.content)
+const editorDirty = computed(() => !!activeEditorTab.value && activeEditorTab.value.draft !== activeEditorTab.value.file.content)
+
+function editorTabFor(path: string) {
+  return editorTabs.value.find(tab => tab.path === path)
+}
+
+function isTabDirty(tab: EditorTab) {
+  return tab.draft !== tab.file.content
+}
+
+function fileName(path: string) {
+  return path.split(/[\\/]/).at(-1) || path
+}
+
+function activateEditorTab(path: string) {
+  if (!editorTabFor(path)) return
+  activeEditorPath.value = path
+  view.value = 'editor'
+}
+
+/** Closing keeps the unsaved-changes protection: a dirty tab goes through the
+ *  confirmation dialog before it is dropped. */
+function requestCloseEditorTab(path: string) {
+  const tab = editorTabFor(path)
+  if (!tab) return
+  if (!isTabDirty(tab)) {
+    closeEditorTab(path)
+    return
+  }
+  pendingEditorLabel.value = 'closing ' + fileName(path)
+  pendingEditorAction.value = () => closeEditorTab(path)
+}
+
+function closeEditorTab(path: string) {
+  const index = editorTabs.value.findIndex(tab => tab.path === path)
+  if (index < 0) return
+  editorTabs.value.splice(index, 1)
+  if (activeEditorPath.value !== path) return
+  const next = editorTabs.value[index] ?? editorTabs.value[index - 1]
+  if (next) {
+    activeEditorPath.value = next.path
+    if (view.value === 'editor') view.value = 'editor'
+  } else {
+    activeEditorPath.value = ''
+    if (view.value === 'editor' || view.value === 'conflict') view.value = 'working'
+  }
+}
 const pendingEditorAction = shallowRef<() => void>()
 const pendingEditorLabel = ref('')
 const showHunks = ref(false)
@@ -164,7 +230,6 @@ const preparingOperation = ref(false)
 const operation = shallowRef<OperationState>()
 const operationError = ref('')
 const operationNotice = ref('')
-const confirmAbort = ref(false)
 const operationRequest = new LatestRequest()
 const headRequest = new LatestRequest()
 const inspectionPath = computed(() => view.value === 'editor' ? editorPath.value :
@@ -257,7 +322,6 @@ watch(() => store.repository?.path, repo => {
   operation.value = undefined
   operationError.value = ''
   operationNotice.value = ''
-  confirmAbort.value = false
   headRequest.clear()
   preparingOperation.value = false
   operationRequest.clear()
@@ -367,18 +431,17 @@ async function selectView(next: FileView | 'commit', background = false, expande
 
 function clearEditor() {
   editorRequest.clear()
-  editor.value = undefined
-  editorDraft.value = ''
+  editorTabs.value = []
+  activeEditorPath.value = ''
   editorError.value = ''
-  editorPath.value = ''
   editorLoading.value = false
   pendingEditorAction.value = undefined
-  if (view.value === 'editor') view.value = 'working'
+  if (view.value === 'editor' || view.value === 'conflict') view.value = 'working'
 }
 
 function withSavedEditor(label: string, action: () => void) {
   if (editorSaving.value) return
-  if (!editorDirty.value) {
+  if (!editorTabs.value.some(isTabDirty)) {
     action()
     return
   }
@@ -402,16 +465,16 @@ function openRepository(folder: string) {
 }
 
 function openEditorFile(file: string) {
-  if (!file || store.opening || editorSaving.value) return
-  if (editor.value && editorPath.value === file) {
-    view.value = 'editor'
+  if (!file || store.opening) return
+  if (editorTabFor(file)) {
+    activateEditorTab(file)
     return
   }
-  withSavedEditor('opening another file', () => { void loadEditor(file) })
+  void loadEditor(file)
 }
 
 function reloadEditor() {
-  const file = editorPath.value
+  const file = activeEditorPath.value
   if (!file) return
   const target = view.value === 'conflict' ? 'conflict' : 'editor'
   withSavedEditor('reloading the file', () => { void loadEditor(file, target) })
@@ -428,10 +491,14 @@ async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'edi
   try {
     const text = await call
     if (!current()) return
-    editor.value = text
-    editorPath.value = file
-    editorDraft.value = text.content
-    editorKey.value++
+    const existing = editorTabFor(file)
+    if (existing) {
+      existing.file = text
+      existing.draft = text.content
+    } else {
+      editorTabs.value.push({ path: file, file: text, draft: text.content })
+    }
+    activeEditorPath.value = file
   } catch (cause) {
     if (current()) editorError.value = String(cause)
   } finally {
@@ -440,21 +507,23 @@ async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'edi
   }
 }
 
-async function saveEditor() {
+async function saveEditor(path = activeEditorPath.value) {
   const repo = store.repository?.path
-  const text = editor.value
-  if (!repo || !text || !editorDirty.value || editorLoading.value || indexBusy.value || store.opening) return
-  const file = editorPath.value
-  const content = editorDraft.value
+  const tab = editorTabFor(path)
+  if (!repo || !tab || !isTabDirty(tab) || editorLoading.value || indexBusy.value || store.opening) return
+  const content = tab.draft
+  const text = tab.file
   editorSaving.value = true
   indexBusy.value = true
   editorError.value = ''
   try {
-    const revision = await api.SaveTextFile(repo, file, text.revision, content)
-    editor.value = { ...text, revision, content }
+    const revision = await api.SaveTextFile(repo, path, text.revision, content)
+    if (repo !== store.repository?.path) return
+    tab.file = { ...text, revision, content }
+    tab.draft = content
     await loadWorking()
   } catch (cause) {
-    editorError.value = String(cause)
+    if (repo === store.repository?.path) editorError.value = String(cause)
   } finally {
     editorSaving.value = false
     indexBusy.value = false
@@ -466,17 +535,17 @@ function preventDiscard(event: BeforeUnloadEvent) {
 }
 
 function openConflict(file: string) {
-  const open = () => {
-    conflictFile.value = file
-    if (editor.value && editorPath.value === file) view.value = 'conflict'
-    else void loadEditor(file, 'conflict')
+  conflictFile.value = file
+  if (editorTabFor(file)) {
+    activeEditorPath.value = file
+    view.value = 'conflict'
+  } else {
+    void loadEditor(file, 'conflict')
   }
-  if (editorPath.value === file) open()
-  else withSavedEditor('opening a conflict resolution', open)
 }
 
 function closeConflict() {
-  view.value = editor.value && editorPath.value === conflictFile.value ? 'editor' : 'working'
+  view.value = editorTabs.value.length ? 'editor' : 'working'
 }
 
 async function openSubmodule() {
@@ -545,7 +614,6 @@ async function loadOperationState() {
   try {
     const state = await call
     if (!current()) return
-    if (operation.value?.kind !== state.kind) confirmAbort.value = false
     operation.value = state
   } catch (cause) {
     if (current()) operationError.value = String(cause)
@@ -553,6 +621,12 @@ async function loadOperationState() {
     operationRequest.finish(call)
   }
 }
+
+// A starting or failing history operation surfaces itself in the Git tool
+// window's Console tab, mirroring IDEA where the console tab activates.
+watch(() => [operation.value?.kind, operation.value?.conflicts?.length ?? 0, operationError.value], ([kind, conflicts, error]) => {
+  if (kind || conflicts || error) gitTab.value = 'console'
+})
 
 async function prepareOperation(action: AdvancedAction, hash: string, label: string) {
   const repo = store.repository?.path
@@ -631,7 +705,6 @@ async function finishOperation(abort: boolean) {
   const repo = store.repository?.path
   const kind = operation.value?.kind
   if (!repo || !kind || indexBusy.value || store.opening) return
-  confirmAbort.value = false
   indexBusy.value = true
   operationError.value = ''
   operationNotice.value = ''
@@ -1057,6 +1130,117 @@ function resizeWithKey(event: KeyboardEvent) {
   previewHeight.value = Math.min(70, Math.max(28, previewHeight.value + (event.key === 'ArrowUp' ? -3 : 3)))
 }
 
+/* ---- Tool window splitters. Dragging persists through the preferences
+ *  store; arrow keys give the same control from the keyboard. ---- */
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function trackDrag(event: PointerEvent) {
+  if (!(event.currentTarget instanceof HTMLElement)) return undefined
+  event.currentTarget.setPointerCapture(event.pointerId)
+  return event.currentTarget
+}
+
+function dragging(event: PointerEvent) {
+  return event.currentTarget instanceof HTMLElement && event.currentTarget.hasPointerCapture(event.pointerId)
+}
+
+function resizeSidebar(event: PointerEvent) {
+  if (!content.value || !dragging(event)) return
+  const bounds = content.value.getBoundingClientRect()
+  preferences.sidebarWidth = Math.round(clamp(event.clientX - bounds.left - 38,
+    layoutBounds.sidebar.min, layoutBounds.sidebar.max))
+}
+
+function resizeSidebarWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  preferences.sidebarWidth = Math.round(clamp(preferences.sidebarWidth + (event.key === 'ArrowLeft' ? -24 : 24),
+    layoutBounds.sidebar.min, layoutBounds.sidebar.max))
+}
+
+function resizeBranches(event: PointerEvent) {
+  if (!content.value || !dragging(event)) return
+  const bounds = content.value.getBoundingClientRect()
+  preferences.branchesWidth = Math.round(clamp(event.clientX - bounds.left,
+    layoutBounds.branches.min, layoutBounds.branches.max))
+}
+
+function resizeBranchesWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  preferences.branchesWidth = Math.round(clamp(preferences.branchesWidth + (event.key === 'ArrowLeft' ? -24 : 24),
+    layoutBounds.branches.min, layoutBounds.branches.max))
+}
+
+function resizeFiles(event: PointerEvent) {
+  if (!content.value || !dragging(event)) return
+  const bounds = content.value.getBoundingClientRect()
+  preferences.filesWidth = Math.round(clamp(bounds.right - event.clientX,
+    layoutBounds.files.min, layoutBounds.files.max))
+}
+
+function resizeFilesWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  preferences.filesWidth = Math.round(clamp(preferences.filesWidth + (event.key === 'ArrowLeft' ? 24 : -24),
+    layoutBounds.files.min, layoutBounds.files.max))
+}
+
+function resizeDetails(event: PointerEvent) {
+  if (!content.value) return
+  const host = event.currentTarget instanceof HTMLElement ? event.currentTarget.parentElement : null
+  if (!host || !(event.currentTarget instanceof HTMLElement) ||
+      !event.currentTarget.hasPointerCapture(event.pointerId)) return
+  const bounds = host.getBoundingClientRect()
+  preferences.detailsHeight = Math.round(clamp((event.clientY - bounds.top) / bounds.height * 100,
+    layoutBounds.details.min, layoutBounds.details.max))
+}
+
+function resizeDetailsWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+  event.preventDefault()
+  preferences.detailsHeight = Math.round(clamp(preferences.detailsHeight + (event.key === 'ArrowUp' ? -3 : 3),
+    layoutBounds.details.min, layoutBounds.details.max))
+}
+
+/** A log selection updates the Changed Files and Commit Details panels and
+ *  reveals the commit diff tab — but never while the user is editing a file
+ *  or resolving a conflict, matching IDEA where an open editor is not stolen
+ *  by log selection. Editor tabs keep their content and can be switched back
+ *  to at any time. */
+function handleHistorySelect() {
+  if (view.value === 'editor' || view.value === 'conflict' || view.value === 'inspection') return
+  view.value = 'commit'
+}
+
+/** Double-clicking a history file opens (or focuses) the commit diff tab in
+ *  the editor workspace instead of maximizing the preview. */
+function openHistoryDiff() {
+  view.value = 'commit'
+}
+
+/** The workspace geometry: activity bar + Commit tool window + editor on
+ *  top, the Git tool window across the full width below. */
+const contentStyle = computed(() => ({
+  gridTemplateColumns: diffExpanded.value
+    ? 'minmax(0, 1fr)'
+    : sidebarHidden.value
+      ? '38px minmax(0, 1fr)'
+      : '38px ' + preferences.sidebarWidth + 'px 6px minmax(0, 1fr)',
+  gridTemplateRows: historyMaximized.value
+    ? 'minmax(0, 0fr) auto minmax(0, 1fr)'
+    : historyVisible.value && !diffExpanded.value
+      ? 'minmax(0, ' + previewHeight.value + 'fr) auto minmax(0, ' + (100 - previewHeight.value) + 'fr)'
+      : 'minmax(0, 1fr)',
+}))
+
 /* ---- Keyboard commands, command palette, session restore ---- */
 
 function stepChange(direction: number) {
@@ -1172,7 +1356,9 @@ async function restoreSession() {
       return
     }
     sidebar.value = !saved.sidebar || saved.sidebar === 'branches' ? 'changes' : saved.sidebar
+    sidebarHidden.value = false
     historyVisible.value = saved.sidebar === 'branches' || (saved.historyVisible ?? true)
+    historyMaximized.value = saved.historyMaximized ?? false
     // Sessions written without a view used the revision to choose the preview.
     const savedView = saved.view ?? (saved.hash || saved.range ? 'commit' : 'working')
     const nextView = savedView === 'commit' || savedView === 'staged' || savedView === 'unstaged'
@@ -1199,7 +1385,15 @@ async function restoreSession() {
       workingSelection.value = workingFiles.value.find(item => item.path === saved.workingFile)
         ?? workingFiles.value.find(item => item.oldPath === saved.workingFile)
     }
+    // Reopen the editor tabs from the previous session (drafts are not saved).
+    for (const file of saved.editorFiles ?? []) {
+      if (repo.path !== store.repository?.path) break
+      await loadEditor(file)
+    }
+    if (repo !== store.repository) return
+    if (saved.editorActive && editorTabFor(saved.editorActive)) activeEditorPath.value = saved.editorActive
     await selectView(nextView)
+    if (savedView === 'editor' && activeEditorPath.value) view.value = 'editor'
   } finally {
     restoringSession.value = false
     scheduleSessionSave()
@@ -1227,13 +1421,16 @@ function scheduleSessionSave(attempt = 0) {
       sidebar: sidebar.value,
       view: view.value,
       historyVisible: historyVisible.value,
+      historyMaximized: historyMaximized.value,
+      editorFiles: editorTabs.value.map(tab => tab.path),
+      editorActive: activeEditorPath.value || undefined,
     })
   }, 350)
 }
 watch([
   () => store.repository?.path, () => store.selected?.hash, () => store.parent,
   () => store.file?.path, () => workingSelection.value?.path, () => store.comparisonRange,
-  sidebar, view, historyVisible,
+  sidebar, view, historyVisible, historyMaximized, editorTabs.value.length, activeEditorPath,
 ], () => scheduleSessionSave())
 
 const paletteCommands = computed<PaletteCommand[]>(() => {
@@ -1305,6 +1502,15 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         </span>
         <strong>GitVela</strong>
       </div>
+      <button v-if="store.repository" class="branch-chip" :disabled="indexBusy || store.opening"
+              :title="'Current branch: ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head)"
+              @click="openSidebar('branches')">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <circle cx="6" cy="4" r="1.7" /><circle cx="6" cy="15" r="1.7" /><circle cx="14" cy="5" r="1.7" />
+          <path d="M6 5.7v7.6m8-6.6a6 6 0 0 1-6 5.8H6" />
+        </svg>
+        <span class="ellipsis">{{ store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head }}</span>
+      </button>
       <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
         <summary>
           <svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
@@ -1441,42 +1647,21 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 @click="withSavedEditor('changing Git history', () => { void runAdvanced() })">Confirm {{ advancedLabels[advanced.action] }}</button>
       </template>
     </ConfirmationDialog>
-    <section v-if="preparingOperation || operation?.kind || operation?.conflicts?.length || operationError || operationNotice"
-             class="daily-panel advanced-panel" aria-label="Git history operation">
-      <p v-if="preparingOperation" class="notice" role="status">Checking current HEAD…</p>
-      <div v-if="operation?.kind || operation?.conflicts?.length" class="daily-controls">
-        <strong>{{ operation.kind ? operation.kind + ' in progress' : 'Unmerged files' }}</strong>
-        <span class="muted">{{ operation.conflicts?.length ?? 0 }} unmerged</span>
-        <button :disabled="indexBusy" @click="openSidebar('changes')">Show Changes</button>
-        <button v-if="operation.kind" :disabled="indexBusy || !!operation.conflicts?.length"
-                @click="withSavedEditor('continuing the Git operation', () => { void finishOperation(false) })">Continue</button>
-        <button v-if="operation.kind && !confirmAbort" :disabled="indexBusy" @click="confirmAbort = true">Abort…</button>
-        <ConfirmationDialog v-if="confirmAbort" title="Confirm abort" :busy="indexBusy" @cancel="confirmAbort = false">
-          <p>Discard the in-progress operation and its resolutions?</p>
-          <template #actions>
-            <button data-cancel :disabled="indexBusy" @click="confirmAbort = false">Keep operation</button>
-            <button class="danger-button" :disabled="indexBusy"
-                    @click="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })">Confirm abort</button>
-          </template>
-        </ConfirmationDialog>
-      </div>
-      <p v-if="operationError" class="notice error" role="alert">{{ operationError }} <button @click="operationError = ''">Dismiss</button></p>
-      <p v-if="operationNotice" class="notice" role="status">{{ operationNotice }} <button @click="operationNotice = ''">Dismiss</button></p>
-    </section>
     <div class="workspace">
       <main v-if="store.repository" ref="content" class="content" :class="{ 'preview-only': diffExpanded }"
-            :style="{ gridTemplateRows: historyVisible && !diffExpanded
-              ? 'minmax(0, ' + previewHeight + 'fr) auto minmax(0, ' + (100 - previewHeight) + 'fr)' : 'minmax(0, 1fr)' }">
-        <nav v-show="!diffExpanded" class="workspace-rail" aria-label="Workspace views">
-          <button v-for="tool in railItems" :key="tool" draggable="true" :aria-pressed="sidebar === tool"
-                  :disabled="indexBusy" :title="(tool === 'files' ? 'Files' : 'Commit') + ' · Drag to reorder'"
-                  @dragstart="draggedTool = tool; $event.dataTransfer?.setData('text/plain', tool)"
-                  @dragover.prevent @drop.prevent="dropTool(tool)" @dragend="draggedTool = undefined"
-                  @keydown.alt.up.stop.prevent="preferences.commitFirst = tool === 'changes'"
-                  @keydown.alt.down.stop.prevent="preferences.commitFirst = tool === 'files'"
-                  @click="openSidebar(tool)">{{ tool === 'files' ? 'Files' : 'Commit' }}</button>
-        </nav>
-        <aside v-show="!diffExpanded" class="panel workspace-sidebar" aria-label="Repository workspace">
+            :style="contentStyle">
+        <ActivityBar v-show="!diffExpanded" :active="activityActive" :history-visible="historyVisible" :busy="indexBusy"
+                     @select="onActivitySelect" @settings="openSettings" />
+        <aside v-show="!diffExpanded && !sidebarHidden" class="panel workspace-sidebar" aria-label="Repository workspace">
+          <div class="tool-title">
+            <strong>{{ sidebar === 'changes' ? 'Commit' : sidebar === 'files' ? 'Files' : 'Worktrees' }}</strong>
+            <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
+                    @click="sidebarHidden = true">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                <path d="m6 6 8 8m0-8-8 8" />
+              </svg>
+            </button>
+          </div>
           <div class="sidebar-project">
             <span class="eyebrow">Repository</span>
             <strong class="ellipsis" :title="store.repository.path">{{ store.repository.name }}</strong>
@@ -1498,13 +1683,24 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                       class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
         </aside>
-          <div class="upper" :class="{ 'diff-expanded': diffExpanded }">
+          <div v-show="!diffExpanded && !sidebarHidden" class="splitter vsplitter" role="separator" aria-orientation="vertical"
+               aria-label="Resize Commit tool window" tabindex="0"
+               @pointerdown="trackDrag" @pointermove="resizeSidebar" @keydown="resizeSidebarWithKey"></div>
+          <div v-show="!historyMaximized" class="upper" :class="{ 'diff-expanded': diffExpanded }">
             <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
               <header class="preview-tabs">
+                <div v-for="tab in editorTabs" v-show="!diffExpanded" :key="tab.path" class="editor-tab" role="tab"
+                     :class="{ active: view === 'editor' && activeEditorPath === tab.path }"
+                     :aria-selected="view === 'editor' && activeEditorPath === tab.path" tabindex="0"
+                     :title="tab.path" @click="activateEditorTab(tab.path)"
+                     @keydown.enter.prevent="activateEditorTab(tab.path)">
+                  <span class="ellipsis">{{ fileName(tab.path) }}</span>
+                  <span v-if="isTabDirty(tab)" class="editor-dirty" aria-label="Unsaved changes">•</span>
+                  <button class="editor-close" :aria-label="'Close ' + fileName(tab.path)"
+                          @click.stop="requestCloseEditorTab(tab.path)">×</button>
+                </div>
                 <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
                 <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
-                <button v-if="!diffExpanded && (editor || editorLoading || editorError)" :aria-pressed="view === 'editor'"
-                        @click="view = 'editor'">Editor{{ editorDirty ? ' •' : '' }}</button>
                 <span class="ellipsis muted" :title="previewPath">{{ previewPath }}</span>
                 <button v-if="view === 'working' && workingSelection && preview?.kind === 'text'"
                         @click="openEditorFile(workingSelection.path)">Edit file</button>
@@ -1524,12 +1720,16 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               <ConflictPanel v-if="view === 'conflict'" :path="store.repository.path" :file="conflictFile"
                              :unmerged="!!operation?.conflicts?.includes(conflictFile)" :busy="indexBusy"
                              @resolve="markResolved(conflictFile)" @close="closeConflict" />
-              <WorkspaceEditor v-if="editor" v-show="(view === 'editor' || (view === 'conflict' && editorPath === conflictFile)) && !editorLoading" :key="editorKey" :path="editorPath"
-                               :initial-content="editor.content" :dark="dark" :line-ending="editor.lineEnding" :bom="editor.bom"
-                               :dirty="editorDirty" :saving="editorSaving" :loading="editorLoading" :blocked="indexBusy || store.opening"
-                               @change="editorDraft = $event" @save="saveEditor" @reload="reloadEditor"
-                               @close="withSavedEditor('closing the editor', clearEditor)" />
-              <button v-else-if="view === 'editor' && !editorLoading" class="close-empty-editor" @click="clearEditor">Close editor</button>
+              <template v-for="tab in editorTabs" :key="tab.path">
+                <WorkspaceEditor v-show="(view === 'editor' && activeEditorPath === tab.path || view === 'conflict' && tab.path === conflictFile) && !editorLoading"
+                                 :path="tab.path" :initial-content="tab.file.content" :dark="dark"
+                                 :line-ending="tab.file.lineEnding" :bom="tab.file.bom"
+                                 :dirty="isTabDirty(tab)" :saving="editorSaving"
+                                 :loading="editorLoading && activeEditorPath === tab.path" :blocked="indexBusy || store.opening"
+                                 @change="tab.draft = $event" @save="saveEditor(tab.path)" @reload="reloadEditor"
+                                 @close="requestCloseEditorTab(tab.path)" />
+              </template>
+              <p v-if="view === 'editor' && !editorTabs.length && !editorLoading" class="notice">No open editor tabs. Open a file from the Changes tree or the Files panel.</p>
               <FileInspection v-if="view === 'inspection' && inspection" :path="store.repository.path" :file="inspection.file"
                               :mode="inspection.mode" @mode="inspection = { ...inspection, mode: $event }"
                               @close="closeInspection" @commit="openHistoricalCommit" />
@@ -1600,11 +1800,33 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               </template>
             </section>
           </div>
-          <div v-show="historyVisible && !diffExpanded" class="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
+          <div v-show="historyVisible && !diffExpanded && !historyMaximized" class="splitter row-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
                :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
                @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
-          <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower">
-            <aside class="panel branch-panel" aria-label="Branches and tags">
+          <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower panel">
+            <header class="tool-window-header">
+              <div class="tool-tabs" role="tablist" aria-label="Git tool window views">
+                <button role="tab" :aria-selected="gitTab === 'log'" @click="gitTab = 'log'">Log</button>
+                <button role="tab" :aria-selected="gitTab === 'console'" @click="gitTab = 'console'">Console</button>
+              </div>
+              <div class="tool-window-actions">
+                <button :disabled="indexBusy" :title="historyMaximized ? 'Restore tool window size' : 'Maximize tool window'"
+                        :aria-pressed="historyMaximized" @click="historyMaximized = !historyMaximized">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                    <path v-if="!historyMaximized" d="M4 8V4h4M16 12v4h-4M4 8h4M16 12h-4" />
+                    <path v-else d="M8 4v4H4m8 8v-4h4M8 4h.01M16 12h.01" />
+                  </svg>
+                </button>
+                <button :disabled="indexBusy" title="Hide Git tool window" aria-label="Hide Git tool window"
+                        @click="historyVisible = false; historyMaximized = false">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                    <path d="m6 6 8 8m0-8-8 8" />
+                  </svg>
+                </button>
+              </div>
+            </header>
+            <div v-show="gitTab === 'log'" class="lower-body">
+            <aside class="panel branch-panel" aria-label="Branches and tags" :style="{ width: preferences.branchesWidth + 'px' }">
               <header class="panel-header">
                 <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
                 <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
@@ -1650,7 +1872,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                     <button v-if="row.file" class="side-item ellipsis"
                             :class="{ active: row.file.item.name === 'refs/heads/' + store.repository.head }"
                             :title="row.file.item.name" :aria-expanded="branchMenu?.item.name === row.file.item.name"
-                            @click="openBranchActions(row.file.item, $event)"
+                            @click="jump(row.file.item.hash)"
                             @contextmenu.prevent="openBranchActions(row.file.item, $event)"
                             @keydown.shift.f10.prevent="openBranchActions(row.file.item, $event)">
                       <span v-if="row.file.item.name === 'refs/heads/' + store.repository.head" class="current-ref-marker" aria-hidden="true">●</span>{{ row.name }}
@@ -1667,10 +1889,25 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 </div>
               </div>
             </aside>
+            <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Branches panel" tabindex="0"
+                 @pointerdown="trackDrag" @pointermove="resizeBranches" @keydown="resizeBranchesWithKey"></div>
             <CommitLog ref="log" @refresh="refresh" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
-                       @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
+                       @select="handleHistorySelect" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
-            <ChangedFiles ref="filesPanel" @edit="openEditorFile" @select="view = 'commit'" @maximize="maximizeDiff" />
+            <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Changed Files panel" tabindex="0"
+                 @pointerdown="trackDrag" @pointermove="resizeFiles" @keydown="resizeFilesWithKey"></div>
+            <div class="log-right" :style="{ width: preferences.filesWidth + 'px' }">
+              <ChangedFiles ref="filesPanel" @edit="openEditorFile" @select="handleHistorySelect" @open-diff="openHistoryDiff" @maximize="maximizeDiff" />
+              <div class="splitter details-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize Commit Details panel" tabindex="0"
+                   @pointerdown="trackDrag" @pointermove="resizeDetails" @keydown="resizeDetailsWithKey"></div>
+              <CommitDetails :style="{ height: preferences.detailsHeight + '%' }" />
+            </div>
+            </div>
+            <GitConsole v-show="gitTab === 'console'" class="lower-console" :preparing="preparingOperation" :operation="operation"
+                        :error="operationError" :notice="operationNotice" :busy="indexBusy || store.opening"
+                        @continue="withSavedEditor('continuing the Git operation', () => { void finishOperation(false) })"
+                        @abort="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })"
+                        @dismiss-error="operationError = ''" @dismiss-notice="operationNotice = ''" @show-changes="openSidebar('changes')" />
           </div>
       </main>
       <main v-else class="empty">

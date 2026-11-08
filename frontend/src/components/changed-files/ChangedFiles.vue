@@ -10,7 +10,7 @@ import { expandAncestors, fileTreeRows } from './fileTree'
 import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: []; maximize: []; edit: [path: string] }>()
+const emit = defineEmits<{ select: []; openDiff: []; maximize: []; edit: [path: string] }>()
 const list = useTemplateRef<HTMLElement>('list')
 const preferences = usePreferences()
 const { fileTree: tree } = storeToRefs(preferences)
@@ -43,6 +43,11 @@ function toggleFolder(path: string) {
 function select(file: Change) {
   emit('select')
   if (store.file?.index !== file.index || store.diffError) void store.selectFile(file)
+}
+
+function openDiff(file: Change) {
+  select(file)
+  emit('openDiff')
 }
 
 /** Alt+Up/Down navigation over changed files, independent of tree folders. */
@@ -83,24 +88,9 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
 <template>
   <section class="panel files-panel" aria-label="Changed Files">
     <header class="panel-header">
-      <div><span class="eyebrow">{{ store.comparisonRange ? 'COMPARE REVISIONS' : 'COMMIT DETAILS' }}</span><h2>Changed Files <small>{{ store.files.length }}</small></h2></div>
+      <div><span class="eyebrow">{{ store.comparisonRange ? 'COMPARE REVISIONS' : 'HISTORY' }}</span><h2>Changed Files <small>{{ store.files.length }}</small></h2></div>
       <button :aria-pressed="tree" @click="tree = !tree">{{ tree ? 'Tree' : 'Flat' }}</button>
     </header>
-    <div v-if="store.comparisonRange" class="commit-summary">
-      <strong class="ellipsis" :title="store.comparisonRange.label">{{ store.comparisonRange.label }}</strong>
-      <div class="meta"><code>{{ store.comparisonRange.before.slice(0, 10) }} → {{ store.comparisonRange.after.slice(0, 10) }}</code></div>
-    </div>
-    <div v-else-if="store.selected" class="commit-summary">
-      <strong class="ellipsis" :title="store.selected.subject">{{ store.selected.subject }}</strong>
-      <div class="meta"><code :title="store.selected.hash">{{ store.selected.hash.slice(0, 12) }}</code><span class="ellipsis">{{ store.selected.author }}</span></div>
-      <label v-if="(store.selected.parents?.length ?? 0) > 1">
-        Compare parent
-        <select :value="store.parent" @change="emit('select'); store.selectCommit(store.selected, Number(($event.target as HTMLSelectElement).value))">
-          <option v-for="(hash, index) in store.selected.parents" :key="hash" :value="index">{{ index + 1 }} · {{ hash.slice(0, 10) }}</option>
-        </select>
-      </label>
-      <span v-else class="muted">{{ store.selected.parents?.[0] ? 'Parent ' + store.selected.parents[0].slice(0, 10) : 'Root or shallow boundary' }}</span>
-    </div>
     <p v-if="store.loadingFiles" class="notice" role="status">Loading changed files…</p>
     <p v-else-if="store.filesError" class="notice error" role="alert">{{ store.filesError }}</p>
     <p v-else-if="!store.files.length" class="notice">{{ (store.selected || store.comparisonRange) ? 'No changed files.' : 'Select a commit.' }}</p>
@@ -111,7 +101,7 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
                   :class="{ active: store.file?.index === row.file.index }" :aria-pressed="store.file?.index === row.file.index"
                   :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 8 + row.depth * 12 + 'px' }"
                   :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
-                  @click="select(row.file)" @dblclick="emit('maximize')"
+                  @click="select(row.file)" @dblclick="openDiff(row.file)"
                   @contextmenu.prevent="showActions(row.file, $event)" @keydown.shift.f10.prevent="showActions(row.file, $event)">
             <code class="file-status" :data-status="row.file.status">{{ row.file.status }}</code>
             <span class="ellipsis">{{ row.file.oldPath ? row.file.oldPath + ' → ' : '' }}{{ row.name }}</span>

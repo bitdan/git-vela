@@ -11,7 +11,9 @@ function cancel() {
 
 onMounted(() => {
   dialog.value?.showModal()
-  dialog.value?.querySelector<HTMLElement>('[data-cancel]')?.focus()
+  const initial = dialog.value?.querySelector<HTMLElement>('[data-initial-focus]')
+    ?? dialog.value?.querySelector<HTMLElement>('[data-cancel]')
+  initial?.focus()
 })
 
 onBeforeUnmount(() => dialog.value?.close())

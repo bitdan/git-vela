@@ -20,6 +20,16 @@ export interface SessionWorkingTab {
   mode: 'working' | 'unstaged' | 'staged'
 }
 
+export interface SessionDiffTab {
+  key: string
+  path: string
+  hash: string
+  parent?: number
+  index: number
+  range?: SessionRange
+  expanded?: boolean
+}
+
 export interface SessionState {
   path: string
   hash?: string
@@ -27,6 +37,8 @@ export interface SessionState {
   file?: string
   workingFile?: string
   workingTabs?: SessionWorkingTab[]
+  diffTabs?: SessionDiffTab[]
+  diffActive?: string
   range?: SessionRange
   sidebar?: SessionSidebar
   view?: SessionView
@@ -79,6 +91,36 @@ export function normalizeSession(raw: unknown): SessionState | undefined {
     const label = text(range.label)
     if (before && after && label) session.range = { before, after, label }
   }
+  if (Array.isArray(value.diffTabs)) {
+    const tabs: SessionDiffTab[] = []
+    for (const item of value.diffTabs.slice(0, 12)) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      const tab = item as Record<string, unknown>
+      const key = text(tab.key, 512)
+      const path = text(tab.path, 1024)
+      const hash = revision(tab.hash)
+      if (!key || !path || !hash) continue
+      const entry: SessionDiffTab = { key, path, hash, index: 0 }
+      if (typeof tab.parent === 'number' && Number.isInteger(tab.parent) && tab.parent >= 0 && tab.parent <= 64) {
+        entry.parent = tab.parent
+      }
+      if (typeof tab.index === 'number' && Number.isInteger(tab.index) && tab.index >= 0 && tab.index <= 100000) {
+        entry.index = tab.index
+      }
+      if (tab.range && typeof tab.range === 'object' && !Array.isArray(tab.range)) {
+        const range = tab.range as Record<string, unknown>
+        const before = revision(range.before)
+        const after = revision(range.after)
+        const label = text(range.label)
+        if (before && after && label) entry.range = { before, after, label }
+      }
+      if (tab.expanded === true) entry.expanded = true
+      tabs.push(entry)
+    }
+    if (tabs.length) session.diffTabs = tabs
+  }
+  const diffActive = text(value.diffActive, 512)
+  if (diffActive) session.diffActive = diffActive
   if (typeof value.sidebar === 'string' && sidebars.includes(value.sidebar as SessionSidebar)) {
     session.sidebar = value.sidebar as SessionSidebar
   }

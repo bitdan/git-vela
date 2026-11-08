@@ -51,6 +51,10 @@ export const usePreferences = defineStore('preferences', () => {
   const branchesWidth = ref(clampLayout(Number(preference('gitvela.branchesWidth')) || null, layoutBounds.branches))
   const filesWidth = ref(clampLayout(Number(preference('gitvela.filesWidth')) || null, layoutBounds.files))
   const detailsHeight = ref(clampLayout(Number(preference('gitvela.detailsHeight')) || null, layoutBounds.details))
+  /** Issue navigation (IDEA IssueNavigationConfiguration): commit message IDs
+   *  matching the regex pattern become links built from the URL template. */
+  const issuePattern = ref(preference('gitvela.issuePattern') ?? '[A-Z]+-\\d+')
+  const issueURL = ref(preference('gitvela.issueURL') ?? '')
   const rowHeight = computed(() => rowHeights[density.value].row)
   const repoRowHeight = computed(() => rowHeights[density.value].repo)
   const workingRowHeight = computed(() => rowHeights[density.value].working)
@@ -64,6 +68,8 @@ export const usePreferences = defineStore('preferences', () => {
   watch(branchesWidth, value => persist('gitvela.branchesWidth', String(value)))
   watch(filesWidth, value => persist('gitvela.filesWidth', String(value)))
   watch(detailsHeight, value => persist('gitvela.detailsHeight', String(value)))
+  watch(issuePattern, value => persist('gitvela.issuePattern', value))
+  watch(issueURL, value => persist('gitvela.issueURL', value))
 
   function resetLayout() {
     previewHeight.value = defaultPreviewHeight
@@ -77,5 +83,5 @@ export const usePreferences = defineStore('preferences', () => {
     density.value = density.value === 'compact' ? 'comfortable' : 'compact'
   }
 
-  return { dark, previewHeight, fileTree, density, resumeOnStart, sidebarWidth, branchesWidth, filesWidth, detailsHeight, rowHeight, repoRowHeight, workingRowHeight, toggleDensity, resetLayout }
+  return { dark, previewHeight, fileTree, density, resumeOnStart, sidebarWidth, branchesWidth, filesWidth, detailsHeight, issuePattern, issueURL, rowHeight, repoRowHeight, workingRowHeight, toggleDensity, resetLayout }
 })

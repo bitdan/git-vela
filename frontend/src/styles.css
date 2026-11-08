@@ -242,11 +242,26 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .statusbar { justify-content: space-between; padding-block: 5px; color: var(--muted); font-size: 11px; }
 .statusbar > :last-child { flex: none; display: flex; align-items: center; gap: 5px; }
 .statusbar .editor-cursor { flex: none; font-variant-numeric: tabular-nums; }
+.statusbar .editor-meta { display: inline-flex; align-items: center; gap: 3px; }
+/* IDEA-style line ending widget: a status-like control that converts on click. */
+.line-ending-widget {
+  padding: 0 3px; color: inherit; font: inherit; background: none;
+  border: none; border-radius: 3px; cursor: pointer;
+}
+.line-ending-widget:hover { background: var(--hover, rgba(128, 128, 128, .18)); }
+.line-ending-widget:disabled { cursor: default; background: none; }
 .status-dot { width: 6px; height: 6px; background: var(--good); border-radius: 50%; }
 .status-dot.busy { background: var(--accent); }
 
 .commit-form { flex: none; display: grid; gap: 4px; padding: 6px 8px; border-top: 1px solid var(--border); background: var(--header); }
 .commit-form label, .commit-actions span { color: var(--muted); font-size: 11px; }
+/* Recent commit messages row: the History button hugs the form's right edge. */
+.commit-history { display: flex; justify-content: flex-end; }
+.commit-history button { font-size: 11px; color: var(--muted); }
+.commit-history-item {
+  display: block; width: 100%; max-width: 340px; overflow: hidden;
+  text-align: left; text-overflow: ellipsis; white-space: nowrap;
+}
 .amend-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
 .amend-row input { margin: 0; }
 .commit-form textarea {
@@ -377,6 +392,22 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* Text-field settings rows (issue navigation): label above the input. */
+.settings-group label.settings-field {
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text);
+}
+.settings-group label.settings-field input {
+  padding: 4px 6px;
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 .settings-group button {

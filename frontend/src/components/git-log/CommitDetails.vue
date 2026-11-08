@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
+import { usePreferences } from '../../stores/preferences'
+import { issueSegments } from './issueLinks'
 import { useWorkspace } from '../../stores/workspace'
 
 /** Commit Details panel (IDEA CommitDetailsListPanel counterpart): hash,
@@ -40,6 +42,12 @@ watch(() => commit.value?.hash, async hash => {
 function refLabel(ref: string) {
   return ref.replace(/^refs\/(heads|remotes|tags)\//, '')
 }
+
+const preferences = usePreferences()
+/** Issue navigation renders configured issue IDs (e.g. PROJ-123) as links in
+ *  the subject and the full message body. */
+const subjectSegments = computed(() => issueSegments(commit.value?.subject ?? '', preferences.issuePattern, preferences.issueURL))
+const messageSegments = computed(() => issueSegments(message.value, preferences.issuePattern, preferences.issueURL))
 </script>
 
 <template>
@@ -53,7 +61,12 @@ function refLabel(ref: string) {
     </p>
     <p v-else-if="!commit" class="notice">Select a commit to see its details.</p>
     <div v-else class="details-body">
-      <div class="details-subject ellipsis" :title="commit.subject">{{ commit.subject }}</div>
+      <div class="details-subject ellipsis" :title="commit.subject">
+        <template v-for="(segment, index) in subjectSegments" :key="index">
+          <a v-if="segment.href" :href="segment.href" target="_blank" rel="noopener">{{ segment.text }}</a>
+          <template v-else>{{ segment.text }}</template>
+        </template>
+      </div>
       <div class="details-grid">
         <span class="muted">Hash</span>
         <code :title="commit.hash">{{ commit.hash.slice(0, 12) }}</code>
@@ -82,7 +95,7 @@ function refLabel(ref: string) {
           </span>
         </template>
       </div>
-      <pre v-if="message || loading || messageError" class="details-message">{{ loading ? 'Loading message…' : messageError || message }}</pre>
+      <pre v-if="message || loading || messageError" class="details-message"><template v-if="loading">Loading message…</template><template v-else-if="messageError">{{ messageError }}</template><template v-else-if="message"><template v-for="(segment, index) in messageSegments" :key="index"><a v-if="segment.href" :href="segment.href" target="_blank" rel="noopener">{{ segment.text }}</a><template v-else>{{ segment.text }}</template></template></template></pre>
     </div>
   </section>
 </template>

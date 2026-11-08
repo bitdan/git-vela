@@ -302,14 +302,24 @@ func (*RepositoryService) OpenTextFile(ctx context.Context, path, file string) (
 	return discardCancelled(git.OpenTextFile(ctx, path, file))
 }
 
-func (s *RepositoryService) SaveTextFile(ctx context.Context, path, file, revision, content string) (string, error) {
+func (s *RepositoryService) SaveTextFile(ctx context.Context, path, file, revision, content, lineEnding string) (string, error) {
 	var updated string
 	err := s.write(ctx, func() error {
 		var err error
-		updated, err = git.SaveTextFile(ctx, path, file, revision, content)
+		updated, err = git.SaveTextFile(ctx, path, file, revision, content, lineEnding)
 		return err
 	})
 	return updated, err
+}
+
+func (s *RepositoryService) AddToGitignore(ctx context.Context, path, file string) (bool, error) {
+	var changed bool
+	err := s.write(ctx, func() error {
+		var err error
+		changed, err = git.AddToGitignore(ctx, path, file)
+		return err
+	})
+	return changed, err
 }
 
 func (*RepositoryService) FileHistory(ctx context.Context, path, file string) (git.FileHistoryPage, error) {

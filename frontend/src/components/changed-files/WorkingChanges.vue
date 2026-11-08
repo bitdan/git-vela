@@ -5,8 +5,8 @@ import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import { expandAncestors, fileTreeRows } from './fileTree'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
-const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string }>()
-const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: [] }>()
+const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string; history: string[] }>()
+const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: []; ignore: [path: string] }>()
 const message = defineModel<string>('message', { required: true })
 const canStageAll = computed(() => props.files.some(file => file.canStage))
 const stagedCount = computed(() => props.files.filter(file => file.canUnstage).length)
@@ -14,18 +14,31 @@ const canCommit = computed(() => !!message.value.trim() && (stagedCount.value > 
 const collapsed = ref(new Set<string>())
 const menu = shallowRef<{ path: string; anchor: ContextAnchor }>()
 const menuFile = computed(() => props.files.find(file => file.path === menu.value?.path))
+const historyMenu = shallowRef<ContextAnchor>()
 
 function showActions(file: WorkingFile, event: MouseEvent | KeyboardEvent) {
   menu.value = { path: file.path, anchor: contextAnchor(event) }
 }
 
-function fileAction(action: 'working' | 'staged' | 'unstaged' | 'edit' | 'stage' | 'unstage') {
+function fileAction(action: 'working' | 'staged' | 'unstaged' | 'edit' | 'stage' | 'unstage' | 'ignore') {
   const file = menuFile.value
   menu.value = undefined
   if (!file) return
   if (action === 'edit') emit('edit', file.path)
   else if (action === 'stage' || action === 'unstage') emit('include', [file.path], action === 'stage')
+  else if (action === 'ignore') emit('ignore', file.path)
   else emit('select', file, action)
+}
+
+/** Recent commit messages (IDEA commit message history): picking one fills
+ *  the message field so it can be edited before submitting. */
+function showHistory(event: MouseEvent | KeyboardEvent) {
+  if (props.history.length) historyMenu.value = contextAnchor(event)
+}
+
+function pickHistory(text: string) {
+  historyMenu.value = undefined
+  message.value = text
 }
 
 const rows = computed(() => fileTreeRows(props.files, collapsed.value))
@@ -151,6 +164,14 @@ defineExpose({ submit })
       </p>
       <textarea id="commit-message" v-model="message" :placeholder="amendHash ? 'Describe the amended changes' : 'Describe the staged changes'" rows="5"
                 :disabled="indexBusy" />
+      <div v-if="history.length" class="commit-history">
+        <button type="button" :aria-label="history.length + ' recent commit messages'" title="Recent commit messages"
+                @click="showHistory($event)" @keydown.shift.f10.prevent="showHistory($event)">History</button>
+      </div>
+      <ContextActions v-if="historyMenu" :anchor="historyMenu" label="Recent commit messages" @close="historyMenu = undefined">
+        <button v-for="(item, index) in history" :key="index" class="commit-history-item" :title="item"
+                @click="pickHistory(item)">{{ item.split('\n')[0] }}</button>
+      </ContextActions>
       <div class="commit-actions">
         <span role="status">{{ stagedCount }} staged<template v-if="notice"> · {{ notice }}</template></span>
         <div class="commit-buttons">
@@ -167,6 +188,8 @@ defineExpose({ submit })
       <hr />
       <button :disabled="indexBusy || loading || !menuFile.canStage" @click="fileAction('stage')">Stage</button>
       <button :disabled="indexBusy || loading || !menuFile.canUnstage" @click="fileAction('unstage')">Unstage</button>
+      <button v-if="menuFile.status === '??'" :disabled="indexBusy || loading"
+              title="Append this path to the repository .gitignore" @click="fileAction('ignore')">Add to .gitignore</button>
     </ContextActions>
   </section>
 </template>

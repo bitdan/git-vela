@@ -42,6 +42,17 @@ onBeforeUnmount(() => dialog.value?.close())
       <section class="settings-group">
         <h3>Version Control</h3>
         <label><input v-model="preferences.fileTree" type="checkbox" /> Show Changed Files as a tree</label>
+        <label class="settings-field">Issue pattern
+          <input v-model="preferences.issuePattern" type="text" spellcheck="false"
+                 placeholder="e.g. [A-Z]+-\d+ — leave empty to disable"
+                 aria-label="Issue ID pattern in commit messages" />
+        </label>
+        <label class="settings-field">Issue URL
+          <input v-model="preferences.issueURL" type="text" spellcheck="false"
+                 placeholder="e.g. https://youtrack.example.com/issue/$1"
+                 aria-label="Issue URL template; $0 match, $1 first group" />
+        </label>
+        <p class="notice">Commit messages link issue IDs matching the pattern to the URL ($0 = whole match, $1–$9 = groups).</p>
       </section>
       <section class="settings-group">
         <h3>Startup</h3>

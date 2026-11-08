@@ -18,6 +18,10 @@ export function AddRemote(path: string, name: string, address: string): $Cancell
     return $Call.ByID(1056890149, path, name, address);
 }
 
+export function AddToGitignore(path: string, file: string): $CancellablePromise<boolean> {
+    return $Call.ByID(533949460, path, file);
+}
+
 export function AddWorktree(path: string, target: string, branch: string, commit: string): $CancellablePromise<void> {
     return $Call.ByID(2546006014, path, target, branch, commit);
 }
@@ -181,8 +185,8 @@ export function SaveStash(path: string, message: string, untracked: boolean): $C
     return $Call.ByID(3099866534, path, message, untracked);
 }
 
-export function SaveTextFile(path: string, file: string, revision: string, content: string): $CancellablePromise<string> {
-    return $Call.ByID(2407009324, path, file, revision, content);
+export function SaveTextFile(path: string, file: string, revision: string, content: string, lineEnding: string): $CancellablePromise<string> {
+    return $Call.ByID(2407009324, path, file, revision, content, lineEnding);
 }
 
 export function SearchHistory(path: string, filter: git$0.HistoryFilter, cursor: git$0.Cursor): $CancellablePromise<git$0.Page> {

@@ -24,6 +24,7 @@ import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
 import { compareNames, fileTreeRows } from './components/changed-files/fileTree'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
+import { readCommitHistory, rememberCommitMessage } from './components/changed-files/commitHistory'
 import RepositoryFiles from './components/editor/RepositoryFiles.vue'
 import FileInspection from './components/history/FileInspection.vue'
 import HunkPanel from './components/history/HunkPanel.vue'
@@ -153,7 +154,7 @@ const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
 const view = ref<FileView | 'commit' | 'editor' | 'inspection' | 'conflict'>('working')
-type EditorTab = { path: string; file: TextFile; draft: string }
+type EditorTab = { path: string; file: TextFile; draft: string; /** Pending line-ending conversion (E1); '' keeps the stored endings. */ lineEnding?: string }
 const editorTabs = ref<EditorTab[]>([])
 const activeEditorPath = ref('')
 /** Last caret position per open tab, reported by WorkspaceEditor; the status
@@ -284,6 +285,9 @@ const projectPath = ref('')
 const projectError = ref('')
 const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 'refs/heads/' + store.repository?.head))
 const commitNotice = ref('')
+/** Recent commit messages for the current repository (IDEA commit message
+ *  history); the commit form offers them from a History dropdown. */
+const commitHistory = ref<string[]>([])
 const patchTooLarge = computed(() => preview.value?.kind === 'text' && exceedsRenderLimit('', preview.value.content))
 const patchLines = computed(() => preview.value?.content.replace(/\n$/, '').split('\n') ?? [])
 /** IDEA-style per-file working tabs: one tab per working change opened from
@@ -365,7 +369,17 @@ function closeDiffTab(key: string) {
   if (activeDiffKey.value === key) {
     const next = diffTabs.value[at] ?? diffTabs.value[at - 1]
     activeDiffKey.value = next?.key ?? ''
+    if (next) activateDiffTab(next, false)
   }
+}
+
+/** Activating a pinned tab loads its comparison on demand — restored session
+ *  tabs and tabs re-activated after repository switches load lazily. */
+function activateDiffTab(tab: DiffTab, switchView = true) {
+  activeDiffKey.value = tab.key
+  if (switchView) view.value = 'commit'
+  const repo = store.repository?.path
+  if (repo && !tab.comparison && !tab.loading && !tab.error) void loadDiffTab(tab, repo)
 }
 function loadFullWorkingPreview() {
   const next = workingView.value
@@ -379,6 +393,7 @@ watch(() => store.repository?.path, repo => {
     path.value = repo
     watchRepository(repo)
   }
+  commitHistory.value = repo ? readCommitHistory(undefined, repo) : []
   navigation.value = ''
   branchError.value = ''
   branchNotice.value = ''
@@ -617,6 +632,8 @@ async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'edi
     if (existing) {
       existing.file = text
       existing.draft = text.content
+      // A reload reflects the disk state; a pending conversion is dropped.
+      existing.lineEnding = undefined
     } else {
       editorTabs.value.push({ path: file, file: text, draft: text.content })
     }
@@ -629,19 +646,22 @@ async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'edi
   }
 }
 
-async function saveEditor(path = activeEditorPath.value) {
+async function saveEditor(path = activeEditorPath.value, options?: { convert?: boolean }) {
   const repo = store.repository?.path
   const tab = editorTabFor(path)
-  if (!repo || !tab || !isTabDirty(tab) || editorLoading.value || indexBusy.value || store.opening) return
+  // A clean draft is still saved when only the line-ending widget changed
+  // (E1): the conversion happens with the stored content.
+  const converting = !!options?.convert && !!tab?.lineEnding && tab.lineEnding !== tab.file.lineEnding
+  if (!repo || !tab || (!isTabDirty(tab) && !converting) || editorLoading.value || indexBusy.value || store.opening) return
   const content = tab.draft
   const text = tab.file
   editorSaving.value = true
   indexBusy.value = true
   editorError.value = ''
   try {
-    const revision = await api.SaveTextFile(repo, path, text.revision, content)
+    const revision = await api.SaveTextFile(repo, path, text.revision, content, tab.lineEnding ?? '')
     if (repo !== store.repository?.path) return
-    tab.file = { ...text, revision, content }
+    tab.file = { ...text, revision, content, lineEnding: tab.lineEnding || text.lineEnding }
     tab.draft = content
     await loadWorking()
   } catch (cause) {
@@ -650,6 +670,17 @@ async function saveEditor(path = activeEditorPath.value) {
     editorSaving.value = false
     indexBusy.value = false
   }
+}
+
+/** IDEA-style line ending toggle for the editor tab or the status bar widget:
+ *  a clean file converts immediately, a dirty file keeps the ending pending
+ *  until the next save. */
+function switchLineEnding(path: string) {
+  const tab = editorTabFor(path)
+  if (!tab || editorLoading.value || indexBusy.value || store.opening) return
+  const current = tab.lineEnding ?? tab.file.lineEnding
+  tab.lineEnding = current === 'CRLF' ? 'LF' : 'CRLF'
+  if (!isTabDirty(tab)) void saveEditor(path, { convert: true })
 }
 
 function preventDiscard(event: BeforeUnloadEvent) {
@@ -1011,6 +1042,30 @@ async function stageAll() {
   }
 }
 
+/** IDEA's "Add to .gitignore" for untracked files: appends the path to the
+ *  repository-root .gitignore, then reloads the working status so the file
+ *  disappears from the list. */
+async function ignoreFile(path: string) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || store.opening) return
+  indexBusy.value = true
+  indexError.value = ''
+  commitNotice.value = ''
+  try {
+    const changed = await api.AddToGitignore(repo, path)
+    if (repo !== store.repository?.path) return
+    commitNotice.value = changed
+      ? 'Added ' + fileName(path) + ' to .gitignore'
+      : fileName(path) + ' is already ignored'
+    await loadWorking()
+    if (repo === store.repository?.path && workingView.value) await selectView(workingView.value, true)
+  } catch (cause) {
+    if (repo === store.repository?.path) indexError.value = String(cause)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
 async function commitChanges(reviewPush = false) {
   const repo = store.repository?.path
   const message = commitMessage.value
@@ -1027,6 +1082,7 @@ async function commitChanges(reviewPush = false) {
     if (target) cancelAmend()
     else commitMessage.value = ''
     commitNotice.value = target ? 'Commit amended' : 'Commit created'
+    commitHistory.value = rememberCommitMessage(undefined, repo, message, commitHistory.value)
     await Promise.all([store.open(repo), loadWorking()])
     if (repo === store.repository?.path && (view.value === 'staged' || view.value === 'unstaged')) {
       void selectView(view.value)
@@ -1368,7 +1424,7 @@ function openHistoryDiff(file: Change) {
     diffTabs.value.push(tab)
     void loadDiffTab(tab, repo)
   }
-  activeDiffKey.value = tab.key
+  activateDiffTab(tab)
 }
 
 /** The workspace geometry: activity bar + Commit tool window + editor on
@@ -1527,6 +1583,18 @@ async function restoreSession() {
       workingSelection.value = workingFiles.value.find(item => item.path === saved.workingFile)
         ?? workingFiles.value.find(item => item.oldPath === saved.workingFile)
     }
+    // Reopen the pinned diff tabs from the previous session (comparison
+    // payloads are not saved; the active tab re-requests from Git).
+    if (saved.diffTabs?.length) {
+      diffTabs.value = saved.diffTabs.map(tab => ({
+        key: tab.key, path: tab.path, hash: tab.hash, parent: tab.parent ?? 0,
+        index: tab.index, range: tab.range, expanded: tab.expanded, loading: false,
+      }))
+      const active = saved.diffActive
+        ? diffTabs.value.find(tab => tab.key === saved.diffActive)
+        : undefined
+      if (active) activateDiffTab(active, false)
+    }
     // Reopen the working tabs from the previous session (preview state is not
     // saved; activating a tab re-requests it from Git).
     if (saved.workingTabs?.length) {
@@ -1576,6 +1644,11 @@ function scheduleSessionSave(attempt = 0) {
       file: store.file?.path,
       workingFile: workingSelection.value?.path,
       workingTabs: workingTabs.value.map(tab => ({ path: tab.path, mode: tab.mode })),
+      diffTabs: diffTabs.value.map(tab => ({
+        key: tab.key, path: tab.path, hash: tab.hash, parent: tab.parent,
+        index: tab.index, range: tab.range, expanded: tab.expanded,
+      })),
+      diffActive: activeDiffKey.value || undefined,
       range: store.comparisonRange ? { ...store.comparisonRange } : undefined,
       sidebar: sidebar.value,
       view: view.value,
@@ -1590,7 +1663,7 @@ watch([
   () => store.repository?.path, () => store.selected?.hash, () => store.parent,
   () => store.file?.path, () => workingSelection.value?.path, () => store.comparisonRange,
   sidebar, view, historyVisible, historyMaximized, editorTabs.value.length, activeEditorPath,
-  workingTabs.value.length,
+  workingTabs.value.length, diffTabs.value.length, activeDiffKey,
 ], () => scheduleSessionSave())
 
 const paletteCommands = computed<PaletteCommand[]>(() => {
@@ -1821,9 +1894,10 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy || store.opening || restoringSession" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
+                          :history="commitHistory"
                           @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
-                          :can-resolve="!!selectedConflict" @resolve="markResolved()" />
+                          :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" />
           <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"
                       class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
@@ -1857,8 +1931,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 <div v-for="tab in diffTabs" v-show="!diffExpanded" :key="tab.key" class="editor-tab" role="tab"
                      :class="{ active: view === 'commit' && activeDiffKey === tab.key }"
                      :aria-selected="view === 'commit' && activeDiffKey === tab.key" tabindex="0"
-                     :title="tab.path" @click="activeDiffKey = tab.key; view = 'commit'"
-                     @keydown.enter.prevent="activeDiffKey = tab.key; view = 'commit'">
+                     :title="tab.path" @click="activateDiffTab(tab)"
+                     @keydown.enter.prevent="activateDiffTab(tab)">
                   <span class="ellipsis">{{ fileName(tab.path) }}</span>
                   <button class="editor-close" :aria-label="'Close diff ' + fileName(tab.path)"
                           @click.stop="closeDiffTab(tab.key)">×</button>
@@ -1885,11 +1959,12 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               <template v-for="tab in editorTabs" :key="tab.path">
                 <WorkspaceEditor v-show="(view === 'editor' && activeEditorPath === tab.path || view === 'conflict' && tab.path === conflictFile) && !editorLoading"
                                  :path="tab.path" :initial-content="tab.file.content" :dark="dark"
-                                 :line-ending="tab.file.lineEnding" :bom="tab.file.bom"
+                                 :line-ending="tab.lineEnding ?? tab.file.lineEnding" :bom="tab.file.bom"
                                  :dirty="isTabDirty(tab)" :saving="editorSaving"
                                  :loading="editorLoading && activeEditorPath === tab.path" :blocked="indexBusy || store.opening"
                                  @change="tab.draft = $event" @save="saveEditor(tab.path)" @reload="reloadEditor"
                                  @cursor="(line, col) => editorCursors[tab.path] = { line, col }"
+                                 @line-ending="switchLineEnding(tab.path)"
                                  @close="requestCloseEditorTab(tab.path)" />
               </template>
               <p v-if="view === 'editor' && !editorTabs.length && !editorLoading" class="notice">No open editor tabs. Open a file from the Changes tree or the Files panel.</p>
@@ -2114,6 +2189,13 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
       <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>
+      <span v-if="activeEditorTab" class="editor-meta">
+        UTF-8{{ activeEditorTab.file.bom ? ' BOM' : '' }} ·
+        <!-- Same line-ending widget as the editor toolbar (E1). -->
+        <button class="line-ending-widget" :disabled="indexBusy || store.opening"
+                :title="'Convert line endings to ' + ((activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding) === 'CRLF' ? 'LF' : 'CRLF')"
+                @click="switchLineEnding(activeEditorPath)">{{ activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding }}</button>
+      </span>
       <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
     </footer>
   </div>

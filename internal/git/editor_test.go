@@ -17,7 +17,7 @@ func TestEditWorkingTextPreservesEncodingAndDoesNotStage(t *testing.T) {
 	if err != nil || file.Content != "first\nsecond" || file.LineEnding != "CRLF" {
 		t.Fatalf("open: %+v, %v", file, err)
 	}
-	revision, err := SaveTextFile(ctx, dir, "file.txt", file.Revision, "first\nupdated")
+	revision, err := SaveTextFile(ctx, dir, "file.txt", file.Revision, "first\nupdated", "")
 	if err != nil || revision == file.Revision {
 		t.Fatalf("save: %q, %v", revision, err)
 	}
@@ -29,12 +29,53 @@ func TestEditWorkingTextPreservesEncodingAndDoesNotStage(t *testing.T) {
 		t.Fatalf("editing affected Git index: %q", got)
 	}
 	write(t, dir, "file.txt", "externally changed")
-	if _, err := SaveTextFile(ctx, dir, "file.txt", revision, "stale edit"); err == nil {
+	if _, err := SaveTextFile(ctx, dir, "file.txt", revision, "stale edit", ""); err == nil {
 		t.Fatal("overwrote an external change")
 	}
 	data, err = os.ReadFile(filepath.Join(dir, "file.txt"))
 	if err != nil || string(data) != "externally changed" {
 		t.Fatalf("external change was lost: %q, %v", data, err)
+	}
+}
+
+func TestSaveTextFileSwitchesLineEndings(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "file.txt", "first\nsecond\n")
+	commit(t, dir, "initial")
+	file, err := OpenTextFile(ctx, dir, "file.txt")
+	if err != nil || file.LineEnding != "LF" {
+		t.Fatalf("open: %+v, %v", file, err)
+	}
+	// Same text with a new ending: the stored file converts, the revision moves.
+	revision, err := SaveTextFile(ctx, dir, "file.txt", file.Revision, file.Content, "CRLF")
+	if err != nil || revision == file.Revision {
+		t.Fatalf("convert: %q, %v", revision, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil || string(data) != "first\r\nsecond\r\n" {
+		t.Fatalf("converted data = %q, %v", data, err)
+	}
+	converted, err := OpenTextFile(ctx, dir, "file.txt")
+	if err != nil || converted.LineEnding != "CRLF" || converted.Content != file.Content {
+		t.Fatalf("reopened: %+v, %v", converted, err)
+	}
+	// An empty ending keeps the stored style; identical content is a no-op.
+	same, err := SaveTextFile(ctx, dir, "file.txt", revision, file.Content, "")
+	if err != nil || same != revision {
+		t.Fatalf("no-op save: %q, %v", same, err)
+	}
+	// Reverting back to LF works too.
+	back, err := SaveTextFile(ctx, dir, "file.txt", revision, file.Content, "LF")
+	if err != nil || back == revision {
+		t.Fatalf("revert: %q, %v", back, err)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil || string(data) != "first\nsecond\n" {
+		t.Fatalf("reverted data = %q, %v", data, err)
+	}
+	if _, err := SaveTextFile(ctx, dir, "file.txt", back, file.Content, "CR"); err == nil {
+		t.Fatal("accepted an unsupported line ending")
 	}
 }
 

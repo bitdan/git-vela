@@ -17,6 +17,14 @@
 - **批次 2**：Tag 管理（lightweight/annotated 创建、删除确认、无 force 推送、detached 检出，`internal/git/tags.go`）；Pull 策略（Fast-forward only / Merge / Rebase + Autostash，`PullOptions`）；Push 选项（annotated tags `--follow-tags`、显式 re-point upstream、force-with-lease 受保护流程——确认对话框 + 后端强制本地 remote-tracking ref）；分支面板 ↑ahead/↓behind 同步徽标（`BranchSyncCounts`）。
 - **测试**：`internal/git/tags_test.go`（tag 生命周期与 push 保护、pull 三策略与 autostash、push upstream/force-with-lease 场景、同步计数）、Vitest 51 项、`tests/batch2-smoke.mjs` 与 desktop-smoke（基础+M2+Worktree+MVP+M4，M2 段已适配 Pull 按钮并加固 amend 点击竞态）。
 
+**本轮新增（IDEA 对齐批次 3，2026-11-09）**：
+
+- **G4 交互式 rebase 补全**：计划对话框支持 Pick / Reword / Edit / Squash / Fixup / Drop；reword 与带消息的 squash 走 `pick|fixup` + `exec git commit --amend -F <临时文件>`（不打开编辑器，消息按序落盘、rebase 结束即删）；`edit` 停在提交上，由 Console 的 Continue / Abort 收尾。
+- **G8 squash**：提交右键 Squash / Fixup into parent…（以祖父提交为 rebase 基，默认消息为两条 subject 拼接，可改）；Merge 对话框新增 Squash 模式（只暂存合并结果，不创建合并提交）。
+- **G9 clone**：顶栏 `Clone…`、欢迎页与命令面板入口；校验目标目录为空、父目录存在、地址与分支名合法，10 分钟超时，成功后直接打开新仓库（`internal/git/clone.go`）。
+- **G11 stash diff**：`StashEntry.Parent`（`stash^1`）+ Shelf 面板 View Diff，按 `stash^1 → stash` 打开比较，标题 `Stash stash@{n}: <subject>`。
+- **测试**：`internal/git/advanced_test.go` 新增 reword+squash、edit 停止后 continue、首个提交禁止 squash、clone 校验；`tests/batch3-smoke.mjs` 覆盖 squash→reword→edit+continue→clone→stash diff；desktop-smoke 加固虚拟列表滚动与多选菜单重试。
+
 **与方案的偏差（事实记录）**：
 
 - §2：未引入 Tailwind CSS 4 与 Reka UI；样式为手写 CSS + CSS Variables，菜单使用原生 `<details>` 与自研控件。
@@ -24,7 +32,7 @@
 - §1.3 / §14：后续迭代已实现工作区文本编辑器、GitHub 发布和交互式 Rebase 计划，超出「首版不做」清单；「不要提前实现 Push / Rebase」的阶段性约束已被后续需求取代。
 - §10 M4：多仓库同时管理、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
 
-**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 22 冒烟）**：`go test ./...`、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（51 项）、`wails3 generate bindings -ts -i`、`node tests/batch2-smoke.mjs` 与 `GITVELA_SMOKE_MVP=1 GITVELA_SMOKE_M4=1 GITVELA_SMOKE_M2_REMOTE=<未使用路径> node tests/desktop-smoke.mjs <一次性克隆>` 均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）。
+**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 24）**：`go test ./internal/...`（含新增 rebase/clone 用例）、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（51 项）、`wails3 generate bindings -ts -i`、`node tests/batch3-smoke.mjs`、`node tests/desktop-smoke.mjs`（基础 / `GITVELA_SMOKE_MVP=1` / `GITVELA_SMOKE_M4=1`）均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）；冒烟脚本不要用 `git status` 轮询 rebase 停点，`git status` 会刷新并重写 index，其瞬时 `index.lock` 会让应用的 rebase 报 "another Git process seems to be running"。
 
 ## 1. 项目概述
 

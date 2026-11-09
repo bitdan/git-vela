@@ -689,6 +689,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 
 .rebase-step:nth-child(odd) { background: var(--field); }
 
+.rebase-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  font-size: var(--font-size, 12px);
+}
+.rebase-message textarea {
+  resize: vertical;
+  font-family: var(--mono, monospace);
+}
+
 .conflict-panel {
   display: flex;
   flex: 1 1 42%;

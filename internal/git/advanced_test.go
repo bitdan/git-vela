@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -237,6 +239,145 @@ func TestInteractiveRebaseReordersCommits(t *testing.T) {
 	}
 	if got := command(t, dir, "log", "-2", "--format=%s"); got != "first\nsecond\n" {
 		t.Fatalf("commits were not reordered: %q", got)
+	}
+}
+
+func TestInteractiveRebaseRewordsAndSquashes(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "root.txt", "base")
+	commit(t, dir, "base")
+	base, _ := ReadHead(ctx, dir)
+	write(t, dir, "one.txt", "one")
+	commit(t, dir, "first")
+	write(t, dir, "two.txt", "two")
+	commit(t, dir, "second")
+	write(t, dir, "three.txt", "three")
+	commit(t, dir, "third")
+	head, _ := ReadHead(ctx, dir)
+	plan, err := ReadRebasePlan(ctx, dir, base.Hash, head)
+	if err != nil || len(plan) != 3 {
+		t.Fatalf("rebase plan: %+v, %v", plan, err)
+	}
+	steps := []RebaseStep{
+		{Hash: plan[0].Hash, Action: "reword", Message: "renamed first\n\nlonger body"},
+		{Hash: plan[1].Hash, Action: "squash", Message: "first and second combined"},
+		{Hash: plan[2].Hash, Action: "pick"},
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, steps); err != nil {
+		t.Fatal(err)
+	}
+	// Squashing folds "renamed first" and "second" into one commit, so only
+	// two commits remain between base and HEAD.
+	if got := command(t, dir, "log", "-2", "--format=%s"); got != "third\nfirst and second combined\n" {
+		t.Fatalf("reword/squash subjects: %q", got)
+	}
+	if got := command(t, dir, "log", "-1", "--skip=1", "--format=%B"); got != "first and second combined\n\n" {
+		t.Fatalf("squash body: %q", got)
+	}
+	entries := strings.Split(strings.TrimSpace(command(t, dir, "ls-files", "--")), "\n")
+	sort.Strings(entries)
+	if strings.Join(entries, "\n") != "one.txt\nroot.txt\nthree.txt\ntwo.txt" {
+		t.Fatalf("squashed files: %v", entries)
+	}
+	// The reworded commit keeps its original author.
+	author := strings.TrimSpace(command(t, dir, "log", "-3", "--format=%an"))
+	if strings.Count(author, "\n") != 2 {
+		t.Fatalf("unexpected author list: %q", author)
+	}
+}
+
+func TestInteractiveRebaseEditStopsForAmend(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "root.txt", "base")
+	commit(t, dir, "base")
+	base, _ := ReadHead(ctx, dir)
+	write(t, dir, "one.txt", "one")
+	commit(t, dir, "first")
+	write(t, dir, "two.txt", "two")
+	commit(t, dir, "second")
+	head, _ := ReadHead(ctx, dir)
+	plan, err := ReadRebasePlan(ctx, dir, base.Hash, head)
+	if err != nil || len(plan) != 2 {
+		t.Fatalf("rebase plan: %+v, %v", plan, err)
+	}
+	steps := []RebaseStep{
+		{Hash: plan[0].Hash, Action: "pick"},
+		{Hash: plan[1].Hash, Action: "edit"},
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, steps); err != nil {
+		t.Fatal(err)
+	}
+	state, err := ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != "rebase" {
+		t.Fatalf("edit did not stop the rebase: %+v, %v", state, err)
+	}
+	// Amend the stopped commit, then continue the rebase.
+	write(t, dir, "two.txt", "two amended")
+	command(t, dir, "add", "--", "two.txt")
+	command(t, dir, "commit", "--amend", "--no-edit")
+	if err := FinishHistoryOperation(ctx, dir, "rebase", false); err != nil {
+		t.Fatal(err)
+	}
+	state, err = ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != "" {
+		t.Fatalf("rebase did not finish: %+v, %v", state, err)
+	}
+	if got := command(t, dir, "show", "HEAD:two.txt"); got != "two amended" {
+		t.Fatalf("amended content lost: %q", got)
+	}
+	if got := command(t, dir, "log", "-2", "--format=%s"); got != "second\nfirst\n" {
+		t.Fatalf("subjects after edit: %q", got)
+	}
+}
+
+func TestInteractiveRebaseRejectsLeadingSquash(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "root.txt", "base")
+	commit(t, dir, "base")
+	base, _ := ReadHead(ctx, dir)
+	write(t, dir, "one.txt", "one")
+	commit(t, dir, "first")
+	head, _ := ReadHead(ctx, dir)
+	plan, err := ReadRebasePlan(ctx, dir, base.Hash, head)
+	if err != nil || len(plan) != 1 {
+		t.Fatalf("rebase plan: %+v, %v", plan, err)
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, []RebaseStep{{Hash: plan[0].Hash, Action: "squash"}}); err == nil {
+		t.Fatal("squashed the only commit")
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, []RebaseStep{{Hash: plan[0].Hash, Action: "reword"}}); err == nil {
+		t.Fatal("reword without a message must be rejected")
+	}
+}
+
+func TestCloneLocalRepository(t *testing.T) {
+	ctx := context.Background()
+	source := repository(t)
+	write(t, source, "file.txt", "content")
+	commit(t, source, "initial")
+	target := filepath.Join(t.TempDir(), "clone-target")
+	if err := Clone(ctx, source, target, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, target, "log", "-1", "--format=%s")); got != "initial" {
+		t.Fatalf("clone is missing commits: %q", got)
+	}
+	// The target is now occupied.
+	if err := Clone(ctx, source, target, ""); err == nil {
+		t.Fatal("cloned over an existing clone")
+	}
+	if err := Clone(ctx, "-evil", filepath.Join(t.TempDir(), "x"), ""); err == nil {
+		t.Fatal("accepted an option-like URL")
+	}
+	if err := Clone(ctx, source, filepath.Join(t.TempDir(), "b"), "bad..branch"); err == nil {
+		t.Fatal("accepted an invalid branch name")
+	}
+	// Cloning a branch that does not exist fails cleanly.
+	if err := Clone(ctx, source, filepath.Join(t.TempDir(), "c"), "missing"); err == nil {
+		t.Fatal("cloned a missing branch")
 	}
 }
 

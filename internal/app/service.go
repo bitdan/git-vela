@@ -205,6 +205,10 @@ func (*RepositoryService) CommitMessage(ctx context.Context, path, hash string) 
 	return discardCancelled(git.ReadCommitMessage(ctx, path, hash))
 }
 
+func (*RepositoryService) FirstParent(ctx context.Context, path, hash string) (string, error) {
+	return discardCancelled(git.FirstParent(ctx, path, hash))
+}
+
 func (s *RepositoryService) write(ctx context.Context, action func() error) error {
 	s.indexWrite.Lock()
 	defer s.indexWrite.Unlock()
@@ -278,6 +282,16 @@ func (s *RepositoryService) Initialize(ctx context.Context, path string) (git.Re
 		return err
 	})
 	return repo, err
+}
+
+// Clone copies a repository from a URL or path into dir and opens it. The
+// network operation runs outside the repository write lock: it touches only
+// the new target directory.
+func (*RepositoryService) Clone(ctx context.Context, address, dir, branch string) (git.Repository, error) {
+	if err := git.Clone(ctx, address, dir, branch); err != nil {
+		return git.Repository{}, err
+	}
+	return git.Open(ctx, dir)
 }
 
 func (s *RepositoryService) StageAll(ctx context.Context, path string) error {

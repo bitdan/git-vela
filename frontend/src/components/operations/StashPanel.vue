@@ -11,6 +11,7 @@ import { LatestRequest } from '../../stores/latestRequest'
 
 const props = defineProps<{ path: string; refresh: () => Promise<void> }>()
 const busy = defineModel<boolean>('busy', { required: true })
+const emit = defineEmits<{ viewDiff: [entry: StashEntry] }>()
 const entries = ref<StashEntry[]>([])
 const selection = ref<StashEntry>()
 const entry = computed(() => entries.value.find(item =>
@@ -114,6 +115,8 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
               @keydown.shift.f10.prevent="openActions(item, $event)">{{ item.selector }} · {{ item.subject }}</button>
     </div>
     <ContextActions v-if="menu && entry" :anchor="menu" label="Shelf actions" @close="menu = undefined">
+      <button :disabled="busy || loading || !!loadError" @click="menu = undefined; emit('viewDiff', entry)">View Diff</button>
+      <hr />
       <button :disabled="busy || loading || !!loadError" @click="menu = undefined; run('apply')">Apply</button>
       <button :disabled="busy || loading || !!loadError" @click="menu = undefined; run('pop')">Pop</button>
       <hr />
@@ -121,6 +124,7 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
     </ContextActions>
     <div class="daily-controls">
       <label><input v-model="restoreIndex" type="checkbox" :disabled="busy" /> Restore staged changes</label>
+      <button :disabled="busy || loading || !!loadError || !entry || !entry.parent" @click="entry && emit('viewDiff', entry)">View Diff</button>
       <button :disabled="busy || loading || !!loadError || !entry" @click="run('apply')">Apply</button>
       <button :disabled="busy || loading || !!loadError || !entry" @click="run('pop')">Pop</button>
       <button :disabled="busy || loading || !!loadError || !entry" :aria-expanded="confirmDrop" @click="confirmDrop = true">Drop…</button>

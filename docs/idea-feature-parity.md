@@ -38,14 +38,14 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
 | G1 | **Tag 管理**：create/delete/push tag、checkout tag | branch/tag 操作、GitTag | ✅ 已交付（2026-11-08）：lightweight/annotated 创建、删除确认、无 force 推送、detached 检出；`internal/git/tags.go` + Tags 面板右键菜单 | **已交付** |
 | G2 | **push 选项**：force-with-lease（受保护流程）、push tags、push 后设置 upstream、推送预览列表 | push/GitPushDialog（GitVela 有意 `--no-force`，sync.go:136） | ✅ 已交付（2026-11-08）：push 确认对话框内 Push annotated tags（`--follow-tags`）、显式 re-point upstream、force-with-lease（必选确认 + 后端要求本地 remote-tracking ref，禁止无租约强推）；无推送预览列表 | **已交付** |
 | G3 | **pull 选项**：merge / rebase（GitPullSettings）、--ff-only、autostash | config/GitPullSettings.java | ✅ 已交付（2026-11-08）：Sync 面板 Pull 策略单选（Fast-forward only / Merge / Rebase）+ Autostash 复选框；`PullOptions{Mode,Autostash}` | **已交付** |
-| G4 | **Interactive rebase**：todo 编辑（squash/fixup/reword/edit/drop）、continue/abort | rebase/（GitRebaseTodoEditor） | rebase+冲突 ✅ 但无 todo 编辑 | 高 |
+| G4 | **Interactive rebase**：todo 编辑（squash/fixup/reword/edit/drop）、continue/abort | rebase/（GitRebaseTodoEditor） | ✅ 已交付（2026-11-09）：计划对话框 Pick / Reword / Edit / Squash / Fixup / Drop + 上下移动；reword 与带消息的 squash 用 `pick|fixup`＋`exec git commit --amend -F <临时文件>` 实现（不进编辑器，`RebaseStep.Message` 按序落盘、结束即删）；`edit` 停在提交上，Continue/Abort 走 Console；`internal/git/rebase.go` | **已交付** |
 | G5 | **add to .gitignore**（右键未跟踪文件）、.gitignore 校验提示 | ignore/ | ✅ 右键 `??` 文件 → Add to .gitignore（仓库根追加锚定 pattern、幂等去重、拒绝 .git/越界路径）；无校验提示 | **已交付**（高频小功能） |
 | G6 | **incoming/outgoing 指示**：分支面板 ↑/↓ 计数、Log 中 merged 高亮 | branch/GitBranchIncomingOutgoingManager.java、DeepComparator | ✅ 已交付（2026-11-08）：本地分支行 ↑ahead/↓behind 徽标 + gone 标记（`BranchSyncCounts` 基于 remote-tracking refs，随仓库刷新更新；Log 内 merged 高亮未做） | **已交付**（面板级） |
 | G7 | **Cherry-pick 多选 + 继续/中止流** | cherrypick/、CherryPickedCommitsHighlighter | 单提交 ✅；多选菜单已禁用（T06） | 中 |
-| G8 | **Squash merge**、squash/fixup 提交 | merge/、branch/GitMergeOperation | ❌ | 中 |
-| G9 | **Clone from URL**（仓库初始化流程内） | checkout/GitCloneDialog | 有 init/发布；无 URL 克隆 | 中 |
+| G8 | **Squash merge**、squash/fixup 提交 | merge/、branch/GitMergeOperation | ✅ 已交付（2026-11-09）：历史右键 Squash/Fixup into parent…（`FirstParent` 取祖父为 rebase 基，父提交 pick、目标 squash/fixup，默认消息=两 subject 拼接，可编辑）；Merge 对话框 Mode 增加 Squash（只暂存合并结果、不建合并提交） | **已交付** |
+| G9 | **Clone from URL**（仓库初始化流程内） | checkout/GitCloneDialog | ✅ 已交付（2026-11-09）：顶栏 `Clone…`、欢迎页与命令面板入口；目标须不存在或为空、父目录须存在、拒绝 `-` 开头地址与非法分支名、10 分钟超时，成功后直接打开；`internal/git/clone.go` | **已交付** |
 | G10 | Fetch 选项：prune、tags 模式（GitFetchTagsMode） | config/GitVcsPanel.kt:355 | fetch 基础 ✅，无选项 | 低 |
-| G11 | stash diff 查看 / stash 应用时恢复 index（--index） | stash/ | stash 保存/Pop ✅，无 diff 查看 | 中 |
+| G11 | stash diff 查看 / stash 应用时恢复 index（--index） | stash/ | ✅ 已交付（2026-11-09）：`StashEntry.Parent`（`stash^1`）+ Shelf 面板 View Diff（按钮与右键）以 `stash^1 → stash` 打开比较；恢复 index 已有 "Restore staged changes" | **已交付** |
 | G12 | Amend 时显示原 message 的 author/date 选项、sign-off | commit/（GitCheckinOptions） | amend ✅ 基础 | 低 |
 | G13 | Bisect、cleanup/GC、fetch --all | 零散 | ❌ | 低 |
 | G14 | Commit message 模板（commit.template）与历史记忆 | checkin/CommitMessageHistory | ✅ 历史记忆（每仓库 localStorage 最近 20 条，提交表单 History 下拉）；模板 ❌ | 历史已交付；模板待定 |
@@ -70,9 +70,17 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
    G6 分支同步徽标。测试：`internal/git/tags_test.go`（tag 生命周期/push 保护/pull 三策略/
    autostash/upstream/lease/sync 计数）、`tests/batch2-smoke.mjs` 桌面冒烟；
    desktop-smoke M2 段已适配新 Pull 按钮并加固 amend 点击竞态。
-3. **批次 3（深水区）**：G4 interactive rebase、G8 squash、G9 clone、G11 stash diff、
-   Directory Mappings（多根）。
-4. **明确不做**：Mercurial/Perforce/Subversion/Gitee/GitLab 集成、Changelists（与真实
+3. **批次 3（深水区）**：✅ 已完成（2026-11-09）——G4 interactive rebase（reword/edit/squash
+   消息）、G8 squash into parent / squash merge、G9 clone from URL、G11 stash diff。
+   测试：`internal/git/advanced_test.go` 新增 reword+squash、edit 停止后 continue、首个
+   提交不能 squash、clone 校验与重复目标等用例；`tests/batch3-smoke.mjs`（squash→reword→
+   edit+continue→clone→stash diff 全链路）。**剩余**：Directory Mappings（多根仓库）；
+   G7 cherry-pick 多选、G10 fetch 选项、G12 amend author/date、G13 bisect/GC。
+4. **桌面冒烟脚本加固（2026-11-09）**：`tests/desktop-smoke.mjs` 改为在虚拟列表里滚到
+   首个提交（仓库提交数已超过一屏），多选比较改为"重建选择→开菜单→点比较"的可重试
+   单步（后台刷新会折叠多选并关闭菜单）；`batch3-smoke` 用 `.git/rebase-merge` 判断
+   rebase 停点，避免 `git status` 的临时 index.lock 与应用的 rebase 抢锁。
+5. **明确不做**：Mercurial/Perforce/Subversion/Gitee/GitLab 集成、Changelists（与真实
    index 语义冲突，spec §0.3）、IDE 提交前代码检查类动作。
 
 > 行为对齐原则不变：以 Rebased 源码佐证交互细节，以用户截图定布局；无法确认的先标待验证。

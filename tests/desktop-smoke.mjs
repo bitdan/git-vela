@@ -269,9 +269,12 @@ try {
 
   await until(() => evaluate(`(() => {
     const row = [...document.querySelectorAll('.commit-row')].find(row => row.innerText.includes('Initialize GitVela'))
-    if (!row) return false
-    row.click()
-    return true
+    if (row) { row.click(); return true }
+    // The log is virtualized: the first commit scrolls out of the rendered
+    // window once the repository grows past a viewport of history.
+    const scroll = document.querySelector('.log-scroll')
+    if (scroll) scroll.scrollTop = scroll.scrollHeight
+    return false
   })()`), 'the initial commit')
   await until(() => evaluate(`(() => {
     const list = document.querySelector('.files-panel .file-scroll')
@@ -308,10 +311,33 @@ try {
   await until(() => evaluate("document.querySelectorAll('.commit-row.active').length === 1"), 'plain click resets selection')
   await evaluate("document.querySelectorAll('.commit-row')[1].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))")
   await until(() => evaluate("document.querySelectorAll('.commit-row.active').length === 2"), 'ctrl-click extends selection')
-  await evaluate("document.querySelectorAll('.commit-row')[1].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
-  await until(() => evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].some(button => button.innerText.startsWith('Compare selected') && !button.disabled)"), 'compare selected available')
-  assert.ok(await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText.includes('Cherry-pick'))?.disabled"), 'write ops disabled on multi-selection')
-  await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText.startsWith('Compare selected')).click()")
+  // A background reload (watcher snapshot change, five-second poll) collapses
+  // the multi-selection back to the single restored commit and closes the
+  // menu. Rebuild the selection and the menu inside the polled action so a
+  // reload in the middle of the step cannot strand it.
+  const guard = await until(() => evaluate(`(() => {
+    const buttons = [...document.querySelectorAll('[aria-label="Commit actions"] button')]
+    const compare = buttons.find(button => button.innerText.startsWith('Compare selected'))
+    if (compare && !compare.disabled) {
+      const guarded = buttons.find(button => button.innerText.includes('Cherry-pick'))?.disabled === true
+      compare.click()
+      return guarded ? 'guarded' : 'unguarded'
+    }
+    // Rebuild a collapsed selection, but never re-click while two rows are
+    // still selected: a row click closes the menu, so clicking on every poll
+    // would keep it from ever rendering.
+    if (document.querySelectorAll('.commit-row.active').length !== 2) {
+      const rows = document.querySelectorAll('.commit-row')
+      if (rows.length < 2) return false
+      rows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      rows[1].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+      return false
+    }
+    document.querySelectorAll('.commit-row.active')[1]
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    return false
+  })()`), 'compare selected available')
+  assert.equal(guard, 'guarded', 'write ops disabled on multi-selection')
   await until(() => evaluate("document.querySelector('.files-panel .eyebrow')?.innerText === 'COMPARE REVISIONS'"), 'comparison opens from multi-selection')
 
   if (testMvp) {

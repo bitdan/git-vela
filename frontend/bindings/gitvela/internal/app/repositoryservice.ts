@@ -46,6 +46,15 @@ export function ChooseDirectory(): $CancellablePromise<string> {
     return $Call.ByID(2085580384);
 }
 
+/**
+ * Clone copies a repository from a URL or path into dir and opens it. The
+ * network operation runs outside the repository write lock: it touches only
+ * the new target directory.
+ */
+export function Clone(address: string, dir: string, branch: string): $CancellablePromise<git$0.Repository> {
+    return $Call.ByID(1290897569, address, dir, branch);
+}
+
 export function CommitIndex(path: string, message: string): $CancellablePromise<void> {
     return $Call.ByID(685745999, path, message);
 }
@@ -119,6 +128,10 @@ export function Files(path: string, commit: string, parent: number): $Cancellabl
 
 export function FinishHistoryOperation(path: string, kind: string, abort: boolean): $CancellablePromise<void> {
     return $Call.ByID(2506703526, path, kind, abort);
+}
+
+export function FirstParent(path: string, hash: string): $CancellablePromise<string> {
+    return $Call.ByID(582715034, path, hash);
 }
 
 export function GitHubLogin(path: string): $CancellablePromise<string> {

@@ -155,6 +155,7 @@ export interface PushOptions {
 export interface RebaseStep {
     "hash": string;
     "action": string;
+    "message"?: string;
 }
 
 export interface Ref {
@@ -178,6 +179,12 @@ export interface StashEntry {
     "selector": string;
     "hash": string;
     "subject": string;
+
+    /**
+     * Parent is the commit the stash was created on (stash^1), the "before"
+     * side of a stash diff view.
+     */
+    "parent": string;
 }
 
 export interface SyncState {

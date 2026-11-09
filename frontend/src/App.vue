@@ -33,7 +33,7 @@ import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
-import type { AmendTarget, Change, Commit, Comparison, FilePreview, HeadState, OperationState, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
+import type { AmendTarget, Change, Commit, Comparison, FilePreview, HeadState, OperationState, Ref as GitRef, StashEntry, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
 import appIcon from './git-vela.svg'
 import './styles.css'
@@ -413,8 +413,10 @@ const advancedLabels: Record<AdvancedAction, string> = {
   'cherry-pick': 'Cherry-pick', revert: 'Revert', reset: 'Reset', merge: 'Merge', rebase: 'Rebase',
 }
 const advanced = shallowRef<{ action: AdvancedAction; hash: string; label: string; head: HeadState }>()
-type RebaseAction = 'pick' | 'squash' | 'fixup' | 'drop'
-const rebasePlan = ref<{ commit: Commit; action: RebaseAction }[]>([])
+type RebaseAction = 'pick' | 'squash' | 'fixup' | 'drop' | 'reword' | 'edit'
+const rebasePlan = ref<{ commit: Commit; action: RebaseAction; message: string }[]>([])
+const rebasePreset = shallowRef<{ hash: string; action: RebaseAction }>()
+const mergeMode = ref<'' | 'squash'>('')
 const resetMode = ref<'soft' | 'mixed' | 'hard'>('mixed')
 const hardResetConfirmed = ref(false)
 const preparingOperation = ref(false)
@@ -432,12 +434,17 @@ const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
 const amendTarget = ref<AmendTarget>()
 let draftBeforeAmend = ''
-type DailyPanel = 'sync' | 'init' | 'remotes' | 'publish'
+type DailyPanel = 'sync' | 'init' | 'clone' | 'remotes' | 'publish'
 type SyncIntent = 'fetch' | 'pull' | 'push'
 const dailyPanel = ref<DailyPanel>()
 const syncIntent = ref<SyncIntent>('fetch')
 const projectPath = ref('')
 const projectError = ref('')
+const cloneUrl = ref('')
+const cloneParent = ref('')
+const cloneName = ref('')
+const cloneBranch = ref('')
+const cloneError = ref('')
 const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 'refs/heads/' + store.repository?.head))
 const commitNotice = ref('')
 /** Recent commit messages for the current repository (IDEA commit message
@@ -941,7 +948,8 @@ watch(() => [operation.value?.kind, operation.value?.conflicts?.length ?? 0, ope
   if (kind || conflicts || error) gitTab.value = 'console'
 })
 
-async function prepareOperation(action: AdvancedAction, hash: string, label: string) {
+async function prepareOperation(action: AdvancedAction, hash: string, label: string,
+                               preset?: { hash: string; action: RebaseAction }) {
   const repo = store.repository?.path
   if (!repo || indexBusy.value || store.opening || preparingOperation.value) return
   if (operation.value?.kind || operation.value?.conflicts?.length) {
@@ -950,7 +958,9 @@ async function prepareOperation(action: AdvancedAction, hash: string, label: str
   }
   advanced.value = undefined
   rebasePlan.value = []
+  rebasePreset.value = preset
   resetMode.value = 'mixed'
+  mergeMode.value = ''
   hardResetConfirmed.value = false
   operationError.value = ''
   operationNotice.value = ''
@@ -963,7 +973,20 @@ async function prepareOperation(action: AdvancedAction, hash: string, label: str
     if (action === 'rebase') {
       const commits = await api.RebasePlan(repo, hash, head)
       if (!current()) return
-      rebasePlan.value = (commits ?? []).map(commit => ({ commit, action: 'pick' }))
+      const preset = rebasePreset.value
+      rebasePlan.value = (commits ?? []).map(commit => ({
+        commit,
+        action: preset && commit.hash === preset.hash ? preset.action : 'pick',
+        message: '',
+      }))
+      if (preset?.action === 'squash') {
+        const index = rebasePlan.value.findIndex(step => step.commit.hash === preset.hash)
+        if (index > 0) {
+          rebasePlan.value[index].message =
+            rebasePlan.value[index - 1].commit.subject + '\n\n' + rebasePlan.value[index].commit.subject
+        }
+      }
+      rebasePreset.value = undefined
     }
     advanced.value = { action, hash, label, head }
   } catch (cause) {
@@ -972,6 +995,42 @@ async function prepareOperation(action: AdvancedAction, hash: string, label: str
     if (current()) preparingOperation.value = false
     headRequest.finish(call)
   }
+}
+
+// Squash or fixup a commit into its parent: the rebase plan must start at the
+// grandparent so both the parent (picked) and the target (squashed) are
+// rewritten together.
+async function squashIntoParent(commit: Commit, action: Extract<RebaseAction, 'squash' | 'fixup'>) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || store.opening || preparingOperation.value) return
+  if ((commit.parents?.length ?? 0) !== 1) {
+    operationError.value = 'Squash needs a commit with exactly one parent.'
+    return
+  }
+  operationError.value = ''
+  try {
+    const parent = await api.FirstParent(repo, commit.hash)
+    const grandparent = await api.FirstParent(repo, parent)
+    await prepareOperation('rebase', grandparent, commit.subject, { hash: commit.hash, action })
+  } catch (cause) {
+    operationError.value = String(cause)
+  }
+}
+
+function setRebaseAction(step: { commit: Commit; action: RebaseAction; message: string }) {
+  if ((step.action === 'reword' || step.action === 'squash') && !step.message) {
+    step.message = step.commit.subject
+  }
+}
+
+// A stash diff compares the commit the stash was created on (stash^1) with
+// the stash commit itself: exactly the changes the stash would apply.
+function viewStashDiff(entry: StashEntry) {
+  if (!entry.parent) {
+    operationError.value = 'This stash entry has no parent commit to compare against.'
+    return
+  }
+  void store.selectComparison(entry.parent, entry.hash, 'Stash ' + entry.selector + ': ' + entry.subject)
 }
 
 function moveRebaseStep(index: number, offset: number) {
@@ -986,14 +1045,22 @@ async function runAdvanced() {
   const request = advanced.value
   if (!repo || !request || indexBusy.value || store.opening ||
       (request.action === 'reset' && resetMode.value === 'hard' && !hardResetConfirmed.value)) return
-  const mode = resetMode.value
+  if (request.action === 'rebase' &&
+      rebasePlan.value.some(step => (step.action === 'reword' || step.action === 'squash') && !step.message.trim())) {
+    operationError.value = 'Enter a commit message for every reworded or squashed commit.'
+    return
+  }
+  const mode = request.action === 'merge' ? mergeMode.value : resetMode.value
   advanced.value = undefined
   indexBusy.value = true
   operationError.value = ''
   operationNotice.value = ''
   try {
     if (request.action === 'rebase') {
-      const steps = rebasePlan.value.map(step => ({ hash: step.commit.hash, action: step.action }))
+      const steps = rebasePlan.value.map(step => ({
+        hash: step.commit.hash, action: step.action,
+        message: step.action === 'reword' || step.action === 'squash' ? step.message.trim() : '',
+      }))
       await api.RunInteractiveRebase(repo, request.hash, request.head, steps)
     } else {
       await api.ApplyHistoryOperation(repo, request.action, request.hash, request.head, mode)
@@ -1173,6 +1240,46 @@ async function initializeProject() {
     commitTab.value = 'commit'
   } catch (cause) {
     projectError.value = String(cause)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function pickCloneParent() {
+  if (picking.value || indexBusy.value) return
+  picking.value = true
+  try {
+    const folder = await api.ChooseDirectory()
+    if (folder) cloneParent.value = folder
+  } catch (cause) {
+    cloneError.value = String(cause)
+  } finally {
+    picking.value = false
+  }
+}
+
+function cloneTargetPath() {
+  const parent = cloneParent.value.trim().replace(/[\\/]+$/, '')
+  const name = cloneName.value.trim()
+  if (!parent || !name) return ''
+  return parent + (parent.match(/^[A-Za-z]:/) ? '\\' : '/') + name
+}
+
+async function cloneProject() {
+  if (indexBusy.value || picking.value) return
+  const address = cloneUrl.value.trim()
+  const dir = cloneTargetPath()
+  if (!address || !dir) return
+  indexBusy.value = true
+  cloneError.value = ''
+  try {
+    const repo = await api.Clone(address, dir, cloneBranch.value.trim())
+    dailyPanel.value = undefined
+    await store.open(repo.path)
+    sidebar.value = 'changes'
+    commitTab.value = 'commit'
+  } catch (cause) {
+    cloneError.value = String(cause)
   } finally {
     indexBusy.value = false
   }
@@ -1412,7 +1519,9 @@ function openSidebar(panel: Sidebar) {
 }
 
 function openShelf() {
-  if (indexBusy.value || store.opening) return
+  // Switching to the shelf is read-only, so a background refresh must not
+  // swallow the click; the panel's own controls stay disabled while busy.
+  if (indexBusy.value) return
   openSidebar('changes')
   commitTab.value = 'shelf'
 }
@@ -1830,6 +1939,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
   }
   const busy = indexBusy.value || store.opening
   add('open', 'Browse for a repository…', 'Repository', () => void choose(), { hint: hint('openRepository'), disabled: picking.value || busy })
+  add('clone', 'Clone from URL…', 'Repository', () => toggleDailyPanel('clone'), { disabled: busy })
   add('init', 'Initialize Project…', 'Repository', () => toggleDailyPanel('init'), { disabled: busy })
   for (const repo of store.recent) {
     add('repo:' + repo, 'Open ' + (repo.split(/[\\/]/).at(-1) || repo), 'Recent repositories', () => openRepository(repo), { keywords: repo, disabled: busy })
@@ -1938,6 +2048,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <option v-for="repo in store.recent" :key="repo" :value="repo">{{ repo.split(/[\\/]/).at(-1) || repo }}</option>
       </select>
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
+      <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('clone')">Clone…</button>
       <button ref="paletteTrigger" :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
               @click="paletteOpen = !paletteOpen">Commands…</button>
     </header>
@@ -1959,6 +2070,20 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       </form>
       <p v-if="projectError" class="notice error" role="alert">{{ projectError }}</p>
       <p v-else class="notice">{{ indexBusy ? 'Initializing…' : 'Create a Git repository in an existing project folder.' }}</p>
+    </section>
+    <section v-if="dailyPanel === 'clone'" class="daily-panel" aria-label="Clone repository">
+      <form class="daily-controls" @submit.prevent="cloneProject()">
+        <h2>Clone repository</h2>
+        <label>Repository URL or path <input v-model="cloneUrl" aria-label="Repository URL or path" placeholder="https://… or a local path" spellcheck="false" :disabled="indexBusy" /></label>
+        <label>Parent folder <input v-model="cloneParent" aria-label="Clone parent folder" placeholder="Absolute existing folder" spellcheck="false" :disabled="indexBusy" /></label>
+        <button type="button" :disabled="indexBusy || picking" @click="pickCloneParent">Browse…</button>
+        <label>New folder name <input v-model="cloneName" aria-label="Clone folder name" placeholder="project-name" spellcheck="false" :disabled="indexBusy" /></label>
+        <label>Branch (optional) <input v-model="cloneBranch" aria-label="Clone branch" placeholder="default branch" spellcheck="false" :disabled="indexBusy" /></label>
+        <button type="submit" class="primary" :disabled="indexBusy || picking || !cloneUrl.trim() || !cloneParent.trim() || !cloneName.trim()">Clone</button>
+        <button type="button" :disabled="indexBusy || picking" @click="dailyPanel = undefined">Cancel</button>
+      </form>
+      <p v-if="cloneError" class="notice error" role="alert">{{ cloneError }}</p>
+      <p v-else class="notice">{{ indexBusy ? 'Cloning… this can take a while for large repositories.' : 'Copy a remote repository into a new folder and open it.' }}</p>
     </section>
     <SettingsDialog v-if="settingsOpen" :session-notice="sessionNotice" @close="settingsOpen = false"
                     @forget-session="forgetSession" @toggle-fullscreen="toggleFullscreen" />
@@ -1995,6 +2120,12 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <option value="hard">Hard — discard tracked changes</option>
           </select>
         </label>
+        <label v-if="advanced.action === 'merge'">Mode
+          <select v-model="mergeMode">
+            <option value="">Merge — create a merge commit</option>
+            <option value="squash">Squash — stage changes without committing</option>
+          </select>
+        </label>
         <label v-if="advanced.action === 'reset' && resetMode === 'hard'">
           <input v-model="hardResetConfirmed" type="checkbox" /> Discard tracked changes
         </label>
@@ -2004,8 +2135,10 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <div v-for="(step, index) in rebasePlan" :key="step.commit.hash" class="rebase-step">
           <code>{{ step.commit.hash.slice(0, 8) }}</code>
           <span class="ellipsis" :title="step.commit.subject">{{ step.commit.subject }}</span>
-          <select v-model="step.action" :aria-label="'Action for ' + step.commit.hash.slice(0, 8)">
+          <select v-model="step.action" :aria-label="'Action for ' + step.commit.hash.slice(0, 8)" @change="setRebaseAction(step)">
             <option value="pick">Pick</option>
+            <option value="reword">Reword</option>
+            <option value="edit">Edit</option>
             <option value="squash">Squash</option>
             <option value="fixup">Fixup</option>
             <option value="drop">Drop</option>
@@ -2013,6 +2146,13 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           <button :disabled="index === 0" :aria-label="'Move ' + step.commit.subject + ' earlier'" @click="moveRebaseStep(index, -1)">↑</button>
           <button :disabled="index === rebasePlan.length - 1" :aria-label="'Move ' + step.commit.subject + ' later'" @click="moveRebaseStep(index, 1)">↓</button>
         </div>
+        <label v-for="step in rebasePlan" v-show="step.action === 'reword' || step.action === 'squash'"
+               :key="'msg-' + step.commit.hash" class="rebase-message">
+          Message for {{ step.commit.hash.slice(0, 8) }}
+          <textarea v-model="step.message" rows="3" spellcheck="false"
+                    :aria-label="'Commit message for ' + step.commit.hash.slice(0, 8)"
+                    :placeholder="step.commit.subject"></textarea>
+        </label>
       </div>
       <template #actions>
         <button data-cancel :disabled="indexBusy" @click="advanced = undefined">Cancel</button>
@@ -2055,7 +2195,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
                           :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" />
           <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"
-                      class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+                      class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation"
+                      v-model:busy="indexBusy" @view-diff="viewStashDiff" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
         </aside>
           <div v-show="!diffExpanded && !sidebarHidden" class="splitter vsplitter" role="separator" aria-orientation="vertical"
@@ -2324,7 +2465,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <CommitLog ref="log" @refresh="refresh" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
                        @select="handleHistorySelect" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @compare-commits="compareCommits"
-                       @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
+                       @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)"
+                       @squash-into="(commit, action) => void squashIntoParent(commit, action)" />
             <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Changed Files panel" tabindex="0"
                  @pointerdown="trackDrag" @pointermove="resizeFiles" @keydown="resizeFilesWithKey"></div>
             <div class="log-right" :style="{ width: preferences.filesWidth + 'px' }">
@@ -2350,6 +2492,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <p>Browse commits, inspect changed files, and compare versions side by side.</p>
         <div class="empty-actions">
           <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse for a repository</button>
+          <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('clone')">Clone from URL…</button>
           <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('init')">Initialize a project…</button>
         </div>
       </main>

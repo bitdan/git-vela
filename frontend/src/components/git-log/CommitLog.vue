@@ -17,7 +17,7 @@ const store = useWorkspace()
 const preferences = usePreferences()
 const keymap = useKeymap()
 const props = defineProps<{ pinned?: string; busy?: boolean; restoring?: boolean }>()
-const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit]; compareCommits: [before: Commit, after: Commit]; refresh: [] }>()
+const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; squashInto: [commit: Commit, action: 'squash' | 'fixup']; pin: [commit: Commit]; compare: [commit: Commit]; compareCommits: [before: Commit, after: Commit]; refresh: [] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
 const emptyFilter = (): HistoryFilter => ({ message: '', author: '', branch: '', from: '', through: '', hash: '' })
 const draft = ref(emptyFilter())
@@ -427,6 +427,8 @@ defineExpose({ jump, step, openSearch })
            selection must never silently become the target of a rewrite. -->
       <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
       <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) !== 1" @click="emit('squashInto', menu, 'squash'); closeCommitActions()">Squash into parent…</button>
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) !== 1" @click="emit('squashInto', menu, 'fixup'); closeCommitActions()">Fixup into parent…</button>
       <button :disabled="props.busy || selection.size > 1" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
     </ContextActions>
     <p v-if="copyStatus" class="notice" role="status">{{ copyStatus }}</p>

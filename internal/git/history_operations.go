@@ -134,7 +134,16 @@ func ApplyHistoryOperation(ctx context.Context, dir, action, target string, expe
 			}
 			args = []string{action, "--no-edit", target}
 		case "merge":
-			args = []string{"-c", "submodule.recurse=false", "merge", "--no-edit", "--no-autostash", "--no-overwrite-ignore", "--", target}
+			if mode != "" && mode != "squash" {
+				return errors.New("select a valid merge mode")
+			}
+			args = []string{"-c", "submodule.recurse=false", "merge", "--no-edit", "--no-autostash", "--no-overwrite-ignore"}
+			if mode == "squash" {
+				// Squash merge stages the combined change without committing;
+				// no merge commit is created and MERGE_HEAD is not written.
+				args = append(args, "--squash")
+			}
+			args = append(args, "--", target)
 		}
 	default:
 		return errors.New("invalid history operation")

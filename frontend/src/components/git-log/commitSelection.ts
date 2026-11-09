@@ -71,3 +71,17 @@ export function comparePair(commits: Commit[], hashes: readonly string[]): { bef
     ? { before: commits[first]!, after: commits[second]! }
     : { before: commits[second]!, after: commits[first]! }
 }
+
+/** The selected commits in history order, oldest first: the order Git replays a
+ *  multi-commit cherry-pick in and the order the confirmation dialog lists. */
+export function cherryPickOrder(commits: Commit[], hashes: readonly string[]): Commit[] {
+  if (hashes.length < 2) return []
+  const selected = new Set(hashes)
+  return commits.filter(commit => selected.has(commit.hash)).reverse()
+}
+
+/** A merge commit has no single mainline, so it cannot be cherry-picked without
+ *  asking the user which parent to diff against (not offered here). */
+export function hasMergeCommit(commits: readonly Commit[]): boolean {
+  return commits.some(commit => (commit.parents?.length ?? 0) > 1)
+}

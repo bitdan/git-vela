@@ -88,7 +88,7 @@ async function changeRemote() {
     notice.value = { add: 'Added ', edit: urlChanged ? 'Updated ' : 'Kept ', remove: 'Removed ' }[action] + name + '.'
     if (shouldFetch) {
       try {
-        await api.FetchRemote(props.path, name)
+        await api.FetchRemote(props.path, name, { prune: false, tags: '' })
         notice.value += ' Successfully fetched ' + name + '.'
       } catch (cause) {
         error.value = 'Fetch failed for ' + name + ': ' + String(cause)

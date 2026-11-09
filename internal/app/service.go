@@ -242,8 +242,12 @@ func (*RepositoryService) SyncState(ctx context.Context, path string) (git.SyncS
 	return discardCancelled(git.ReadSyncState(ctx, path))
 }
 
-func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string) error {
-	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote) })
+func (*RepositoryService) CheckRepositoryPath(path string) git.RepositoryAvailability {
+	return git.CheckRepositoryPath(path)
+}
+
+func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string, options git.FetchOptions) error {
+	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote, options) })
 }
 
 func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string, options git.PullOptions) error {
@@ -384,8 +388,8 @@ func (*RepositoryService) OperationState(ctx context.Context, path string) (git.
 	return discardCancelled(git.ReadOperationState(ctx, path))
 }
 
-func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, action, target string, expected git.HeadState, mode string) error {
-	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, target, expected, mode) })
+func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, action string, targets []string, expected git.HeadState, mode string) error {
+	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, targets, expected, mode) })
 }
 
 func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, kind string, abort bool) error {

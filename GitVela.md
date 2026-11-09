@@ -25,6 +25,13 @@
 - **G11 stash diff**：`StashEntry.Parent`（`stash^1`）+ Shelf 面板 View Diff，按 `stash^1 → stash` 打开比较，标题 `Stash stash@{n}: <subject>`。
 - **测试**：`internal/git/advanced_test.go` 新增 reword+squash、edit 停止后 continue、首个提交禁止 squash、clone 校验；`tests/batch3-smoke.mjs` 覆盖 squash→reword→edit+continue→clone→stash diff；desktop-smoke 加固虚拟列表滚动与多选菜单重试。
 
+**本轮新增（IDEA 对齐批次 4，2026-11-09）**：
+
+- **G7 多选 cherry-pick**：`ApplyHistoryOperation` 改为接收 `[]string` 目标列表；Log 多选菜单显示 `Cherry-pick N selected…`，按历史顺序（旧→新）重放，确认对话框逐条列出提交；拒绝重复目标、合并提交（无 mainline 选择）、超过 100 条；`--empty=drop` 让已应用的提交自动跳过；中途冲突由 sequencer 保留，Console 的 Continue / Abort 可继续剩余提交（`TestCherryPickMultipleContinuesAfterAConflict`）。
+- **G10 Fetch 选项**：`FetchOptions{Prune, Tags}`；Tags 三档（指向已取对象的 tag / 全部 `--tags` / 不取 `--no-tags`），Prune 删除远端已删除分支的 remote-tracking ref（不勾选时保留 `fetch.prune` 配置语义）。Sync 面板新增 Fetch options 区域，Remotes 面板走默认值。
+- **仓库目录消失的刷新韧性**：`CheckRepositoryPath` 检测路径与 `.git` 是否仍存在；App 的 5 秒轮询在目录被删除/清空后停止，并给出一条 “The repository folder is no longer available / no longer contains a Git repository” 提示，不再每 5 秒对旧路径执行 Git 并刷告警；Worktree 面板轮询同样以 `store.available` 闸门。
+- **界面图标**：活动栏、Git 菜单、分支徽标、关闭/最大化按钮改用 Ant Design 官方线性图标（MIT，iconfont.cn 的「Ant Design 官方图标库」），路径内联在 `frontend/src/components/layout/icons.ts`，由 `AppIcon.vue` 渲染，离线可用、无图标字体依赖。
+
 **与方案的偏差（事实记录）**：
 
 - §2：未引入 Tailwind CSS 4 与 Reka UI；样式为手写 CSS + CSS Variables，菜单使用原生 `<details>` 与自研控件。
@@ -32,7 +39,7 @@
 - §1.3 / §14：后续迭代已实现工作区文本编辑器、GitHub 发布和交互式 Rebase 计划，超出「首版不做」清单；「不要提前实现 Push / Rebase」的阶段性约束已被后续需求取代。
 - §10 M4：多仓库同时管理、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
 
-**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 24）**：`go test ./internal/...`（含新增 rebase/clone 用例）、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（51 项）、`wails3 generate bindings -ts -i`、`node tests/batch3-smoke.mjs`、`node tests/desktop-smoke.mjs`（基础 / `GITVELA_SMOKE_MVP=1` / `GITVELA_SMOKE_M4=1`）均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）；冒烟脚本不要用 `git status` 轮询 rebase 停点，`git status` 会刷新并重写 index，其瞬时 `index.lock` 会让应用的 rebase 报 "another Git process seems to be running"。
+**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 24）**：`go test ./internal/...`（含 rebase/clone/多选 cherry-pick/fetch 选项/仓库可用性用例）、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（55 项）、`wails3 generate bindings -ts -i`、`node tests/batch3-smoke.mjs`、`node tests/batch4-smoke.mjs`、`node tests/desktop-smoke.mjs`（基础 / `GITVELA_SMOKE_MVP=1` / `GITVELA_SMOKE_M4=1` / `GITVELA_SMOKE_M2_REMOTE`）均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）；冒烟脚本不要用 `git status` 轮询 rebase 停点，`git status` 会刷新并重写 index，其瞬时 `index.lock` 会让应用的 rebase 报 "another Git process seems to be running"；`batch4-smoke` 删除打开中的仓库时会重试（Windows 上 Git 进程可能短暂占用目录）。
 
 ## 1. 项目概述
 

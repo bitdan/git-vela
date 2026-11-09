@@ -80,6 +80,29 @@ type Repository struct {
 	Head string `json:"head"`
 }
 
+type RepositoryAvailability struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason"`
+}
+
+// CheckRepositoryPath reports whether an open repository folder still exists
+// and still holds Git metadata. Background polling stops once the folder is
+// deleted, emptied, or its drive disappears: every Git command would fail with
+// the same OS-level error and repeat the alert every few seconds.
+func CheckRepositoryPath(path string) RepositoryAvailability {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return RepositoryAvailability{Reason: "The repository folder is no longer available: " + path +
+			". Restore it, then open the repository again."}
+	}
+	// Worktrees and submodules use a .git file instead of a folder.
+	if _, err := os.Stat(filepath.Join(path, ".git")); err != nil {
+		return RepositoryAvailability{Reason: "The repository folder no longer contains a Git repository: " + path +
+			". Restore it, then open the repository again."}
+	}
+	return RepositoryAvailability{Available: true}
+}
+
 func Open(ctx context.Context, path string) (Repository, error) {
 	if path == "" {
 		return Repository{}, errors.New("select a repository directory")

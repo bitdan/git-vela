@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CommitSelection, comparePair } from './commitSelection'
+import { cherryPickOrder, CommitSelection, comparePair, hasMergeCommit } from './commitSelection'
 import type { Commit } from '../../../bindings/gitvela/internal/git'
 
 const commit = (hash: string): Commit => ({
@@ -68,5 +68,26 @@ describe('comparePair', () => {
     expect(comparePair(commits, [commits[0]!.hash])).toBeUndefined()
     expect(comparePair(commits, [commits[0]!.hash, 'not-loaded'])).toBeUndefined()
     expect(comparePair(commits, [commits[0]!.hash, commits[1]!.hash, commits[2]!.hash])).toBeUndefined()
+  })
+})
+
+describe('cherryPickOrder', () => {
+  it('returns the selection oldest → newest regardless of click order', () => {
+    expect(cherryPickOrder(commits, [commits[2]!.hash, commits[0]!.hash, commits[3]!.hash]))
+      .toEqual([commits[3]!, commits[2]!, commits[0]!])
+  })
+
+  it('needs at least two selected rows', () => {
+    expect(cherryPickOrder(commits, [commits[1]!.hash])).toEqual([])
+    expect(cherryPickOrder(commits, [])).toEqual([])
+  })
+
+  it('ignores selected rows that are not loaded in the log', () => {
+    expect(cherryPickOrder(commits, [commits[1]!.hash, 'not-loaded'])).toEqual([commits[1]!])
+  })
+
+  it('flags merge commits as unpickable', () => {
+    expect(hasMergeCommit(commits)).toBe(false)
+    expect(hasMergeCommit([{ ...commits[0]!, parents: ['x', 'y'] }])).toBe(true)
   })
 })

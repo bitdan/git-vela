@@ -51,7 +51,21 @@ func ReadSyncState(ctx context.Context, dir string) (SyncState, error) {
 	return state, nil
 }
 
-func FetchRemote(ctx context.Context, dir, remote string) error {
+// Fetch tag modes mirror IDEA's "Fetch tags" setting. The empty mode keeps the
+// Git default: tags that point into the fetched history are updated, others are
+// left alone.
+const (
+	FetchTagsReachable = ""
+	FetchTagsAll       = "all"
+	FetchTagsNone      = "none"
+)
+
+type FetchOptions struct {
+	Prune bool   `json:"prune"`
+	Tags  string `json:"tags"`
+}
+
+func FetchRemote(ctx context.Context, dir, remote string, options FetchOptions) error {
 	data, err := run(ctx, dir, nil, 1<<20, "remote")
 	if err != nil {
 		return err
@@ -59,7 +73,22 @@ func FetchRemote(ctx context.Context, dir, remote string) error {
 	if !slices.Contains(strings.Fields(string(data)), remote) {
 		return errors.New("select a configured Git remote")
 	}
-	return runRemote(ctx, dir, "fetch", "--no-recurse-submodules", "--", remote)
+	args := []string{"fetch", "--no-recurse-submodules"}
+	if options.Prune {
+		args = append(args, "--prune")
+	}
+	switch options.Tags {
+	case FetchTagsReachable:
+		// Keep Git's default: update tags that point into fetched history and
+		// honor remote.<name>.tagOpt.
+	case FetchTagsAll:
+		args = append(args, "--tags")
+	case FetchTagsNone:
+		args = append(args, "--no-tags")
+	default:
+		return errors.New("select a supported tag mode: all, reachable, or none")
+	}
+	return runRemote(ctx, dir, append(args, "--", remote)...)
 }
 
 // Pull modes, aligned with IDEA GitPullSettings strategies.

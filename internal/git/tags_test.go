@@ -127,7 +127,7 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 	// Rebase mode: local commit is replayed on top of the peer commit.
 	write(t, dir, "local.txt", "local")
 	commit(t, dir, "local update")
-	if err := FetchRemote(ctx, dir, "origin"); err != nil {
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: PullRebase}); err != nil {
@@ -143,7 +143,7 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 	command(t, peer, "push", "origin", "main")
 	write(t, dir, "local.txt", "second local")
 	commit(t, dir, "second local")
-	if err := FetchRemote(ctx, dir, "origin"); err != nil {
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: PullMerge}); err != nil {
@@ -157,7 +157,7 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 	write(t, peer, "peer.txt", "third")
 	commit(t, peer, "third peer update")
 	command(t, peer, "push", "origin", "main")
-	if err := FetchRemote(ctx, dir, "origin"); err != nil {
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	write(t, dir, "local.txt", "unsaved edits")
@@ -281,7 +281,7 @@ func TestBranchSyncCounts(t *testing.T) {
 	write(t, peer, "peer.txt", "peer")
 	commit(t, peer, "peer update")
 	command(t, peer, "push", "origin", "main")
-	if err := FetchRemote(ctx, dir, "origin"); err != nil {
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -297,5 +297,70 @@ func TestBranchSyncCounts(t *testing.T) {
 	}
 	if main.Ahead != 1 || main.Behind != 1 {
 		t.Fatalf("expected ahead 1 behind 1, got %+v", main)
+	}
+}
+
+func TestFetchOptionsPruneAndTags(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	command(t, dir, "init", "--bare", "-b", "main", bare)
+	command(t, dir, "remote", "add", "origin", bare)
+	write(t, dir, "file.txt", "base")
+	commit(t, dir, "base")
+	if err := PushBranch(ctx, dir, "main", "origin", "main", PushOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tag that exists on the remote but not in this clone.
+	command(t, dir, "tag", "v1")
+	command(t, dir, "push", "origin", "refs/tags/v1")
+	command(t, dir, "tag", "-d", "v1")
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{Tags: FetchTagsNone}); err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.TrimSpace(command(t, dir, "tag")); refs != "" {
+		t.Fatalf("--no-tags fetched %q", refs)
+	}
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{Tags: FetchTagsAll}); err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.TrimSpace(command(t, dir, "tag")); refs != "v1" {
+		t.Fatalf("--tags fetched %q", refs)
+	}
+
+	// A branch deleted on the remote disappears only when pruning.
+	peer := repository(t)
+	command(t, peer, "remote", "add", "origin", bare)
+	command(t, peer, "pull", "origin", "main")
+	command(t, peer, "switch", "-c", "feature")
+	write(t, peer, "feature.txt", "feature")
+	commit(t, peer, "feature")
+	command(t, peer, "push", "-u", "origin", "feature")
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if refs := command(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin"); !strings.Contains(refs, "origin/feature") {
+		t.Fatalf("feature branch not fetched: %q", refs)
+	}
+	command(t, peer, "push", "origin", "--delete", "feature")
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if refs := command(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin"); !strings.Contains(refs, "origin/feature") {
+		t.Fatalf("stale remote-tracking branch pruned without the option: %q", refs)
+	}
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{Prune: true}); err != nil {
+		t.Fatal(err)
+	}
+	if refs := command(t, dir, "for-each-ref", "--format=%(refname)", "refs/remotes/origin"); strings.Contains(refs, "origin/feature") {
+		t.Fatalf("prune kept a deleted branch: %q", refs)
+	}
+
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{Tags: "some"}); err == nil {
+		t.Fatal("accepted an unknown tag mode")
+	}
+	if err := FetchRemote(ctx, dir, "upstream", FetchOptions{}); err == nil {
+		t.Fatal("accepted an unconfigured remote")
 	}
 }

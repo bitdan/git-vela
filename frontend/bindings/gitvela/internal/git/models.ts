@@ -65,6 +65,11 @@ export interface Edge {
     "color": number;
 }
 
+export interface FetchOptions {
+    "prune": boolean;
+    "tags": string;
+}
+
 export interface FileHistoryPage {
     "commits": Commit[] | null;
     "more": boolean;
@@ -173,6 +178,11 @@ export interface Repository {
     "path": string;
     "name": string;
     "head": string;
+}
+
+export interface RepositoryAvailability {
+    "available": boolean;
+    "reason": string;
 }
 
 export interface StashEntry {

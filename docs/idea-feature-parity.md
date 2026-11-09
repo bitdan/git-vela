@@ -41,10 +41,10 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
 | G4 | **Interactive rebase**：todo 编辑（squash/fixup/reword/edit/drop）、continue/abort | rebase/（GitRebaseTodoEditor） | ✅ 已交付（2026-11-09）：计划对话框 Pick / Reword / Edit / Squash / Fixup / Drop + 上下移动；reword 与带消息的 squash 用 `pick|fixup`＋`exec git commit --amend -F <临时文件>` 实现（不进编辑器，`RebaseStep.Message` 按序落盘、结束即删）；`edit` 停在提交上，Continue/Abort 走 Console；`internal/git/rebase.go` | **已交付** |
 | G5 | **add to .gitignore**（右键未跟踪文件）、.gitignore 校验提示 | ignore/ | ✅ 右键 `??` 文件 → Add to .gitignore（仓库根追加锚定 pattern、幂等去重、拒绝 .git/越界路径）；无校验提示 | **已交付**（高频小功能） |
 | G6 | **incoming/outgoing 指示**：分支面板 ↑/↓ 计数、Log 中 merged 高亮 | branch/GitBranchIncomingOutgoingManager.java、DeepComparator | ✅ 已交付（2026-11-08）：本地分支行 ↑ahead/↓behind 徽标 + gone 标记（`BranchSyncCounts` 基于 remote-tracking refs，随仓库刷新更新；Log 内 merged 高亮未做） | **已交付**（面板级） |
-| G7 | **Cherry-pick 多选 + 继续/中止流** | cherrypick/、CherryPickedCommitsHighlighter | 单提交 ✅；多选菜单已禁用（T06） | 中 |
+| G7 | **Cherry-pick 多选 + 继续/中止流** | cherrypick/、CherryPickedCommitsHighlighter | ✅ 已交付（2026-11-09）：Ctrl/Shift 多选后菜单 `Cherry-pick N selected…`，按历史顺序（旧→新）重放并在确认框逐条列出；拒绝重复目标、合并提交与超过 100 条；`--empty=drop` 跳过已应用提交；冲突由 sequencer 保留，Console 的 Continue / Abort 继续剩余提交（`internal/git/history_operations.go`、`commitSelection.ts`） | **已交付** |
 | G8 | **Squash merge**、squash/fixup 提交 | merge/、branch/GitMergeOperation | ✅ 已交付（2026-11-09）：历史右键 Squash/Fixup into parent…（`FirstParent` 取祖父为 rebase 基，父提交 pick、目标 squash/fixup，默认消息=两 subject 拼接，可编辑）；Merge 对话框 Mode 增加 Squash（只暂存合并结果、不建合并提交） | **已交付** |
 | G9 | **Clone from URL**（仓库初始化流程内） | checkout/GitCloneDialog | ✅ 已交付（2026-11-09）：顶栏 `Clone…`、欢迎页与命令面板入口；目标须不存在或为空、父目录须存在、拒绝 `-` 开头地址与非法分支名、10 分钟超时，成功后直接打开；`internal/git/clone.go` | **已交付** |
-| G10 | Fetch 选项：prune、tags 模式（GitFetchTagsMode） | config/GitVcsPanel.kt:355 | fetch 基础 ✅，无选项 | 低 |
+| G10 | Fetch 选项：prune、tags 模式（GitFetchTagsMode） | config/GitVcsPanel.kt:355 | ✅ 已交付（2026-11-09）：Sync 面板 Fetch options——Prune 删除远端已删除分支的 remote-tracking ref；Tags 三档（指向已取对象 / 全部 `--tags` / 不取 `--no-tags`，默认遵循 `remote.<name>.tagOpt`） | **已交付** |
 | G11 | stash diff 查看 / stash 应用时恢复 index（--index） | stash/ | ✅ 已交付（2026-11-09）：`StashEntry.Parent`（`stash^1`）+ Shelf 面板 View Diff（按钮与右键）以 `stash^1 → stash` 打开比较；恢复 index 已有 "Restore staged changes" | **已交付** |
 | G12 | Amend 时显示原 message 的 author/date 选项、sign-off | commit/（GitCheckinOptions） | amend ✅ 基础 | 低 |
 | G13 | Bisect、cleanup/GC、fetch --all | 零散 | ❌ | 低 |
@@ -74,13 +74,20 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
    消息）、G8 squash into parent / squash merge、G9 clone from URL、G11 stash diff。
    测试：`internal/git/advanced_test.go` 新增 reword+squash、edit 停止后 continue、首个
    提交不能 squash、clone 校验与重复目标等用例；`tests/batch3-smoke.mjs`（squash→reword→
-   edit+continue→clone→stash diff 全链路）。**剩余**：Directory Mappings（多根仓库）；
-   G7 cherry-pick 多选、G10 fetch 选项、G12 amend author/date、G13 bisect/GC。
-4. **桌面冒烟脚本加固（2026-11-09）**：`tests/desktop-smoke.mjs` 改为在虚拟列表里滚到
+   edit+continue→clone→stash diff 全链路）。
+4. **批次 4（多选与远端选项，2026-11-09）**：✅ 已完成——G7 多选 cherry-pick（顺序重放、
+   冲突后 sequencer 继续剩余提交）、G10 fetch 选项（prune + tags 三档）、仓库目录消失后
+   停止 5 秒轮询（`CheckRepositoryPath`）；界面图标改用 Ant Design 官方线性图标
+   （iconfont.cn 同源，MIT，内联 SVG）。测试：`TestCherryPickMultipleCommitsInHistoryOrder`、
+   `TestCherryPickMultipleContinuesAfterAConflict`、`TestFetchOptionsPruneAndTags`、
+   `TestCheckRepositoryPath`、`tests/batch4-smoke.mjs`（多选 cherry-pick→fetch 选项→
+   删除仓库后无重复告警）。**剩余**：Directory Mappings（多根仓库）、G12 amend author/date、
+   G13 bisect/GC、E3 Ctrl+F / Go to Line。
+5. **桌面冒烟脚本加固（2026-11-09）**：`tests/desktop-smoke.mjs` 改为在虚拟列表里滚到
    首个提交（仓库提交数已超过一屏），多选比较改为"重建选择→开菜单→点比较"的可重试
    单步（后台刷新会折叠多选并关闭菜单）；`batch3-smoke` 用 `.git/rebase-merge` 判断
    rebase 停点，避免 `git status` 的临时 index.lock 与应用的 rebase 抢锁。
-5. **明确不做**：Mercurial/Perforce/Subversion/Gitee/GitLab 集成、Changelists（与真实
+6. **明确不做**：Mercurial/Perforce/Subversion/Gitee/GitLab 集成、Changelists（与真实
    index 语义冲突，spec §0.3）、IDE 提交前代码检查类动作。
 
 > 行为对齐原则不变：以 Rebased 源码佐证交互细节，以用户截图定布局；无法确认的先标待验证。

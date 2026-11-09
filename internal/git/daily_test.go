@@ -115,7 +115,7 @@ func TestSyncFastForwardAndRejectDivergence(t *testing.T) {
 	command(t, dir, "remote", "add", "origin", bare)
 	write(t, dir, "local.txt", "base")
 	commit(t, dir, "base")
-	if err := FetchRemote(ctx, dir, "--all"); err == nil {
+	if err := FetchRemote(ctx, dir, "--all", FetchOptions{}); err == nil {
 		t.Fatal("accepted an unconfigured remote")
 	}
 	if err := PushBranch(ctx, dir, "main", "origin", "main", PushOptions{}); err != nil {
@@ -132,7 +132,7 @@ func TestSyncFastForwardAndRejectDivergence(t *testing.T) {
 	write(t, peer, "peer.txt", "new")
 	commit(t, peer, "peer update")
 	command(t, peer, "push", "origin", "main")
-	if err := FetchRemote(ctx, dir, "origin"); err != nil {
+	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%s")); got != "base" {
@@ -235,14 +235,31 @@ func TestFetchUsesConfiguredCredentialHelper(t *testing.T) {
 	command(t, client, "config", "core.askPass", "")
 	command(t, client, "config", "credential.helper", "")
 	command(t, client, "remote", "add", "origin", remote.URL)
-	if err := FetchRemote(ctx, client, "origin"); err == nil || !strings.Contains(err.Error(), "authentication failed") {
+	if err := FetchRemote(ctx, client, "origin", FetchOptions{}); err == nil || !strings.Contains(err.Error(), "authentication failed") {
 		t.Fatalf("expected actionable authentication failure, got %v", err)
 	}
 	command(t, client, "config", "--add", "credential.helper", "!f() { printf '%s\n' username=gitvela-test password=local-secret; }; f")
-	if err := FetchRemote(ctx, client, "origin"); err != nil {
+	if err := FetchRemote(ctx, client, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(command(t, client, "log", "-1", "--format=%s", "origin/main")); got != "remote commit" {
 		t.Fatalf("unexpected authenticated fetch result: %q", got)
+	}
+}
+
+func TestCheckRepositoryPath(t *testing.T) {
+	dir := repository(t)
+	if status := CheckRepositoryPath(dir); !status.Available || status.Reason != "" {
+		t.Fatalf("existing repository reported unavailable: %+v", status)
+	}
+	missing := filepath.Join(t.TempDir(), "deleted")
+	status := CheckRepositoryPath(missing)
+	if status.Available || !strings.Contains(status.Reason, "no longer available") {
+		t.Fatalf("missing repository status: %+v", status)
+	}
+	empty := t.TempDir()
+	status = CheckRepositoryPath(empty)
+	if status.Available || !strings.Contains(status.Reason, "no longer contains a Git repository") {
+		t.Fatalf("folder without Git metadata status: %+v", status)
 	}
 }

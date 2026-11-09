@@ -54,6 +54,9 @@ onMounted(() => {
     if (event.data === props.path && !document.hidden && !busy.value && !loading.value) void load()
   })
   timer = setInterval(() => {
+    // A deleted or unmounted repository stops the poll instead of running Git
+    // against a missing path every five seconds.
+    if (!store.available) return
     if (!document.hidden && !busy.value && !loading.value) void load()
   }, 5000)
 })

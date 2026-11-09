@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -72,7 +73,7 @@ func TestCherryPickConflictCanResolveContinueAndRevert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", side, head, ""); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{side}, head, ""); err == nil {
 		t.Fatal("expected cherry-pick conflict")
 	}
 	state, err := ReadOperationState(ctx, dir)
@@ -98,10 +99,10 @@ func TestCherryPickConflictCanResolveContinueAndRevert(t *testing.T) {
 	if err != nil || head.Hash == newHead.Hash {
 		t.Fatalf("cherry-pick HEAD: %+v, %v", newHead, err)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "revert", newHead.Hash, head, ""); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "revert", []string{newHead.Hash}, head, ""); err == nil {
 		t.Fatal("accepted a stale confirmation")
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "revert", newHead.Hash, newHead, ""); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "revert", []string{newHead.Hash}, newHead, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := command(t, dir, "show", "HEAD:file.txt"); got != "main\n" {
@@ -118,18 +119,18 @@ func TestResetModesProtectIgnoredFiles(t *testing.T) {
 	write(t, dir, "local.txt", "tracked at tip")
 	commit(t, dir, "tip")
 	tip, _ := ReadHead(ctx, dir)
-	if err := ApplyHistoryOperation(ctx, dir, "reset", base.Hash, tip, "soft"); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{base.Hash}, tip, "soft"); err != nil {
 		t.Fatal(err)
 	}
 	if got := command(t, dir, "diff", "--cached", "--name-only"); strings.TrimSpace(got) != "local.txt" {
 		t.Fatalf("soft reset lost staged content: %q", got)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "reset", base.Hash, base, "mixed"); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{base.Hash}, base, "mixed"); err != nil {
 		t.Fatal(err)
 	}
 	write(t, dir, ".git/info/exclude", "local.txt\n")
 	write(t, dir, "local.txt", "ignored data")
-	if err := ApplyHistoryOperation(ctx, dir, "reset", tip.Hash, base, "hard"); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{tip.Hash}, base, "hard"); err == nil {
 		t.Fatal("hard reset overwrote ignored data")
 	}
 	file, err := WorkingPreview(dir, "local.txt")
@@ -427,7 +428,7 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "merge", side.Hash, main, ""); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "merge", []string{side.Hash}, main, ""); err == nil {
 		t.Fatal("expected a merge conflict")
 	}
 	state, err := ReadOperationState(ctx, dir)
@@ -442,7 +443,7 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	}
 	write(t, dir, "file.txt", "discard this\n")
 	write(t, dir, "untracked.txt", "preserve this")
-	if err := ApplyHistoryOperation(ctx, dir, "reset", base.Hash, main, "hard"); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{base.Hash}, main, "hard"); err != nil {
 		t.Fatal(err)
 	}
 	preview, err := WorkingPreview(dir, "file.txt")
@@ -452,5 +453,123 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	preview, err = WorkingPreview(dir, "untracked.txt")
 	if err != nil || preview.Content != "preserve this" {
 		t.Fatalf("hard reset touched unrelated untracked data: %+v, %v", preview, err)
+	}
+}
+
+func TestCherryPickMultipleCommitsInHistoryOrder(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "base.txt", "base\n")
+	commit(t, dir, "base")
+	command(t, dir, "switch", "-c", "side")
+	for _, name := range []string{"first", "second", "third"} {
+		write(t, dir, name+".txt", name+"\n")
+		commit(t, dir, name)
+	}
+	third := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD"))
+	second := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD~1"))
+	first := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD~2"))
+	command(t, dir, "switch", "main")
+
+	head, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, first}, head, ""); err == nil {
+		t.Fatal("accepted a duplicated target")
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "revert", []string{first, second}, head, ""); err == nil {
+		t.Fatal("accepted multiple revert targets")
+	}
+	// Targets arrive oldest first; the replay keeps that order.
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, second, third}, head, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, dir, "log", "--format=%s", "-3")); got != "third\nsecond\nfirst" {
+		t.Fatalf("cherry-pick order: %q", got)
+	}
+	for _, name := range []string{"first", "second", "third"} {
+		if _, err := WorkingPreview(dir, name+".txt"); err != nil {
+			t.Fatalf("missing replayed file %s: %v", name+".txt", err)
+		}
+	}
+
+	// Replaying the same commits produces empty changes, which must not leave
+	// the sequencer stopped with no way forward.
+	picked, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, second, third}, picked, ""); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ReadHead(ctx, dir)
+	if err != nil || again.Hash != picked.Hash {
+		t.Fatalf("empty cherry-pick moved HEAD: %+v, %v", again, err)
+	}
+
+	// Merge commits need a mainline choice and stay out of the selection.
+	command(t, dir, "switch", "-c", "merged", first)
+	write(t, dir, "merged.txt", "merged\n")
+	commit(t, dir, "merged work")
+	command(t, dir, "switch", "main")
+	write(t, dir, "main.txt", "main\n")
+	commit(t, dir, "main work")
+	command(t, dir, "merge", "--no-edit", "merged")
+	mergeHash := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD"))
+	mergeHead, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{mergeHash}, mergeHead, ""); err == nil {
+		t.Fatal("accepted a merge commit")
+	}
+}
+
+func TestCherryPickMultipleContinuesAfterAConflict(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "file.txt", "base\n")
+	commit(t, dir, "base")
+	command(t, dir, "switch", "-c", "side")
+	write(t, dir, "file.txt", "side\n")
+	commit(t, dir, "side one")
+	write(t, dir, "other.txt", "other\n")
+	commit(t, dir, "side two")
+	second := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD"))
+	first := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD~1"))
+	command(t, dir, "switch", "main")
+	write(t, dir, "file.txt", "main\n")
+	commit(t, dir, "main")
+
+	head, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, second}, head, ""); err == nil {
+		t.Fatal("expected the first pick to conflict")
+	}
+	state, err := ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != "cherry-pick" || len(state.Conflicts) != 1 {
+		t.Fatalf("operation state after a conflicted pick: %+v, %v", state, err)
+	}
+	write(t, dir, "file.txt", "resolved\n")
+	if err := ResolveConflict(ctx, dir, "file.txt"); err != nil {
+		t.Fatal(err)
+	}
+	// Continuing must replay the remaining commit of the sequence, not just
+	// finish the conflicted one.
+	if err := FinishHistoryOperation(ctx, dir, "cherry-pick", false); err != nil {
+		t.Fatal(err)
+	}
+	subject := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%s"))
+	if subject != "side two" {
+		t.Fatalf("sequence stopped after the conflict: %q", subject)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "other.txt")); err != nil {
+		t.Fatalf("the second commit was not applied: %v", err)
+	}
+	if state, err := ReadOperationState(ctx, dir); err != nil || state.Kind != "" {
+		t.Fatalf("sequencer left running: %+v, %v", state, err)
 	}
 }

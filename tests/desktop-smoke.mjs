@@ -319,7 +319,10 @@ try {
     const buttons = [...document.querySelectorAll('[aria-label="Commit actions"] button')]
     const compare = buttons.find(button => button.innerText.startsWith('Compare selected'))
     if (compare && !compare.disabled) {
-      const guarded = buttons.find(button => button.innerText.includes('Cherry-pick'))?.disabled === true
+      // Cherry-pick follows a multi-selection; the other rewrites must not.
+      const guarded = buttons.find(button => button.innerText === 'Revert…')?.disabled === true &&
+        buttons.find(button => button.innerText === 'Reset to here…')?.disabled === true &&
+        buttons.some(button => button.innerText.startsWith('Cherry-pick ' + document.querySelectorAll('.commit-row.active').length + ' selected'))
       compare.click()
       return guarded ? 'guarded' : 'unguarded'
     }

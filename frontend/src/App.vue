@@ -11,6 +11,7 @@ import { useWorkspace } from './stores/workspace'
 import ConfirmationDialog from './components/layout/ConfirmationDialog.vue'
 import ContextActions from './components/layout/ContextActions.vue'
 import ActivityBar, { type ActivityItem } from './components/layout/ActivityBar.vue'
+import AppIcon from './components/layout/AppIcon.vue'
 import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
 import CommandPalette from './components/layout/CommandPalette.vue'
 import SettingsDialog from './components/layout/SettingsDialog.vue'
@@ -412,7 +413,14 @@ type AdvancedAction = 'cherry-pick' | 'revert' | 'reset' | 'merge' | 'rebase'
 const advancedLabels: Record<AdvancedAction, string> = {
   'cherry-pick': 'Cherry-pick', revert: 'Revert', reset: 'Reset', merge: 'Merge', rebase: 'Rebase',
 }
-const advanced = shallowRef<{ action: AdvancedAction; hash: string; label: string; head: HeadState }>()
+const advanced = shallowRef<{
+  action: AdvancedAction
+  hash: string
+  label: string
+  head: HeadState
+  /** Multi-commit cherry-pick targets in application order (oldest first). */
+  targets?: { hash: string; subject: string }[]
+}>()
 type RebaseAction = 'pick' | 'squash' | 'fixup' | 'drop' | 'reword' | 'edit'
 const rebasePlan = ref<{ commit: Commit; action: RebaseAction; message: string }[]>([])
 const rebasePreset = shallowRef<{ hash: string; action: RebaseAction }>()
@@ -611,10 +619,27 @@ function watchRepository(repo: string) {
 
 async function refreshExternalChanges() {
   if (document.hidden || indexBusy.value || restoringSession.value) return
+  if (!store.available) return
+  const repo = store.repository?.path
+  if (repo) {
+    try {
+      const availability = await api.CheckRepositoryPath(repo)
+      if (repo !== store.repository?.path) return
+      if (!availability.available) {
+        // The folder was deleted or its drive unmounted: stop the five-second
+        // poll instead of repeating the same OS error from every Git call.
+        store.available = false
+        store.repoError = availability.reason || 'The repository folder is no longer available.'
+        clearInterval(timer)
+        return
+      }
+    } catch {
+      // Fall through: the normal refresh below reports a real Git failure.
+    }
+  }
   void store.checkForChanges()
   void loadOperationState()
   if (workingLoading.value) return
-  const repo = store.repository?.path
   await loadWorking()
   if (repo === store.repository?.path && workingSelection.value && workingView.value && !previewLoading.value) {
     void selectView(workingView.value, true, expandedPreview.value)
@@ -949,7 +974,8 @@ watch(() => [operation.value?.kind, operation.value?.conflicts?.length ?? 0, ope
 })
 
 async function prepareOperation(action: AdvancedAction, hash: string, label: string,
-                               preset?: { hash: string; action: RebaseAction }) {
+                               preset?: { hash: string; action: RebaseAction },
+                               targets?: { hash: string; subject: string }[]) {
   const repo = store.repository?.path
   if (!repo || indexBusy.value || store.opening || preparingOperation.value) return
   if (operation.value?.kind || operation.value?.conflicts?.length) {
@@ -988,7 +1014,7 @@ async function prepareOperation(action: AdvancedAction, hash: string, label: str
       }
       rebasePreset.value = undefined
     }
-    advanced.value = { action, hash, label, head }
+    advanced.value = { action, hash, label, head, targets }
   } catch (cause) {
     if (current()) operationError.value = String(cause)
   } finally {
@@ -1021,6 +1047,18 @@ function setRebaseAction(step: { commit: Commit; action: RebaseAction; message: 
   if ((step.action === 'reword' || step.action === 'squash') && !step.message) {
     step.message = step.commit.subject
   }
+}
+
+/** Cherry-pick a multi-selection: the log supplies the targets oldest first so
+ *  the replay matches the order the commits entered history. */
+async function cherryPickCommits(commits: Commit[]) {
+  if (commits.length < 2) return
+  if (commits.some(commit => (commit.parents?.length ?? 0) > 1)) {
+    operationError.value = 'Cherry-pick accepts non-merge commits only.'
+    return
+  }
+  const targets = commits.map(commit => ({ hash: commit.hash, subject: commit.subject }))
+  await prepareOperation('cherry-pick', targets[0]!.hash, targets.length + ' commits', undefined, targets)
 }
 
 // A stash diff compares the commit the stash was created on (stash^1) with
@@ -1063,7 +1101,8 @@ async function runAdvanced() {
       }))
       await api.RunInteractiveRebase(repo, request.hash, request.head, steps)
     } else {
-      await api.ApplyHistoryOperation(repo, request.action, request.hash, request.head, mode)
+      await api.ApplyHistoryOperation(repo, request.action,
+        request.targets?.map(target => target.hash) ?? [request.hash], request.head, mode)
     }
     operationNotice.value = advancedLabels[request.action] + ' complete.'
   } catch (cause) {
@@ -2004,18 +2043,12 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button v-if="store.repository" class="branch-chip" :disabled="indexBusy || store.opening"
               :title="'Current branch: ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head)"
               @click="openSidebar('branches')">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-          <circle cx="6" cy="4" r="1.7" /><circle cx="6" cy="15" r="1.7" /><circle cx="14" cy="5" r="1.7" />
-          <path d="M6 5.7v7.6m8-6.6a6 6 0 0 1-6 5.8H6" />
-        </svg>
+        <AppIcon name="branches" />
         <span class="ellipsis">{{ store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head }}</span>
       </button>
       <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
         <summary>
-          <svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <circle cx="6" cy="4" r="1.7" /><circle cx="6" cy="15" r="1.7" /><circle cx="14" cy="5" r="1.7" />
-            <path d="M6 5.7v7.6m8-6.6a6 6 0 0 1-6 5.8H6" />
-          </svg>
+          <AppIcon class="menu-icon" name="branches" />
           Git
         </summary>
         <div class="command-menu" role="group" aria-label="Git operations">
@@ -2131,6 +2164,16 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         </label>
         <span v-if="advanced.action === 'rebase'" class="notice">Rewrites the current branch's commits.</span>
       </div>
+      <template v-if="advanced.targets && advanced.targets.length > 1">
+        <ol class="cherry-targets" aria-label="Commits to cherry-pick">
+          <li v-for="target in advanced.targets" :key="target.hash">
+            <code>{{ target.hash.slice(0, 8) }}</code>
+            <span class="ellipsis" :title="target.subject">{{ target.subject }}</span>
+          </li>
+        </ol>
+        <p class="notice">Applied in the order shown, oldest first. A conflict stops the sequence;
+          resolve the files, then continue or abort from the console.</p>
+      </template>
       <div v-if="advanced?.action === 'rebase'" class="rebase-plan" aria-label="Interactive rebase plan">
         <div v-for="(step, index) in rebasePlan" :key="step.commit.hash" class="rebase-step">
           <code>{{ step.commit.hash.slice(0, 8) }}</code>
@@ -2171,9 +2214,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <strong>{{ sidebar === 'changes' ? 'Commit' : sidebar === 'files' ? 'Files' : 'Worktrees' }}</strong>
             <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
                     @click="sidebarHidden = true">
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                <path d="m6 6 8 8m0-8-8 8" />
-              </svg>
+              <AppIcon name="close" />
             </button>
           </div>
           <div class="sidebar-project">
@@ -2347,16 +2388,11 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               <div class="tool-window-actions">
                 <button :disabled="indexBusy" :title="historyMaximized ? 'Restore tool window size' : 'Maximize tool window'"
                         :aria-pressed="historyMaximized" @click="historyMaximized = !historyMaximized">
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                    <path v-if="!historyMaximized" d="M4 8V4h4M16 12v4h-4M4 8h4M16 12h-4" />
-                    <path v-else d="M8 4v4H4m8 8v-4h4M8 4h.01M16 12h.01" />
-                  </svg>
+                  <AppIcon :name="historyMaximized ? 'restore' : 'maximize'" />
                 </button>
                 <button :disabled="indexBusy" title="Hide Git tool window" aria-label="Hide Git tool window"
                         @click="historyVisible = false; historyMaximized = false">
-                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-                    <path d="m6 6 8 8m0-8-8 8" />
-                  </svg>
+                  <AppIcon name="close" />
                 </button>
               </div>
             </header>
@@ -2466,6 +2502,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                        @select="handleHistorySelect" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
                        @compare-commits="compareCommits"
                        @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)"
+                       @cherry-pick-many="(commits) => void cherryPickCommits(commits)"
                        @squash-into="(commit, action) => void squashIntoParent(commit, action)" />
             <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Changed Files panel" tabindex="0"
                  @pointerdown="trackDrag" @pointermove="resizeFiles" @keydown="resizeFilesWithKey"></div>

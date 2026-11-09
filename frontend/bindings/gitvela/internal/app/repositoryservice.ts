@@ -30,12 +30,16 @@ export function AmendIndex(path: string, expectedHead: string, expectedRef: stri
     return $Call.ByID(2472700641, path, expectedHead, expectedRef, message);
 }
 
-export function ApplyHistoryOperation(path: string, action: string, target: string, expected: git$0.HeadState, mode: string): $CancellablePromise<void> {
-    return $Call.ByID(826886017, path, action, target, expected, mode);
+export function ApplyHistoryOperation(path: string, action: string, targets: string[] | null, expected: git$0.HeadState, mode: string): $CancellablePromise<void> {
+    return $Call.ByID(826886017, path, action, targets, expected, mode);
 }
 
 export function BranchSync(path: string): $CancellablePromise<git$0.BranchSync[] | null> {
     return $Call.ByID(2265013207, path);
+}
+
+export function CheckRepositoryPath(path: string): $CancellablePromise<git$0.RepositoryAvailability> {
+    return $Call.ByID(4157865791, path);
 }
 
 export function CheckoutTag(path: string, name: string): $CancellablePromise<void> {
@@ -110,8 +114,8 @@ export function EditableFiles(path: string): $CancellablePromise<string[] | null
     return $Call.ByID(3244581999, path);
 }
 
-export function FetchRemote(path: string, remote: string): $CancellablePromise<void> {
-    return $Call.ByID(3902937218, path, remote);
+export function FetchRemote(path: string, remote: string, options: git$0.FetchOptions): $CancellablePromise<void> {
+    return $Call.ByID(3902937218, path, remote, options);
 }
 
 export function FileBlame(path: string, file: string): $CancellablePromise<git$0.BlameLine[] | null> {

@@ -40,6 +40,7 @@ const destination = computed<Destination | undefined>(() => {
 const confirmation = ref<Destination>()
 const pullMode = ref<'ff' | 'merge' | 'rebase'>('ff')
 const pullAutostash = ref(false)
+const fetchOptions = ref<{ prune: boolean; tags: '' | 'all' | 'none' }>({ prune: false, tags: '' })
 const pushOptions = ref({ pushTags: false, setUpstream: false, forceWithLease: false })
 watch(() => props.intent, () => { confirmation.value = undefined })
 watch(selectedRemote, () => { confirmation.value = undefined })
@@ -93,7 +94,7 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
   confirmation.value = undefined
   try {
     if (operation === 'fetch') {
-      await api.FetchRemote(props.path, remote)
+      await api.FetchRemote(props.path, remote, fetchOptions.value)
       notice.value = 'Fetched ' + remote + '.'
     } else if (target && operation === 'pull') {
       await api.PullUpstream(props.path, target.branch, target.remote, target.target,
@@ -128,6 +129,17 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
           <option v-for="remote in state?.remotes" :key="remote">{{ remote }}</option>
         </select>
       </label>
+      <fieldset v-if="intent === 'fetch'" class="pull-options" :disabled="busy || loading || !!loadError">
+        <legend>Fetch options</legend>
+        <label><input type="checkbox" v-model="fetchOptions.prune" /> Prune remote-tracking branches deleted on the remote</label>
+        <label>Tags
+          <select v-model="fetchOptions.tags">
+            <option value="">Tags pointing to fetched commits</option>
+            <option value="all">All tags</option>
+            <option value="none">No tags</option>
+          </select>
+        </label>
+      </fieldset>
       <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !selectedRemote" @click="run('fetch')">Fetch</button>
       <fieldset v-if="intent === 'pull'" class="pull-options" :disabled="busy || loading || !upstream">
         <legend>Pull strategy</legend>

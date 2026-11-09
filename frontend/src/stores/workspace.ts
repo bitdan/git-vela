@@ -37,6 +37,9 @@ export const useWorkspace = defineStore('workspace', () => {
   const logError = ref('')
   const filesError = ref('')
   const diffError = ref('')
+  /** False once the open repository folder disappears; polling then stops
+   *  instead of running Git against a missing path every five seconds. */
+  const available = ref(true)
   const opening = ref(false)
   const loading = ref(false)
   const loadingFiles = ref(false)
@@ -77,6 +80,7 @@ export const useWorkspace = defineStore('workspace', () => {
       filesRequest.clear()
       diffRequest.clear()
       repository.value = repo
+      available.value = true
       commits.value = []
       graphWidth.value = 1
       refs.value = []
@@ -224,7 +228,7 @@ export const useWorkspace = defineStore('workspace', () => {
   async function checkForChanges() {
     const repo = repository.value
     const snapshot = cursor.value.snapshot
-    if (!repo || !snapshot || checking || opening.value || loading.value) return
+    if (!available.value || !repo || !snapshot || checking || opening.value || loading.value) return
     checking = true
     try {
       const current = await api.Snapshot(repo.path)
@@ -240,7 +244,7 @@ export const useWorkspace = defineStore('workspace', () => {
 
   return {
     repository, commits, branchRefs, tagRefs, branchSync, graphWidth, more, selected, parent, files, file, comparison, comparisonRange, headHash,
-    recent, gitVersion, repoError, logError, filesError, diffError, opening, loading, loadingFiles, loadingDiff,
+    recent, gitVersion, repoError, logError, filesError, diffError, available, opening, loading, loadingFiles, loadingDiff,
     detectGit, open, choose, loadPage, selectCommit, selectComparison, selectFile, checkForChanges,
   }
 })

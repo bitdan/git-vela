@@ -204,7 +204,7 @@ const refOperations = useRefOperations({
   branchChanged: () => { branchFilter.value = '' },
 })
 const {
-  branchError, branchNotice, branchName, branchForm, managedBranch, createBase,
+  branchError, branchNotice, branchName, branchForm, managedBranch, createBase, deletion, deletionError,
   tagForm, tagName, tagMessage, tagRemote, tagRemotes, tagBase,
   openBranchForm, openTagForm, createTag, deleteTag, pushTag, checkoutTag, openTagPush,
 } = refOperations
@@ -2626,11 +2626,18 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               </form>
               <ConfirmationDialog v-else-if="branchForm === 'delete'" title="Confirm branch deletion"
                                   :busy="indexBusy" @cancel="openBranchForm()">
-                <p>Delete <strong>{{ managedBranch }}</strong> if it is merged into the current HEAD?</p>
-                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <p>Delete local branch <strong>{{ managedBranch }}</strong>?</p>
+                <p v-if="!deletion && !deletionError" class="notice" role="status">Checking whether the branch is merged…</p>
+                <p v-else-if="deletion && deletion.unmerged" class="notice error" role="alert">
+                  {{ deletion.unmerged }} commit{{ deletion.unmerged === 1 ? ' is' : 's are' }} not merged into {{ deletion.base }}
+                  and will be discarded. The notification after deletion offers Restore.
+                </p>
+                <p v-else-if="deletion" class="notice">The branch is fully merged into {{ deletion.base }}.</p>
+                <p v-if="deletionError || branchError" class="notice error" role="alert">{{ deletionError || branchError }}</p>
                 <template #actions>
                   <button data-cancel :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-                  <button class="danger-button" :disabled="indexBusy" @click="changeBranch('delete', managedBranch)">Delete branch</button>
+                  <button class="danger-button" :disabled="indexBusy || !deletion" @click="changeBranch('delete', managedBranch)">
+                    {{ deletion?.unmerged ? 'Delete anyway' : 'Delete branch' }}</button>
                 </template>
               </ConfirmationDialog>
               <form v-if="tagForm === 'create'" class="new-branch" @submit.prevent="createTag()">

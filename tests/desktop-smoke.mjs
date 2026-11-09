@@ -219,7 +219,12 @@ try {
   }
   if (testBranch) {
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
-    const action = (label) => evaluate(`[...document.querySelectorAll('[aria-label="Confirm branch deletion"] button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
+    const action = (label) => until(() => evaluate(`(() => {
+      const button = [...document.querySelectorAll('[aria-label="Confirm branch deletion"] button')].find(item => item.innerText === ${JSON.stringify(label)})
+      if (!button || button.disabled) return false
+      button.click()
+      return true
+    })()`), 'deletion dialog button ' + label)
     await branchMenuAction('main', 'Checkout')
     await until(() => evaluate("document.querySelector('.branch-panel .active')?.title === 'refs/heads/main'"), 'main active again')
     await branchMenuAction('feature/desktop', 'Rename…')
@@ -236,6 +241,26 @@ try {
     await branchMenuAction('feature/renamed', 'Delete…')
     await action('Delete branch')
     await until(() => evaluate("!document.querySelector('[title=\"refs/heads/feature/renamed\"]')"), 'confirmed deletion')
+    // An unmerged branch names what it discards, needs "Delete anyway", and can be restored.
+    const mainTip = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+    execFileSync('git', ['-C', repo, 'branch', 'smoke/unmerged'])
+    const unmergedTip = execFileSync('git', ['-C', repo, 'commit-tree', '-p', mainTip, '-m', 'unmerged smoke commit', mainTip + '^{tree}'], { encoding: 'utf8' }).trim()
+    execFileSync('git', ['-C', repo, 'update-ref', 'refs/heads/smoke/unmerged', unmergedTip])
+    await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/smoke/unmerged\"]')"), 'unmerged branch listed')
+    await branchMenuAction('smoke/unmerged', 'Delete…')
+    await until(() => evaluate("document.querySelector('[aria-label=\"Confirm branch deletion\"]')?.innerText.includes('not merged into main')"), 'unmerged warning')
+    assert.equal(await evaluate("document.activeElement?.innerText"), 'Cancel', 'Cancel is focused by default')
+    await action('Delete anyway')
+    await until(() => evaluate("!document.querySelector('[title=\"refs/heads/smoke/unmerged\"]')"), 'unmerged branch deleted')
+    await until(() => evaluate(`(() => {
+      const balloon = [...document.querySelectorAll('.notification-balloon')].find(item => item.innerText.includes('smoke/unmerged'))
+      const button = [...(balloon?.querySelectorAll('button') ?? [])].find(item => item.innerText === 'Restore')
+      if (!button) return false
+      button.click()
+      return true
+    })()`), 'Restore action')
+    await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/smoke/unmerged\"]')"), 'branch restored')
+    assert.equal(execFileSync('git', ['-C', repo, 'rev-parse', 'refs/heads/smoke/unmerged'], { encoding: 'utf8' }).trim(), unmergedTip)
     // The smoke repository is a disposable clone, so it can carry its own tag.
     const tagged = execFileSync('git', ['-C', repo, 'log', '-1', '--format=%s', 'HEAD~1'], { encoding: 'utf8' }).trim()
     execFileSync('git', ['-C', repo, 'tag', 'gitvela-smoke-tag', 'HEAD~1'])

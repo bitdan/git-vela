@@ -15,6 +15,11 @@ const notifications = useNotifications()
       <div class="flex min-w-0 flex-1 flex-col gap-0.5 wrap-anywhere">
         <strong :class="{ 'text-error': item.kind === 'error' }">{{ item.title }}</strong>
         <span>{{ item.detail }}</span>
+        <span v-if="item.actions?.length" class="mt-1 flex gap-3">
+          <button v-for="action in item.actions" :key="action.label"
+                  class="border-0 bg-transparent p-0 text-accent hover:underline"
+                  @click="notifications.dismiss(item.id); action.run()">{{ action.label }}</button>
+        </span>
       </div>
       <button class="border-0 bg-transparent px-1 leading-none text-muted hover:text-fg" aria-label="Dismiss notification"
               @click="notifications.dismiss(item.id)">×</button>

@@ -1,5 +1,7 @@
 import { computed, ref, type Ref } from 'vue'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
+import type { BranchDeletion } from '../../../bindings/gitvela/internal/git'
+import { useNotifications } from '../../shared/notifications'
 import { useWorkspace } from '../../stores/workspace'
 import { createGitCommandRunner, errorText } from '../../shared/gitCommand'
 
@@ -35,6 +37,10 @@ export function useRefOperations(host: RefOperationsHost) {
   const tagRemote = ref('')
   const tagRemotes = ref<string[]>([])
   const tagBase = computed(() => store.selected?.hash ?? store.headHash)
+  /** What deleting managedBranch would discard (IDEA "not fully merged"). */
+  const deletion = ref<BranchDeletion>()
+  const deletionError = ref('')
+  const notifications = useNotifications()
 
   const runner = createGitCommandRunner({
     busy: host.busy,
@@ -58,6 +64,50 @@ export function useRefOperations(host: RefOperationsHost) {
     branchName.value = form === 'rename' ? branch : ''
     clearFeedback()
     tagForm.value = undefined
+    deletion.value = undefined
+    deletionError.value = ''
+    if (form === 'delete' && branch) void inspectDeletion(branch)
+  }
+
+  async function inspectDeletion(branch: string) {
+    const path = store.repository?.path
+    if (!path) return
+    try {
+      const result = await api.InspectBranchDeletion(path, branch)
+      if (path === store.repository?.path && branchForm.value === 'delete' && managedBranch.value === branch) deletion.value = result
+    } catch (cause) {
+      if (path === store.repository?.path && managedBranch.value === branch) deletionError.value = errorText(cause)
+    }
+  }
+
+  /** Deletes the reviewed branch. An unmerged branch is force-deleted only
+   *  after the dialog showed its unmerged commits; the backend re-checks the
+   *  tip so a branch that moved meanwhile is not lost. */
+  function deleteBranch() {
+    const path = store.repository?.path
+    const info = deletion.value
+    if (!path || !info || info.branch !== managedBranch.value) return
+    const unmerged = info.unmerged > 0
+    let deleted = false
+    return command('Delete branch', () => api.DeleteBranch(path, info.branch, info.tip, unmerged), 'Deleted ' + info.branch, {
+      applied: () => {
+        deleted = true
+        openBranchForm()
+        host.branchChanged?.()
+      },
+    }).then(() => {
+      // Offer Restore only once the command released the busy flag, so the
+      // action can run as soon as it is visible.
+      if (!deleted || path !== store.repository?.path) return
+      notifications.push('info', 'Deleted branch ' + info.branch,
+        unmerged ? `${info.unmerged} unmerged commit${info.unmerged === 1 ? ' was' : 's were'} discarded.` : 'The branch was fully merged.',
+        [{ label: 'Restore', run: () => void restoreBranch(path, info.branch, info.tip) }])
+    })
+  }
+
+  function restoreBranch(path: string, branch: string, tip: string) {
+    if (path !== store.repository?.path) return
+    return command('Restore branch', () => api.CreateBranch(path, branch, tip), 'Restored ' + branch)
   }
 
   function openTagForm(form?: TagForm, name = '') {
@@ -111,7 +161,7 @@ export function useRefOperations(host: RefOperationsHost) {
       case 'rename':
         return command('Rename branch', () => api.RenameBranch(path, original, name), 'Renamed to ' + name, { applied: formDone })
       case 'delete':
-        return command('Delete branch', () => api.DeleteBranch(path, name), 'Deleted ' + name, { applied: formDone })
+        return deleteBranch()
     }
   }
 
@@ -164,7 +214,7 @@ export function useRefOperations(host: RefOperationsHost) {
   }
 
   return {
-    branchError, branchNotice, branchName, branchForm, managedBranch, branchBase, createBase,
+    branchError, branchNotice, branchName, branchForm, managedBranch, branchBase, createBase, deletion, deletionError,
     tagForm, tagName, tagMessage, tagRemote, tagRemotes, tagBase,
     openBranchForm, openTagForm, reset, changeBranch, createTag, deleteTag, pushTag, checkoutTag, openTagPush,
   }

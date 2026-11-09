@@ -119,8 +119,8 @@ export function CreateTag(path: string, name: string, commit: string, message: s
     return $Call.ByID(3727072456, path, name, commit, message);
 }
 
-export function DeleteBranch(path: string, name: string): $CancellablePromise<void> {
-    return $Call.ByID(3639123479, path, name);
+export function DeleteBranch(path: string, name: string, expectedTip: string, force: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3639123479, path, name, expectedTip, force);
 }
 
 export function DeleteTag(path: string, name: string): $CancellablePromise<void> {
@@ -188,6 +188,10 @@ export function History(path: string, cursor: git$0.Cursor): $CancellablePromise
 
 export function Initialize(path: string): $CancellablePromise<git$0.Repository> {
     return $Call.ByID(2409134402, path);
+}
+
+export function InspectBranchDeletion(path: string, name: string): $CancellablePromise<git$0.BranchDeletion> {
+    return $Call.ByID(876343322, path, name);
 }
 
 export function MarkBisect(path: string, verdict: string): $CancellablePromise<void> {

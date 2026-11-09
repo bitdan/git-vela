@@ -6,6 +6,7 @@ export type {
     AmendTarget,
     BisectState,
     BlameLine,
+    BranchDeletion,
     BranchSync,
     BranchTracking,
     Change,

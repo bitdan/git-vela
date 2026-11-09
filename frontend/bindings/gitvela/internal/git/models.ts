@@ -49,6 +49,22 @@ export interface BlameLine {
     "uncommitted": boolean;
 }
 
+/**
+ * BranchDeletion describes what deleting a local branch would discard, so
+ * the confirmation dialog can name it (IDEA GitDeleteBranchOperation detects
+ * "not fully merged" and offers Restore afterwards).
+ */
+export interface BranchDeletion {
+    "branch": string;
+    "tip": string;
+
+    /**
+     * Base is the checked-out branch, or HEAD when detached.
+     */
+    "base": string;
+    "unmerged": number;
+}
+
 export interface BranchSync {
     "branch": string;
     "upstream": string;

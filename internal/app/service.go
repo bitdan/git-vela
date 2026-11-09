@@ -166,13 +166,12 @@ func (s *RepositoryService) RenameBranch(ctx context.Context, path, oldName, new
 	return git.RenameBranch(ctx, path, oldName, newName)
 }
 
-func (s *RepositoryService) DeleteBranch(ctx context.Context, path, name string) error {
-	s.indexWrite.Lock()
-	defer s.indexWrite.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return git.DeleteBranch(ctx, path, name)
+func (*RepositoryService) InspectBranchDeletion(ctx context.Context, path, name string) (git.BranchDeletion, error) {
+	return discardCancelled(git.InspectBranchDeletion(ctx, path, name))
+}
+
+func (s *RepositoryService) DeleteBranch(ctx context.Context, path, name, expectedTip string, force bool) error {
+	return s.write(ctx, func() error { return git.DeleteBranch(ctx, path, name, expectedTip, force) })
 }
 
 func (*RepositoryService) Worktrees(ctx context.Context, path string) ([]git.Worktree, error) {

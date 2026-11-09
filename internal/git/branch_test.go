@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,10 +76,17 @@ func TestRenameAndDeleteMergedBranch(t *testing.T) {
 	if got := strings.TrimSpace(command(t, dir, "branch", "--list", "old-name", "feature/新名称", "--format=%(refname:short)")); got != "feature/新名称" {
 		t.Fatalf("renamed refs: %q", got)
 	}
-	if err := DeleteBranch(ctx, dir, "main"); err == nil {
+	if _, err := InspectBranchDeletion(ctx, dir, "main"); err == nil {
+		t.Fatal("offered to delete the current branch")
+	}
+	info, err := InspectBranchDeletion(ctx, dir, "feature/新名称")
+	if err != nil || info.Unmerged != 0 {
+		t.Fatalf("inspection: %+v, %v", info, err)
+	}
+	if err := DeleteBranch(ctx, dir, "main", info.Tip, true); err == nil {
 		t.Fatal("deleted current branch")
 	}
-	if err := DeleteBranch(ctx, dir, "feature/新名称"); err != nil {
+	if err := DeleteBranch(ctx, dir, "feature/新名称", info.Tip, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(command(t, dir, "branch", "--list", "feature/新名称")); got != "" {
@@ -98,10 +106,38 @@ func TestDeleteBranchRejectsCommitsOutsideHEAD(t *testing.T) {
 	command(t, dir, "branch", "--set-upstream-to=same-tip", "feature")
 	command(t, dir, "switch", "main")
 
-	if err := DeleteBranch(ctx, dir, "feature"); err == nil {
+	info, err := InspectBranchDeletion(ctx, dir, "feature")
+	if err != nil || info.Unmerged != 1 || info.Base != "main" {
+		t.Fatalf("inspection: %+v, %v", info, err)
+	}
+	if err := DeleteBranch(ctx, dir, "feature", info.Tip, false); err == nil {
 		t.Fatal("deleted a branch merged only into its upstream, not HEAD")
 	}
 	if got := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%s", "feature")); got != "feature" {
 		t.Fatalf("feature tip changed: %q", got)
+	}
+
+	// A branch that moved after the review is kept even with force.
+	command(t, dir, "branch", "-f", "feature", "same-tip~1")
+	if err := DeleteBranch(ctx, dir, "feature", info.Tip, true); err == nil || !strings.Contains(err.Error(), "moved") {
+		t.Fatalf("stale tip: %v", err)
+	}
+	command(t, dir, "branch", "-f", "feature", info.Tip)
+	linked := filepath.Join(t.TempDir(), "linked")
+	command(t, dir, "worktree", "add", "-q", linked, "feature")
+	if err := DeleteBranch(ctx, dir, "feature", info.Tip, true); err == nil || !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("branch in another worktree: %v", err)
+	}
+	command(t, dir, "worktree", "remove", "--force", linked)
+
+	// Force deletes the reviewed unmerged branch and drops its tracking config.
+	if err := DeleteBranch(ctx, dir, "feature", info.Tip, true); err != nil {
+		t.Fatal(err)
+	}
+	if out := strings.TrimSpace(command(t, dir, "branch", "--list", "feature")); out != "" {
+		t.Fatalf("feature still present: %q", out)
+	}
+	if err := CreateBranch(ctx, dir, "feature", info.Tip); err != nil {
+		t.Fatalf("restore: %v", err)
 	}
 }

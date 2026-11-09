@@ -78,6 +78,24 @@ func remoteNames(ctx context.Context, dir string) ([]string, error) {
 	return strings.Fields(string(data)), nil
 }
 
+// requireRemote validates a user-selected remote name against the
+// repository configuration before it is passed to Git.
+func requireRemote(ctx context.Context, dir, remote string) error {
+	remotes, err := remoteNames(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if remote == "" || !slices.Contains(remotes, remote) {
+		return errors.New("select a configured Git remote")
+	}
+	return nil
+}
+
+// outputLine returns single-line Git output without its line terminator.
+func outputLine(data []byte) string {
+	return strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+}
+
 func requireRemoteUpstream(ctx context.Context, dir string, tracking BranchTracking) error {
 	remotes, err := remoteNames(ctx, dir)
 	if err != nil {
@@ -340,12 +358,8 @@ func Pull(ctx context.Context, dir string, request PullRequest) (UpdateResult, e
 	if headRef != ref {
 		return result, errors.New("the current branch changed; review the pull target")
 	}
-	remotes, err := remoteNames(ctx, dir)
-	if err != nil {
+	if err := requireRemote(ctx, dir, request.Remote); err != nil {
 		return result, err
-	}
-	if !slices.Contains(remotes, request.Remote) {
-		return result, errors.New("select a configured Git remote")
 	}
 	if request.RemoteBranch == "" || strings.HasPrefix(request.RemoteBranch, "-") ||
 		checkBranchName(ctx, dir, request.RemoteBranch) != nil {

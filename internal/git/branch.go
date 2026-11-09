@@ -15,7 +15,7 @@ func checkBranchName(ctx context.Context, dir, name string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r") != name {
+	if outputLine(data) != name {
 		return errors.New("enter an explicit local branch name")
 	}
 	return nil

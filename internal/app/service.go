@@ -209,6 +209,11 @@ func (*RepositoryService) FirstParent(ctx context.Context, path, hash string) (s
 	return discardCancelled(git.FirstParent(ctx, path, hash))
 }
 
+// write serializes Git write commands for the whole process. Keeping one lock
+// is deliberate: the UI drives one repository at a time, linked worktrees share
+// refs and the index lock of their common directory, and a per-repository lock
+// would add path canonicalization for no user-visible gain. Read calls do not
+// take it.
 func (s *RepositoryService) write(ctx context.Context, action func() error) error {
 	s.indexWrite.Lock()
 	defer s.indexWrite.Unlock()
@@ -298,19 +303,19 @@ func (*RepositoryService) BranchTracking(ctx context.Context, path, branch strin
 
 // UpdateBranch runs the branch "Update" action on an explicit local branch.
 func (s *RepositoryService) UpdateBranch(ctx context.Context, path, branch, method string) (git.UpdateResult, error) {
-	var result git.UpdateResult
-	err := s.write(ctx, func() (err error) {
-		result, err = git.UpdateBranch(ctx, path, branch, method)
-		return err
-	})
-	return result, err
+	return writeValue(s, ctx, func() (git.UpdateResult, error) { return git.UpdateBranch(ctx, path, branch, method) })
 }
 
 // Pull integrates an explicitly selected remote branch into the checked-out branch.
 func (s *RepositoryService) Pull(ctx context.Context, path string, request git.PullRequest) (git.UpdateResult, error) {
-	var result git.UpdateResult
+	return writeValue(s, ctx, func() (git.UpdateResult, error) { return git.Pull(ctx, path, request) })
+}
+
+// writeValue runs a value-returning write under the write lock.
+func writeValue[T any](s *RepositoryService, ctx context.Context, action func() (T, error)) (T, error) {
+	var result T
 	err := s.write(ctx, func() (err error) {
-		result, err = git.Pull(ctx, path, request)
+		result, err = action()
 		return err
 	})
 	return result, err

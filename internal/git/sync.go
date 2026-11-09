@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -22,17 +21,17 @@ type SyncState struct {
 }
 
 func ReadSyncState(ctx context.Context, dir string) (SyncState, error) {
-	data, err := run(ctx, dir, nil, 1<<20, "remote")
+	remotes, err := remoteNames(ctx, dir)
 	if err != nil {
 		return SyncState{}, err
 	}
-	state := SyncState{Remotes: strings.Fields(string(data))}
+	state := SyncState{Remotes: remotes}
 	ref, err := headReference(ctx, dir)
 	if err != nil || !strings.HasPrefix(ref, "refs/heads/") {
 		return state, err
 	}
 	state.Branch = strings.TrimPrefix(ref, "refs/heads/")
-	data, err = run(ctx, dir, nil, 1<<20, "for-each-ref",
+	data, err := run(ctx, dir, nil, 1<<20, "for-each-ref",
 		"--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)", "--", ref)
 	if err != nil {
 		return state, err
@@ -67,12 +66,8 @@ type FetchOptions struct {
 }
 
 func FetchRemote(ctx context.Context, dir, remote string, options FetchOptions) error {
-	data, err := run(ctx, dir, nil, 1<<20, "remote")
-	if err != nil {
+	if err := requireRemote(ctx, dir, remote); err != nil {
 		return err
-	}
-	if !slices.Contains(strings.Fields(string(data)), remote) {
-		return errors.New("select a configured Git remote")
 	}
 	args, err := fetchArgs(options)
 	if err != nil {
@@ -84,11 +79,11 @@ func FetchRemote(ctx context.Context, dir, remote string, options FetchOptions) 
 // FetchAllRemotes updates every configured remote in one call. Git keeps the
 // per-remote refspecs, so a failure of one remote is reported by the caller.
 func FetchAllRemotes(ctx context.Context, dir string, options FetchOptions) error {
-	data, err := run(ctx, dir, nil, 1<<20, "remote")
+	remotes, err := remoteNames(ctx, dir)
 	if err != nil {
 		return err
 	}
-	if len(strings.Fields(string(data))) == 0 {
+	if len(remotes) == 0 {
 		return errors.New("this repository has no remotes to fetch")
 	}
 	args, err := fetchArgs(options)
@@ -154,12 +149,8 @@ func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddres
 	if err != nil {
 		return err
 	}
-	remotes, err := remoteNames(ctx, dir)
-	if err != nil {
+	if err := requireRemote(ctx, dir, remote); err != nil {
 		return err
-	}
-	if !slices.Contains(remotes, remote) {
-		return errors.New("select a configured Git remote")
 	}
 	if headRef, err := headReference(ctx, dir); err != nil {
 		return err
@@ -191,17 +182,17 @@ func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddres
 			return fmt.Errorf("force push to protected branch %s is blocked (pattern %s); remove the protection in Settings to override", target, pattern)
 		}
 		lease, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", "refs/remotes/"+remote+"/"+target)
-		if err != nil || !objectID(strings.TrimSuffix(strings.TrimSuffix(string(lease), "\n"), "\r")) {
+		if err != nil || !objectID(outputLine(lease)) {
 			return errors.New("force-with-lease needs a local remote-tracking ref for the target; fetch before forcing")
 		}
-		leaseID := strings.TrimSuffix(strings.TrimSuffix(string(lease), "\n"), "\r")
+		leaseID := outputLine(lease)
 		args = append(args, "--force-with-lease=refs/heads/"+target+":"+leaseID)
 	} else {
 		args = append(args, "--no-force")
 	}
 	if expectedAddress != "" {
 		effective, err := run(ctx, dir, nil, 32768, "remote", "get-url", "--push", "--all", "--", remote)
-		if err != nil || strings.TrimSuffix(strings.TrimSuffix(string(effective), "\n"), "\r") != expectedAddress {
+		if err != nil || outputLine(effective) != expectedAddress {
 			return errors.New("the effective push destination changed; review the push URL in Manage remotes")
 		}
 	}

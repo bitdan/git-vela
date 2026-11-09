@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"log"
+	"runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"gitvela/internal/app"
@@ -28,6 +29,7 @@ func main() {
 	})
 	desktop.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "GitVela",
+		Frameless:        runtime.GOOS == "windows",
 		Width:            1340,
 		Height:           880,
 		MinWidth:         780,

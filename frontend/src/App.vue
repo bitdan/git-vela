@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, reactive, ref, shallowRef, useTemplateRef, watch } from 'vue'
-import { Events, Window } from '@wailsio/runtime'
+import { Events, System, Window } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
 import { layoutBounds, usePreferences } from './stores/preferences'
@@ -18,6 +18,7 @@ import ActivityBar, { type ActivityItem } from './components/layout/ActivityBar.
 import AppIcon from './components/layout/AppIcon.vue'
 import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
 import CommandPalette from './components/layout/CommandPalette.vue'
+import WindowControls from './components/layout/WindowControls.vue'
 import SettingsDialog from './components/layout/SettingsDialog.vue'
 import type { PaletteCommand } from './components/layout/commandFilter'
 import { exceedsRenderLimit } from './components/diff/renderGuard'
@@ -57,6 +58,8 @@ const paletteTrigger = useTemplateRef<HTMLButtonElement>('paletteTrigger')
 const content = useTemplateRef<HTMLElement>('content')
 const paletteOpen = ref(false)
 const windowError = ref('')
+const windowsChrome = ref(System.IsWindows())
+const windowControls = useTemplateRef<InstanceType<typeof WindowControls>>('window-controls')
 const restoreNotice = ref('')
 const configNotice = ref('')
 const sessionNotice = ref('')
@@ -1597,6 +1600,9 @@ async function applyStoredGitPath() {
 }
 
 onMounted(() => {
+  if (!windowsChrome.value) {
+    void System.Environment().then(environment => { windowsChrome.value = environment.OS === 'windows' }).catch(() => {})
+  }
   document.addEventListener('pointerdown', outsideMenus)
   window.addEventListener('beforeunload', preventDiscard)
   window.addEventListener('keydown', onGlobalKeydown)
@@ -1978,6 +1984,13 @@ function stepChange(direction: number) {
   filesPanel.value?.step(direction)
 }
 
+function closeWindow() {
+  if (indexBusy.value || store.opening) return
+  withSavedEditor('closing GitVela', () => {
+    void Window.Close().catch(error => { windowError.value = 'Could not close the window: ' + String(error) })
+  })
+}
+
 async function toggleFullscreen() {
   try {
     await Window.ToggleFullscreen()
@@ -2295,7 +2308,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
 
 <template>
   <div class="shell" :data-theme="dark ? 'dark' : 'light'" :data-density="density">
-    <header class="topbar">
+    <header class="topbar" :class="{ 'windows-titlebar': windowsChrome }">
       <span class="brand-icon" title="GitVela">
         <img :src="appIcon" alt="GitVela" />
       </span>
@@ -2368,7 +2381,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           </template>
         </div>
       </details>
-      <span class="topbar-spacer" aria-hidden="true"></span>
+      <span class="topbar-spacer" aria-hidden="true" @dblclick="windowControls?.toggleMaximise()"></span>
       <button ref="paletteTrigger" class="topbar-settings" aria-label="Command palette"
               :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
               @click="paletteOpen = !paletteOpen">
@@ -2379,6 +2392,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button class="topbar-settings" aria-label="Settings" title="Settings" @click="openSettings">
         <AppIcon name="settings" />
       </button>
+      <WindowControls v-if="windowsChrome" ref="window-controls" :busy="indexBusy || store.opening" @close="closeWindow"
+                      @error="windowError = $event" />
     </header>
     <div v-if="workspaceError" class="notice error top-error" role="alert">
       {{ workspaceError }}

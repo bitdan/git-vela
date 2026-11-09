@@ -45,6 +45,22 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   padding: 8px 12px; background: var(--bg);
 }
 .topbar-spacer { flex: 1; min-width: 8px; }
+.topbar.windows-titlebar { padding: 0 0 0 12px; min-height: 42px; }
+.windows-titlebar .branch-chip { flex: 0 1 auto; min-width: 0; }
+.windows-titlebar .topbar-spacer {
+  min-width: 24px; align-self: stretch;
+  --wails-draggable: drag;
+  user-select: none;
+}
+.window-controls { display: flex; align-self: stretch; flex: none; margin-inline-start: 4px; }
+.window-controls button {
+  display: grid; place-items: center; width: 44px; padding: 0;
+  border: 0; border-radius: 0; background: transparent; color: var(--text);
+}
+.window-controls button:hover:not(:disabled) { background: var(--hover); }
+.window-controls .window-close:hover:not(:disabled) { background: #c42b1c; color: #fff; }
+.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; }
+
 .project-chevron { color: var(--muted); }
 .brand-icon {
   display: grid; place-items: center; flex: none;

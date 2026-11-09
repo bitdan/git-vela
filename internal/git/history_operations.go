@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ type HeadState struct {
 
 type OperationState struct {
 	Kind      string   `json:"kind"`
+	Revision  string   `json:"revision"`
 	Conflicts []string `json:"conflicts"`
 }
 
@@ -38,12 +40,16 @@ func ReadOperationState(ctx context.Context, dir string) (OperationState, error)
 	if err != nil {
 		return state, err
 	}
+	var markerPath string
+	var markerInfo os.FileInfo
 	for _, marker := range []struct{ file, kind string }{
 		{"rebase-merge", "rebase"}, {"rebase-apply", "rebase"}, {"MERGE_HEAD", "merge"},
 		{"CHERRY_PICK_HEAD", "cherry-pick"}, {"REVERT_HEAD", "revert"},
 	} {
-		if _, err := os.Lstat(filepath.Join(gitDir, marker.file)); err == nil {
+		path := filepath.Join(gitDir, marker.file)
+		if info, err := os.Lstat(path); err == nil {
 			state.Kind = marker.kind
+			markerPath, markerInfo = path, info
 			if marker.file == "rebase-apply" {
 				if _, err := os.Lstat(filepath.Join(gitDir, marker.file, "applying")); err == nil {
 					state.Kind = "am"
@@ -55,7 +61,8 @@ func ReadOperationState(ctx context.Context, dir string) (OperationState, error)
 		}
 	}
 	if state.Kind == "" {
-		todo, err := os.ReadFile(filepath.Join(gitDir, "sequencer", "todo"))
+		path := filepath.Join(gitDir, "sequencer", "todo")
+		todo, err := os.ReadFile(path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return state, err
 		}
@@ -64,13 +71,48 @@ func ReadOperationState(ctx context.Context, dir string) (OperationState, error)
 		} else if strings.HasPrefix(string(todo), "revert ") {
 			state.Kind = "revert"
 		}
+		if state.Kind != "" {
+			markerPath = path
+			markerInfo, err = os.Lstat(path)
+			if err != nil {
+				return state, err
+			}
+		}
 	}
 	data, err := run(ctx, dir, nil, 8<<20, "diff", "--name-only", "--diff-filter=U", "-z", "--")
 	if err != nil {
 		return state, err
 	}
 	state.Conflicts = splitPaths(data)
-	return state, nil
+	if markerInfo != nil {
+		state.Revision, err = operationRevision(gitDir, state.Kind, markerPath, markerInfo, data)
+	}
+	return state, err
+}
+
+// Include the operation marker and current step so a confirmation cannot be
+// reused after another client replaces or advances an operation of the same kind.
+func operationRevision(gitDir, kind, marker string, info os.FileInfo, conflicts []byte) (string, error) {
+	digest := sha256.New()
+	fmt.Fprintf(digest, "%s\x00%s\x00%s\x00%d\x00", gitDir, kind, marker, info.ModTime().UnixNano())
+	paths := []string{filepath.Join(gitDir, "HEAD"), filepath.Join(gitDir, "ORIG_HEAD")}
+	if info.IsDir() {
+		for _, step := range []string{"orig-head", "head-name", "onto", "msgnum", "next", "stopped-sha"} {
+			paths = append(paths, filepath.Join(marker, step))
+		}
+	} else {
+		paths = append(paths, marker)
+	}
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		fmt.Fprintf(digest, "%s\x00%d\x00", path, len(content))
+		digest.Write(content)
+	}
+	digest.Write(conflicts)
+	return fmt.Sprintf("%x", digest.Sum(nil)), nil
 }
 
 // maxCherryPickTargets bounds a multi-commit cherry-pick so the Git command
@@ -188,12 +230,12 @@ func ApplyHistoryOperation(ctx context.Context, dir, action string, targets []st
 	return err
 }
 
-func FinishHistoryOperation(ctx context.Context, dir, expectedKind string, abort bool) error {
+func FinishHistoryOperation(ctx context.Context, dir, expectedRevision string, abort bool) error {
 	state, err := ReadOperationState(ctx, dir)
 	if err != nil {
 		return err
 	}
-	if state.Kind == "" || state.Kind != expectedKind {
+	if state.Kind == "" || expectedRevision == "" || state.Revision != expectedRevision {
 		return errors.New("the operation changed; refresh and review the repository")
 	}
 	command := "--continue"

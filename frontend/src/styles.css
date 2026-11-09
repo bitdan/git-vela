@@ -15,6 +15,7 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   --border: #343943; --text: #d9dde4; --muted: #a1a8b4; --accent: #87b5f5;
   --select: #2b4060; --hover: #292e37; --error: #f29587; --good: #70c5a9;
   --popup: #262a32; --accent-fill: #8ab7f5; --accent-ink: #101d31;
+  --conflict: #e0a34a;
   --syntax-keyword: #e3a677; --syntax-string: #9ac7a5; --syntax-literal: #caa9e5;
   --syntax-type: #8ccacf; --syntax-function: #96bdf6; --syntax-property: #e0a8be;
   --chrome-gap: 8px; --panel-radius: 10px;
@@ -28,6 +29,7 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   --border: #d7dbe2; --text: #252932; --muted: #58616f; --accent: #245db9;
   --select: #d9e6fb; --hover: #edeff4; --error: #a6372c; --good: #146b52;
   --popup: #fdfdfe; --accent-fill: #2b62bb; --accent-ink: #fff;
+  --conflict: #8a5a00;
   --syntax-keyword: #943e32; --syntax-string: #27653b; --syntax-literal: #614196;
   --syntax-type: #236a72; --syntax-function: #225cb0; --syntax-property: #8b3f65;
 }
@@ -42,7 +44,24 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   display: flex; align-items: center; gap: 8px; flex: none;
   padding: 8px 12px; background: var(--bg);
 }
-.brand { display: flex; align-items: center; gap: 7px; font-size: 14px; padding-right: 4px; }
+.topbar-spacer { flex: 1; min-width: 8px; }
+.topbar.windows-titlebar { padding: 0 0 0 12px; min-height: 42px; }
+.windows-titlebar .branch-chip { flex: 0 1 auto; min-width: 0; }
+.windows-titlebar .topbar-spacer {
+  min-width: 24px; align-self: stretch;
+  --wails-draggable: drag;
+  user-select: none;
+}
+.window-controls { display: flex; align-self: stretch; flex: none; margin-inline-start: 4px; }
+.window-controls button {
+  display: grid; place-items: center; width: 44px; padding: 0;
+  border: 0; border-radius: 0; background: transparent; color: var(--text);
+}
+.window-controls button:hover:not(:disabled) { background: var(--hover); }
+.window-controls .window-close:hover:not(:disabled) { background: #c42b1c; color: #fff; }
+.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; }
+
+.project-chevron { color: var(--muted); }
 .brand-icon {
   display: grid; place-items: center; flex: none;
   width: 27px; height: 27px; border-radius: 8px;
@@ -58,7 +77,7 @@ button, input, select {
 button:hover:not(:disabled) { background: var(--hover); }
 button.primary { background: var(--accent-fill); color: var(--accent-ink); border-color: transparent; font-weight: 650; }
 button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: brightness(1.08); }
-.repo-form { display: flex; gap: 5px; min-width: 0; flex: 1; }
+.repo-form { display: flex; gap: 5px; min-width: 0; padding: 5px; }
 .repo-form input { flex: 1; min-width: 0; }
 .topbar button, .diff-actions button { white-space: nowrap; }
 .workspace { display: flex; min-height: 0; flex: 1; }
@@ -71,6 +90,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .empty-icon { width: 64px; height: 64px; border-radius: 16px; border: 1px solid var(--border); }
 .empty h1 { font-size: 24px; letter-spacing: -.02em; text-align: center; }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+/* Workspace roots on the welcome screen: one row per mapped repository. */
+.empty-roots {
+  display: grid;
+  gap: 4px;
+  justify-items: stretch;
+  width: min(420px, 90vw);
+  margin-top: 18px;
+  text-align: start;
+}
+.empty-roots .eyebrow { justify-self: center; margin-bottom: 2px; }
+.empty-roots button { margin-top: 0; text-align: start; }
+.roots-path { font-size: 11px; font-weight: 400; }
 .empty p { color: var(--muted); text-align: center; }
 .empty button { margin-top: 4px; }
 .content {
@@ -86,9 +117,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 }
 .sidebar-project { display: grid; gap: 2px; padding: 10px 12px 6px; }
 .sidebar-project strong { font-size: 14px; }
-.commit-tabs { display: flex; flex: none; gap: 3px; padding: 3px 8px 0; border-bottom: 1px solid var(--border); }
-.commit-tabs button { padding-inline: 9px; border-radius: 4px 4px 0 0; }
-.commit-tabs button[aria-pressed="true"] { background: var(--select); color: var(--accent); }
+.commit-tabs { display: flex; flex: none; align-items: center; gap: 3px; min-height: 34px; padding: 0 7px; border-bottom: 1px solid var(--border); background: var(--header); }
+.commit-tabs button { padding: 5px 9px; border: 0; border-radius: 0; background: transparent; }
+.commit-tabs button[aria-pressed="true"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
+.commit-tabs .tool-hide { margin-inline-start: auto; padding: 3px; }
 .workspace-sidebar .shelf-panel { flex: 1; min-height: 0; max-height: none; }
 .shelf-panel .daily-controls { align-items: flex-start; }
 .shelf-entries { max-height: 55%; overflow: auto; }
@@ -102,8 +134,23 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   display: flex; align-items: center; gap: 6px; width: 100%; height: var(--working-row-height);
   text-align: left; padding: 0 8px 0 18px; border: 0; border-radius: 0; background: transparent;
 }
-.index-actions { display: flex; gap: 4px; }
-.index-actions button { font-size: 11px; padding: 3px 6px; }
+.commit-toolbar { display: flex; flex: none; align-items: center; gap: 2px; padding: 3px 7px; border-bottom: 1px solid var(--border); }
+.commit-toolbar button { display: inline-grid; place-items: center; width: 25px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.commit-toolbar button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.commit-toolbar .resolve-tool { width: auto; padding-inline: 5px; font-size: 11px; }
+.tool-glyph { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.commit-changes-scroll { padding: 4px 4px 0; }
+.changes-root { display: flex; align-items: center; gap: 4px; min-height: var(--working-row-height); padding-inline: 4px; }
+.changes-toggle { border: 0; background: transparent; padding: 0 4px; color: var(--muted); }
+.changes-heading small { color: var(--muted); font-weight: 400; }
+.changes-chevron { flex: 0 0 8px; text-align: center; }
+.working-tree-row { border-radius: 4px; }
+.working-tree-row.selected-change { background: var(--select); }
+.working-tree-row .working-row.active { background: transparent; box-shadow: none; }
+.change-name { flex: 0 1 auto; }
+.change-parent { min-width: 0; font-size: 11px; }
+
 .working-preview { flex: 1; overflow: auto; margin: 0; padding: 12px 16px; font-size: 13px; tab-size: 4; }
 .preview-tabs {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: none;
@@ -112,7 +159,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .preview-tabs button { white-space: nowrap; background: transparent; border-color: transparent; }
 .preview-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--select); }
 .branch-scroll { flex: 1; overflow: auto; min-height: 0; padding: 4px; }
-.recent-repos { max-width: 130px; }
 .splitter { display: grid; place-items: center; flex: none; height: var(--chrome-gap); cursor: row-resize; touch-action: none; }
 .splitter::before { content: ""; width: 32px; height: 2px; border-radius: 2px; background: var(--border); }
 .splitter:hover, .splitter:focus-visible { background: var(--select); }
@@ -220,6 +266,19 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .file-status { width: 20px; flex: none; text-align: center; color: var(--accent); }
 .file-status[data-status="A"] { color: var(--good); }
 .file-status[data-status="D"] { color: var(--error); }
+/* Ignored/untracked files read as secondary information, conflicted files as a
+   warning: the four porcelain letters that appear next to a merge conflict
+   (U, plus AA/DD/AU/UA/DU/UD) share one colour. */
+.file-status[data-status="?"],
+.file-status[data-status="??"],
+.file-status[data-status="I"] { color: var(--muted); }
+.file-status[data-status="U"],
+.file-status[data-status="AA"],
+.file-status[data-status="DD"],
+.file-status[data-status="AU"],
+.file-status[data-status="UA"],
+.file-status[data-status="DU"],
+.file-status[data-status="UD"] { color: var(--conflict); font-weight: 700; }
 .notice { color: var(--muted); padding: 8px 12px; overflow-wrap: anywhere; }
 .notice.error { color: var(--error); }
 .top-error { border-bottom: 1px solid var(--border); }
@@ -273,9 +332,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 }
 .commit-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 8px; }
 .commit-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.files-root { display: flex; align-items: baseline; gap: 7px; min-width: 0; margin: 0; padding: 0 12px 4px; font-size: 12px; }
-.files-root strong { flex: none; }
-.files-root .muted { font-size: 11px; }
 .patch code > span { display: block; min-height: 1em; }
 .patch-added { color: var(--good); background: color-mix(in srgb, var(--good) 9%, transparent); }
 .patch-removed { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
@@ -408,7 +464,9 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   font-size: 12px;
   color: var(--text);
 }
-.settings-group label.settings-field input {
+.settings-group label.settings-field input,
+.settings-group label.settings-field textarea,
+.settings-group label.settings-field select {
   padding: 4px 6px;
   font: inherit;
   color: inherit;
@@ -462,23 +520,33 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   color: var(--muted);
 }
 
+/* Author line plus the two amend options; the identity stays visible so the
+   user can see what "Reset author" would replace. */
+.amend-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 11px;
+}
+.amend-meta .muted { flex: 1 1 100%; overflow-wrap: anywhere; }
+.amend-meta label { display: flex; align-items: center; gap: 4px; }
+
 @media (max-width: 950px) {
   .topbar {
     gap: 5px;
     padding-inline: 8px;
   }
-
-  .recent-repos {
-    max-width: 90px;
-  }
 }
 
-.git-menu {
+.git-menu,
+.roots-menu {
   position: relative;
   flex: none;
 }
 
-.git-menu summary {
+.git-menu summary,
+.roots-menu summary {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -489,7 +557,9 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 }
 
 .git-menu[open] summary,
-.git-menu summary:hover {
+.git-menu summary:hover,
+.roots-menu[open] summary,
+.roots-menu summary:hover {
   background: var(--select);
 }
 
@@ -508,11 +578,22 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   box-shadow: 0 6px 20px #0003;
 }
 
-.git-menu .command-menu {
+.git-menu .command-menu,
+.roots-menu .command-menu {
   position: absolute;
   inset-inline-start: 0;
-  top: calc(100% + 4px);
 }
+
+.roots-menu .command-menu { top: calc(100% + 4px); width: min(360px, calc(100vw - 68px)); }
+.roots-menu summary { max-width: min(270px, 28vw); }
+.roots-menu .repo-form > button { text-align: center; border: 1px solid var(--border); }
+.source-preview-tabs { flex-wrap: nowrap; overflow-x: auto; }
+.source-preview-tabs .editor-tab { flex: 0 0 auto; max-width: 220px; }
+.source-tools-anchor { display: flex; flex: none; margin-inline-start: auto; }
+.source-tools-anchor:empty { display: none; }
+.source-actions-trigger { font-size: 17px; line-height: 1; }
+.git-menu .command-menu { top: calc(100% + 4px); }
+.topbar-settings { display: grid; place-items: center; flex: none; }
 
 .context-actions {
   position: fixed;
@@ -561,47 +642,46 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   min-width: 0;
 }
 
-.index-actions {
+.commit-toolbar {
   flex-wrap: wrap;
 }
 
+.project-tools { gap: 2px; min-width: 0; }
+.project-tools strong { margin-inline-end: auto; }
+.project-tools .project-tool {
+  flex: none; min-width: 22px; padding: 1px 3px; border-color: transparent;
+  background: transparent; color: var(--muted);
+}
+.project-tools .project-tool:hover:not(:disabled), .project-tools .project-tool[aria-pressed="true"] {
+  background: var(--hover); color: var(--text);
+}
+.project-scroll { padding-top: 4px; }
 .repository-file-row {
-  position: absolute;
-  inset-inline: 0;
-  top: 0;
-  width: 100%;
-  height: var(--repo-row-height);
-  padding: 3px 10px;
-  border: 0;
-  border-radius: 0;
-  text-align: start;
-  background: var(--panel);
+  position: absolute; inset-inline: 3px; top: 0; width: calc(100% - 6px);
+  height: var(--project-row-height); padding: 0 7px;
+  display: flex; align-items: center; gap: 5px;
+  border: 0; border-radius: 4px; text-align: start; background: transparent;
 }
-
-.repository-file-row.active {
-  background: var(--select);
-  box-shadow: inset 2px 0 var(--accent);
-}
+.repository-file-row:hover { background: var(--hover); }
+.repository-file-row.active:not(.project-root) { background: var(--select); }
+.repository-file-row .project-chevron { flex: 0 0 10px; text-align: center; line-height: 1; }
+.project-node-icon { flex: 0 0 15px; width: 15px; height: 15px; color: var(--muted); }
+.project-type-icon { font-size: 9px; font-weight: 750; line-height: 15px; text-align: center; color: var(--accent); }
+.project-type-icon[data-type="vue"] { color: #32916e; }
+.project-type-icon[data-type="js"], .project-type-icon[data-type="json"] { color: #9a6a24; }
+.project-root { font-weight: 650; }
+.project-root-path { font-weight: 400; font-size: 11px; }
+.project-context-menu { width: 254px; }
+.project-context-menu kbd { margin-inline-start: auto; color: var(--muted); font: inherit; font-size: 11px; }
+.project-search-dialog { width: min(640px, calc(100vw - 32px)); }
+.project-search-results { max-height: 45vh; overflow: auto; display: grid; gap: 4px; margin-top: 8px; }
+.project-match { display: grid; gap: 2px; text-align: start; min-width: 0; }
 
 .workspace-editor {
   display: flex;
   flex: 1;
   min-height: 0;
   flex-direction: column;
-}
-
-.editor-tools,
-.editor-tools > div {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.editor-tools {
-  justify-content: space-between;
-  padding: 4px 7px;
-  border-bottom: 1px solid var(--border);
 }
 
 .editor-host {
@@ -616,8 +696,22 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 }
 
 .editor-host .cm-scroller {
-  font: 12px/1.55 Consolas, "Cascadia Code", monospace;
+  font: var(--editor-font-size, 12px)/1.55 Consolas, "Cascadia Code", monospace;
 }
+
+/* Inline Go to Line (Ctrl+G), modelled on IDEA's gutter prompt: one row that
+   replaces the toolbar focus instead of a modal dialog. */
+.go-to-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--border);
+  background: var(--header);
+}
+.go-to-line label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+.go-to-line input { width: 84px; }
+.go-to-line .notice { padding: 0; }
 
 .editor-host .cm-editor .cm-gutters,
 .editor-host .cm-editor .cm-panels {
@@ -810,7 +904,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .confirmation-dialog::backdrop { background: #0a14224d; }
 
 .settings-dialog {
-  width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+  width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
   padding: 0; color: var(--text); background: var(--popup);
   border: 1px solid var(--border); border-radius: var(--panel-radius);
   box-shadow: 0 16px 54px #0005;
@@ -823,9 +917,28 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .settings-dialog > header { justify-content: space-between; border-bottom: 1px solid var(--border); }
 .settings-dialog > header button { font-size: 16px; line-height: 1; }
 .settings-dialog > header h2 { margin: 0; font-size: 13px; }
+/* Settings sections switch as tabs in a left rail (IDEA-style), so the dialog
+   opens on one page instead of listing every option at once. */
+.settings-layout {
+  display: grid; grid-template-columns: 176px minmax(0, 1fr);
+  max-height: calc(100vh - 160px); min-height: 240px;
+}
+.settings-tabs {
+  display: flex; flex-direction: column; gap: 1px; padding: 10px 8px;
+  overflow: auto; background: var(--header); border-right: 1px solid var(--border);
+}
+.settings-tabs button {
+  padding: 6px 10px; text-align: start; color: var(--muted); background: transparent;
+  border: 1px solid transparent; border-radius: 6px;
+}
+.settings-tabs button:hover:not(.active) { color: var(--text); background: var(--hover); }
+.settings-tabs button.active {
+  color: var(--text); background: var(--select); border-color: var(--border);
+}
+.settings-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .settings-body {
-  display: grid; gap: 12px; padding: 12px;
-  overflow: auto;
+  display: grid; gap: 12px; padding: 14px 16px;
+  overflow: auto; align-content: start;
 }
 .confirmation-dialog > header, .dialog-actions {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
@@ -834,6 +947,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .confirmation-dialog > header { justify-content: space-between; border-bottom: 1px solid var(--border); }
 .confirmation-dialog > header button { font-size: 16px; line-height: 1; }
 .dialog-body { padding: 12px; overflow-wrap: anywhere; }
+.repository-dialog-form { display: grid; gap: 8px; }
+.repository-dialog-form p { margin: 0 0 4px; }
+.repository-dialog-path { display: flex; gap: 8px; }
+.repository-dialog-path input { flex: 1; min-width: 0; }
 .dialog-body > .daily-panel { max-height: none; padding: 0; border: 0; background: transparent; }
 .dialog-actions { justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid var(--border); }
 
@@ -844,3 +961,21 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .remote-definition .remote-fetch { display: flex; gap: 6px; }
 .remote-definition .remote-fetch input { margin: 0; }
 .remote-definition-dialog .dialog-actions button { min-width: 70px; }
+
+
+.file-git-dialog { width: min(740px, calc(100vw - 32px)); }
+.file-revision-content { max-height: 55vh; overflow: auto; margin-bottom: 0; font-family: Consolas, monospace; }
+.cm-git-blame { border-inline-end: 1px solid var(--border); }
+.cm-git-blame .blame-annotation {
+  display: grid; grid-template-columns: 66px minmax(0, 100px); gap: 8px;
+  width: 190px; padding: 0 8px; border: 0; border-radius: 0;
+  text-align: start; color: var(--muted); font: inherit; line-height: inherit;
+}
+.cm-git-blame .blame-annotation[data-group="0"] { background: color-mix(in srgb, var(--accent) 15%, var(--panel)); }
+.cm-git-blame .blame-annotation[data-group="1"] { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.cm-git-blame .blame-annotation[data-group="2"] { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.cm-git-blame button.blame-annotation:hover { color: var(--text); text-decoration: underline; }
+.blame-date { white-space: nowrap; }
+
+.file-history-tools { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.file-history-tools > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }

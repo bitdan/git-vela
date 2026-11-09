@@ -10,7 +10,7 @@ import { expandAncestors, fileTreeRows } from './fileTree'
 import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: []; openDiff: [file: Change]; maximize: []; edit: [path: string] }>()
+const emit = defineEmits<{ select: []; openDiff: [file: Change]; maximize: []; edit: [path: string]; gitActions: [path: string, anchor: ContextAnchor] }>()
 const list = useTemplateRef<HTMLElement>('list')
 const preferences = usePreferences()
 const { fileTree: tree } = storeToRefs(preferences)
@@ -102,6 +102,7 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
                   :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 8 + row.depth * 12 + 'px' }"
                   :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
                   @click="select(row.file)" @dblclick="openDiff(row.file)"
+                  @keydown.f4.exact.prevent.stop="emit('edit', row.file.path)"
                   @contextmenu.prevent="showActions(row.file, $event)" @keydown.shift.f10.prevent="showActions(row.file, $event)">
             <code class="file-status" :data-status="row.file.status">{{ row.file.status }}</code>
             <span class="ellipsis">{{ row.file.oldPath ? row.file.oldPath + ' → ' : '' }}{{ row.name }}</span>
@@ -119,7 +120,8 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
       <button @click="fileAction('diff')">Show Diff</button>
       <button @click="fileAction('maximize')">Maximize Diff</button>
       <hr />
-      <button @click="fileAction('edit')">Edit Working File</button>
+      <button @click="fileAction('edit')" aria-keyshortcuts="F4">Jump to Source</button>
+      <button @click="emit('gitActions', menu.file.path, menu.anchor); menu = undefined">More Git Actions…</button>
     </ContextActions>
   </section>
 </template>

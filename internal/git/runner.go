@@ -9,10 +9,48 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 var errLimit = errors.New("Git output exceeded the preview limit")
+
+/** The Git binary can be overridden from Settings (Git → Executable). The
+ *  process-wide value defaults to PATH lookup and is validated before use. */
+var (
+	executableMu    sync.RWMutex
+	gitExecutable   = "git"
+)
+
+func executable() string {
+	executableMu.RLock()
+	defer executableMu.RUnlock()
+	return gitExecutable
+}
+
+// ConfigureExecutable validates and applies a Git binary path. An empty path
+// restores the PATH lookup; a failing binary keeps the previous value.
+func ConfigureExecutable(ctx context.Context, path string) (string, error) {
+	candidate := strings.TrimSpace(path)
+	if candidate == "" {
+		candidate = "git"
+	}
+	if strings.ContainsAny(candidate, "\x00\n\r") {
+		return "", errors.New("invalid Git executable path")
+	}
+	executableMu.Lock()
+	previous := gitExecutable
+	gitExecutable = candidate
+	executableMu.Unlock()
+	version, err := Version(ctx)
+	if err != nil {
+		executableMu.Lock()
+		gitExecutable = previous
+		executableMu.Unlock()
+		return "", errors.New("could not run the selected Git executable: " + candidate)
+	}
+	return version, nil
+}
 
 type limitedBuffer struct {
 	buffer   bytes.Buffer
@@ -39,7 +77,7 @@ func runWithTimeout(ctx context.Context, timeout time.Duration, dir string, inpu
 func runWithEnvironment(ctx context.Context, timeout time.Duration, dir string, input []byte, limit int, environment []string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "--no-replace-objects"}, args...)...)
+	cmd := exec.CommandContext(ctx, executable(), append([]string{"--no-pager", "--no-replace-objects"}, args...)...)
 	configureProcess(cmd)
 	cmd.Dir = dir
 	cmd.WaitDelay = 2 * time.Second

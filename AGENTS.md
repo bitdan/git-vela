@@ -7,6 +7,8 @@
 - When a Go binding or event changes, regenerate the TypeScript interfaces with `wails3 generate bindings -ts -i` from the repository root and review the generated diff. Keep the contract and its generated output together.
 - Use Rebased 1.1.23 as the desktop UI and interaction reference. Keep the Windows executable and version-resource display name `git-vela`.
 
+- Use IDEA as the reference for Git workflows and familiar code-editor interactions for source editing. File right-click menus should show Git actions. Keep editing commands in keyboard shortcuts or the editor actions menu.
+
 ## Confirmation and Git safety
 
 - Put every second-step confirmation in a dedicated modal dialog. Use `ConfirmationDialog.vue` for GitVela confirmations, including push and publication, deletion, discarding edits, and confirming or aborting history operations. Keep the main workspace usable after cancellation.

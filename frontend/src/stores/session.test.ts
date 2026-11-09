@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { clearSession, normalizeSession, readSession, saveSession, sessionKey, type StorageLike } from './session'
+import {
+  clearSession, clearSessionFor, normalizeSession, readSession, readSessionFor,
+  saveSession, sessionKey, sessionsKey, type StorageLike,
+} from './session'
 
 function memory(initial: Record<string, string> = {}): StorageLike & { data: Record<string, string> } {
   const data = { ...initial }
@@ -63,5 +66,53 @@ describe('session storage', () => {
     const storage = memory({ [sessionKey]: JSON.stringify({ path: 'repo' }) })
     clearSession(storage)
     expect(readSession(storage)).toBeUndefined()
+  })
+})
+
+describe('per-root sessions', () => {
+  it('keeps one session per repository and remembers the last one', () => {
+    const storage = memory()
+    saveSession({ path: 'F:/work/a', hash, view: 'commit' }, storage)
+    saveSession({ path: 'F:/work/b', sidebar: 'files', view: 'working' }, storage)
+    expect(readSession(storage)).toEqual({ path: 'F:/work/b', sidebar: 'files', view: 'working' })
+    expect(readSessionFor('F:/work/a', storage)).toEqual({ path: 'F:/work/a', hash, view: 'commit' })
+    expect(readSessionFor('F:/work/missing', storage)).toBeUndefined()
+  })
+
+  it('migrates the single-session layout and drops it afterwards', () => {
+    const storage = memory({ [sessionKey]: JSON.stringify({ path: 'F:/work/a', hash, view: 'commit' }) })
+    expect(readSessionFor('F:/work/a', storage)).toEqual({ path: 'F:/work/a', hash, view: 'commit' })
+    saveSession({ path: 'F:/work/b' }, storage)
+    expect(storage.data[sessionKey]).toBeUndefined()
+    expect(readSession(storage)).toEqual({ path: 'F:/work/b' })
+    expect(readSessionFor('F:/work/a', storage)).toEqual({ path: 'F:/work/a', hash, view: 'commit' })
+  })
+
+  it('ignores a corrupt index without losing the ability to save', () => {
+    const storage = memory({ [sessionsKey]: '{"byPath":{"repo":{"path":"other"}}' })
+    expect(readSession(storage)).toBeUndefined()
+    saveSession({ path: 'F:/work/a' }, storage)
+    expect(readSession(storage)).toEqual({ path: 'F:/work/a' })
+  })
+
+  it('drops entries whose key does not match their path', () => {
+    const storage = memory({ [sessionsKey]: JSON.stringify({ last: 'repo', byPath: { repo: { path: 'other' } } }) })
+    expect(readSession(storage)).toBeUndefined()
+  })
+
+  it('forgets a single root and re-points the last session', () => {
+    const storage = memory()
+    saveSession({ path: 'F:/work/a' }, storage)
+    saveSession({ path: 'F:/work/b' }, storage)
+    clearSessionFor('F:/work/b', storage)
+    expect(readSessionFor('F:/work/b', storage)).toBeUndefined()
+    expect(readSession(storage)).toEqual({ path: 'F:/work/a' })
+  })
+
+  it('caps the number of stored roots', () => {
+    const storage = memory()
+    for (let index = 0; index < 15; index++) saveSession({ path: 'F:/work/' + index }, storage)
+    expect(readSessionFor('F:/work/0', storage)).toBeUndefined()
+    expect(readSessionFor('F:/work/14', storage)).toEqual({ path: 'F:/work/14' })
   })
 })

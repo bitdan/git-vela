@@ -222,16 +222,24 @@ func (*RepositoryService) PrepareAmend(ctx context.Context, path string) (git.Am
 	return discardCancelled(git.PrepareAmend(ctx, path))
 }
 
-func (s *RepositoryService) AmendIndex(ctx context.Context, path, expectedHead, expectedRef, message string) error {
-	return s.write(ctx, func() error { return git.AmendIndex(ctx, path, expectedHead, expectedRef, message) })
+func (s *RepositoryService) AmendIndex(ctx context.Context, path, expectedHead, expectedRef, message string, options git.AmendOptions) error {
+	return s.write(ctx, func() error { return git.AmendIndex(ctx, path, expectedHead, expectedRef, message, options) })
+}
+
+func (*RepositoryService) CommitTemplate(ctx context.Context, path string) (string, error) {
+	return discardCancelled(git.CommitTemplate(ctx, path))
 }
 
 func (*RepositoryService) Stashes(ctx context.Context, path string) ([]git.StashEntry, error) {
 	return discardCancelled(git.Stashes(ctx, path))
 }
 
-func (s *RepositoryService) SaveStash(ctx context.Context, path, message string, untracked bool) error {
-	return s.write(ctx, func() error { return git.SaveStash(ctx, path, message, untracked) })
+func (s *RepositoryService) SaveStash(ctx context.Context, path, message string, untracked bool, paths []string) error {
+	return s.write(ctx, func() error { return git.SaveStash(ctx, path, message, untracked, paths) })
+}
+
+func (s *RepositoryService) RenameStash(ctx context.Context, path string, entry git.StashEntry, message string) error {
+	return s.write(ctx, func() error { return git.RenameStash(ctx, path, entry, message) })
 }
 
 func (s *RepositoryService) UpdateStash(ctx context.Context, path, action, selector, hash string, restoreIndex bool) error {
@@ -248,6 +256,40 @@ func (*RepositoryService) CheckRepositoryPath(path string) git.RepositoryAvailab
 
 func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string, options git.FetchOptions) error {
 	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote, options) })
+}
+
+func (s *RepositoryService) FetchAllRemotes(ctx context.Context, path string, options git.FetchOptions) error {
+	return s.write(ctx, func() error { return git.FetchAllRemotes(ctx, path, options) })
+}
+
+func (s *RepositoryService) BisectState(ctx context.Context, path string) (git.BisectState, error) {
+	return discardCancelled(git.ReadBisectState(ctx, path))
+}
+
+func (s *RepositoryService) StartBisect(ctx context.Context, path, bad, good string) error {
+	return s.write(ctx, func() error { return git.StartBisect(ctx, path, bad, good) })
+}
+
+func (s *RepositoryService) MarkBisect(ctx context.Context, path, verdict string) error {
+	return s.write(ctx, func() error { return git.MarkBisect(ctx, path, verdict) })
+}
+
+func (s *RepositoryService) ResetBisect(ctx context.Context, path string) error {
+	return s.write(ctx, func() error { return git.ResetBisect(ctx, path) })
+}
+
+func (s *RepositoryService) RunGC(ctx context.Context, path string) error {
+	return s.write(ctx, func() error { return git.RunGC(ctx, path) })
+}
+
+func (*RepositoryService) UnreachableCommits(ctx context.Context, path string) (int, error) {
+	return discardCancelled(git.UnreachableCommits(ctx, path))
+}
+
+// ConfigureGit switches the Git binary for the whole process. The version of
+// the selected binary is returned so the settings form can show it.
+func (*RepositoryService) ConfigureGit(ctx context.Context, path string) (string, error) {
+	return git.ConfigureExecutable(ctx, path)
 }
 
 func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string, options git.PullOptions) error {
@@ -392,8 +434,8 @@ func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, act
 	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, targets, expected, mode) })
 }
 
-func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, kind string, abort bool) error {
-	return s.write(ctx, func() error { return git.FinishHistoryOperation(ctx, path, kind, abort) })
+func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, revision string, abort bool) error {
+	return s.write(ctx, func() error { return git.FinishHistoryOperation(ctx, path, revision, abort) })
 }
 
 func (s *RepositoryService) ResolveConflict(ctx context.Context, path, file string) error {
@@ -426,4 +468,46 @@ func (s *RepositoryService) RunInteractiveRebase(ctx context.Context, path, base
 
 func (*RepositoryService) SubmodulePath(ctx context.Context, path, file string) (string, error) {
 	return discardCancelled(git.SubmodulePath(ctx, path, file))
+}
+func (*RepositoryService) ReadFileRevision(ctx context.Context, repo, file, revision string, compareWorking bool) (git.FilePreview, error) {
+	return discardCancelled(git.ReadFileRevision(ctx, repo, file, revision, compareWorking))
+}
+
+func (*RepositoryService) FileSelectionHistory(ctx context.Context, repo, file string, start, end int) (git.FileHistoryPage, error) {
+	return discardCancelled(git.FileSelectionHistory(ctx, repo, file, start, end))
+}
+
+func (*RepositoryService) PrepareFileMutation(ctx context.Context, repo, file, action string) (string, error) {
+	return discardCancelled(git.PrepareFileMutation(ctx, repo, file, action))
+}
+
+func (s *RepositoryService) ApplyFileMutation(ctx context.Context, repo, file, action, expected, message string) error {
+	return s.write(ctx, func() error { return git.ApplyFileMutation(ctx, repo, file, action, expected, message) })
+}
+
+func (*RepositoryService) ProjectEntries(ctx context.Context, repo, folder string) ([]git.ProjectEntry, error) {
+	return discardCancelled(git.ProjectEntries(repo, folder))
+}
+
+func (*RepositoryService) SearchProject(ctx context.Context, repo, folder, query string) ([]git.ProjectMatch, error) {
+	return discardCancelled(git.SearchProject(ctx, repo, folder, query))
+}
+
+func (s *RepositoryService) ChangeProjectEntry(ctx context.Context, repo, action, source, revision, folder, name string) error {
+	return s.write(ctx, func() error {
+		return git.ChangeProjectEntry(ctx, repo, action, source, revision, folder, name)
+	})
+}
+
+func (*RepositoryService) ProjectLocation(repo, path string) (string, error) {
+	absolute, _, err := git.ProjectLocation(repo, path)
+	return absolute, err
+}
+
+func (*RepositoryService) OpenProjectLocation(repo, path, action string) error {
+	absolute, folder, err := git.ProjectLocation(repo, path)
+	if err != nil {
+		return err
+	}
+	return openProjectLocation(absolute, folder, action)
 }

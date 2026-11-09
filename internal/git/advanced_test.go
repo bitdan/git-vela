@@ -80,7 +80,7 @@ func TestCherryPickConflictCanResolveContinueAndRevert(t *testing.T) {
 	if err != nil || state.Kind != "cherry-pick" || len(state.Conflicts) != 1 || state.Conflicts[0] != "file.txt" {
 		t.Fatalf("operation state: %+v, %v", state, err)
 	}
-	if err := FinishHistoryOperation(ctx, dir, "cherry-pick", false); err == nil {
+	if err := finishCurrentOperation(t, ctx, dir, "cherry-pick", false); err == nil {
 		t.Fatal("continued with unmerged files")
 	}
 	versions, err := ConflictVersions(ctx, dir, "file.txt")
@@ -92,7 +92,7 @@ func TestCherryPickConflictCanResolveContinueAndRevert(t *testing.T) {
 	if err := ResolveConflict(ctx, dir, "file.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if err := FinishHistoryOperation(ctx, dir, "cherry-pick", false); err != nil {
+	if err := finishCurrentOperation(t, ctx, dir, "cherry-pick", false); err != nil {
 		t.Fatal(err)
 	}
 	newHead, err := ReadHead(ctx, dir)
@@ -318,7 +318,7 @@ func TestInteractiveRebaseEditStopsForAmend(t *testing.T) {
 	write(t, dir, "two.txt", "two amended")
 	command(t, dir, "add", "--", "two.txt")
 	command(t, dir, "commit", "--amend", "--no-edit")
-	if err := FinishHistoryOperation(ctx, dir, "rebase", false); err != nil {
+	if err := finishCurrentOperation(t, ctx, dir, "rebase", false); err != nil {
 		t.Fatal(err)
 	}
 	state, err = ReadOperationState(ctx, dir)
@@ -435,7 +435,22 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	if err != nil || state.Kind != "merge" || len(state.Conflicts) != 1 {
 		t.Fatalf("merge state: %+v, %v", state, err)
 	}
-	if err := FinishHistoryOperation(ctx, dir, "merge", true); err != nil {
+	command(t, dir, "merge", "--abort")
+	command(t, dir, "switch", "side")
+	write(t, dir, "file.txt", "different side\n")
+	commit(t, dir, "different side")
+	side, err = ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command(t, dir, "switch", "main")
+	if err := ApplyHistoryOperation(ctx, dir, "merge", []string{side.Hash}, main, ""); err == nil {
+		t.Fatal("expected a replacement merge conflict")
+	}
+	if err := FinishHistoryOperation(ctx, dir, state.Revision, true); err == nil {
+		t.Fatal("accepted a confirmation for a previous merge")
+	}
+	if err := finishCurrentOperation(t, ctx, dir, "merge", true); err != nil {
 		t.Fatal(err)
 	}
 	if got := command(t, dir, "status", "--porcelain"); got != "" {
@@ -559,7 +574,7 @@ func TestCherryPickMultipleContinuesAfterAConflict(t *testing.T) {
 	}
 	// Continuing must replay the remaining commit of the sequence, not just
 	// finish the conflicted one.
-	if err := FinishHistoryOperation(ctx, dir, "cherry-pick", false); err != nil {
+	if err := finishCurrentOperation(t, ctx, dir, "cherry-pick", false); err != nil {
 		t.Fatal(err)
 	}
 	subject := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%s"))
@@ -572,4 +587,13 @@ func TestCherryPickMultipleContinuesAfterAConflict(t *testing.T) {
 	if state, err := ReadOperationState(ctx, dir); err != nil || state.Kind != "" {
 		t.Fatalf("sequencer left running: %+v, %v", state, err)
 	}
+}
+
+func finishCurrentOperation(t *testing.T, ctx context.Context, dir, kind string, abort bool) error {
+	t.Helper()
+	state, err := ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != kind {
+		t.Fatalf("operation state: %+v, %v", state, err)
+	}
+	return FinishHistoryOperation(ctx, dir, state.Revision, abort)
 }

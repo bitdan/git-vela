@@ -106,6 +106,17 @@ async function gitMenuAction(label) {
   await clickButton('.git-menu', label)
 }
 
+/** Settings groups live behind tabs, so a test must open the page it needs. */
+async function settingsTab(label) {
+  await until(() => evaluate(`(() => {
+    const button = [...document.querySelectorAll('.settings-tabs [role=tab]')]
+      .find(item => item.innerText === ${JSON.stringify(label)})
+    if (!button) return false
+    if (button.getAttribute('aria-selected') !== 'true') button.click()
+    return button.getAttribute('aria-selected') === 'true'
+  })()`), 'settings tab ' + label)
+}
+
 async function branchMenuAction(branch, label) {
   const selector = '[title="refs/heads/' + branch + '"]'
   await until(() => evaluate(`(() => {
@@ -375,7 +386,7 @@ try {
     await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!!document.querySelector('.commit-row canvas')"), 'return to history graph')
     // Settings opens as a modal dialog; toggles apply live.
-    await click('.activity-bar button[aria-label="Settings"]')
+    await click('.topbar button[aria-label="Settings"]')
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog opens')
     await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Dark theme')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.theme === 'dark'"), 'dark theme from Settings')
@@ -517,7 +528,7 @@ try {
       // stayed in another state or the whole page went unresponsive.
       let last = 'unavailable'
       return until(async () => {
-        last = await evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText ?? 'missing'`)
+        last = await evaluate(`document.querySelector('.statusbar .editor-meta [role=status]')?.innerText ?? 'missing'`)
         return typeof last === 'string' && last.includes(text)
       }, 'editor status ' + JSON.stringify(text))
         .catch(error => { throw new Error(error.message + ' (last observed: ' + last + ')') })
@@ -529,12 +540,24 @@ try {
     }
     const selectFile = async (path) => {
       await inputValue('[aria-label="Filter repository files"]', path)
-      await clickButton('.repository-files .file-scroll', path)
+      await until(() => evaluate(`(() => {
+        const file = [...document.querySelectorAll('.repository-files .repository-file-row')]
+          .find(row => row.title === ${JSON.stringify(path)})
+        if (!file) return false
+        file.click()
+        return true
+      })()`), 'repository file ' + path)
     }
 
     await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile(file)
     await editorStatus('Saved')
+    await until(() => evaluate(`(() => {
+      const trigger = document.querySelector('.source-actions-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`), 'editor actions trigger')
     await clickButton('.editor-tools', 'Find / Replace')
     await until(() => evaluate("!!document.querySelector('.editor-host .cm-search')"), 'find and replace panel')
     await keyboard('Escape', 'Escape', 27, 0)
@@ -572,17 +595,32 @@ try {
     await enterText('unsaved draft')
     await editorStatus('Unsaved changes')
     await writeFile(target, 'external update')
+    await until(() => evaluate(`(() => {
+      const trigger = document.querySelector('.source-actions-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`), 'editor actions trigger')
     await clickButton('.editor-tools', 'Save')
     await until(() => evaluate("document.querySelector('.preview-panel [role=alert]')?.innerText.includes('changed on disk')"), 'external change blocked save')
     assert.equal(await readFile(target, 'utf8'), 'external update')
 
     await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile('README.md')
+    await until(() => evaluate("document.querySelector('.source-preview-tabs .editor-tab.active')?.title === 'README.md'"), 'second source tab opens')
+    await evaluate("document.querySelector('.editor-host .cm-content[aria-label=\"Edit README.md\"]').focus()")
+    await keyboard('a', 'KeyA', 65, 2)
+    await cdp('Input.insertText', { text: 'second unsaved draft' })
+    await evaluate("document.querySelector('.source-preview-tabs [aria-label=\"Close greetservice.go\"]').click()")
+    await until(() => evaluate("document.querySelector('dialog[open] li')?.innerText === 'greetservice.go'"), 'confirmation names the inactive tab')
     await clickButton('[aria-label="Unsaved file changes"]', 'Keep editing')
-    assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'unsaved draft')
-    await clickButton('.editor-tools', 'Close')
+    assert.ok(await evaluate("!!document.querySelector('.source-preview-tabs [aria-label=\"Close greetservice.go\"]')"))
+    await evaluate("document.querySelector('.source-preview-tabs [aria-label=\"Close greetservice.go\"]').click()")
     await clickButton('[aria-label="Unsaved file changes"]', 'Discard changes')
-    await until(() => evaluate("!document.querySelector('.workspace-editor')"), 'editor closed after discard confirmation')
+    assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'second unsaved draft')
+    await evaluate("document.querySelector('.source-preview-tabs .editor-tab.active .editor-close').click()")
+    await clickButton('[aria-label="Unsaved file changes"]', 'Discard changes')
+    await until(() => evaluate("!document.querySelector('.workspace-editor')"), 'both editor tabs closed after confirmation')
     git('restore', '--source=HEAD', '--staged', '--worktree', '--', file)
     assert.equal(await readFile(target, 'utf8'), original)
   }
@@ -665,11 +703,18 @@ try {
     await text('.conflict-grid', 'Theirs (stage 3)')
     await until(() => evaluate("!!document.querySelector('.editor-host .cm-content')"), 'resolution editor')
     await writeFile(target, 'resolved\n')
+    await until(() => evaluate(`(() => {
+      const trigger = document.querySelector('.source-actions-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`), 'editor actions trigger')
     await clickButton('.editor-tools', 'Reload')
     await until(() => evaluate("document.querySelector('.editor-host .cm-content')?.textContent.includes('resolved')"), 'resolution reloaded')
     await clickButton('.conflict-panel', 'Mark resolved')
     await text('.advanced-panel', '0 unmerged')
-    await clickButton('.advanced-panel', 'Continue')
+    await clickButton('.lower-console', 'Continue')
+    await clickButton('dialog[aria-label="Confirm continue"]', 'Confirm continue')
     await text('.advanced-panel [role=status]', 'Git operation continued.')
     assert.equal(git('show', 'HEAD:m3.txt'), 'resolved')
 
@@ -680,8 +725,8 @@ try {
     await clickButton('.repository-files .file-scroll', 'm3.txt')
     await clickButton('.preview-tabs', 'File History')
     await text('.file-history-row', 'M3 side')
-    await clickButton('.file-inspection', 'Blame')
-    await text('.blame-row', 'Uncommitted')
+    await clickButton('.file-inspection', 'Annotate with Git Blame')
+    await text('.cm-git-blame', 'Uncommitted')
     await clickButton('.file-inspection', 'Close')
 
     await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
@@ -793,9 +838,10 @@ try {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.commit-row')).height"), '27px')
 
     // Restore the comfortable layout, then rebind a shortcut through Settings.
-    await evaluate("document.querySelector('.activity-bar button[aria-label=\"Settings\"]').click()")
+    await evaluate("document.querySelector('.topbar button[aria-label=\"Settings\"]').click()")
     await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.density === 'comfortable'"), 'comfortable row density')
+    await settingsTab('Keymap')
     await until(() => evaluate("document.querySelectorAll('.shortcut-group button').length >= 16"), 'editable shortcut list')
     await evaluate(`(() => {
       const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
@@ -880,8 +926,9 @@ try {
     })()`)
     // Bind every chord in one settings session, then close the dialog: the
     // modal traps focus, so the commit field interactions below need it gone.
-    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await evaluate("document.querySelector('.topbar button[aria-label=Settings]').click()")
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened for shortcuts')
+    await settingsTab('Keymap')
     await bindCommit('A', 'a')
     await bindCommit('Enter', 'Enter')
     await bindCommit('Shift+A', 'A', { shiftKey: true })
@@ -913,8 +960,9 @@ try {
     assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), file)
     assert.equal(git('diff', '--cached', '--name-only'), '')
     // Reopen Settings to restore the default shortcuts.
-    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await evaluate("document.querySelector('.topbar button[aria-label=Settings]').click()")
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened')
+    await settingsTab('Keymap')
     await clickButton('.shortcut-settings', 'Reset to defaults')
     await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
     await evaluate("document.querySelector('.settings-dialog .dialog-actions button').click()")
@@ -928,12 +976,15 @@ try {
         sidebar: 'changes', view, historyVisible: false, range, smokeMarker: true,
       }
       const writes = []
+      // Sessions are stored per workspace root; the injected legacy key is
+      // migrated into that map by the next save.
       const monitor = ({ data }) => {
         const { method, params } = JSON.parse(data)
-        if (method === 'DOMStorage.domStorageItemUpdated' && params.key === 'gitvela.session') {
-          const saved = JSON.parse(params.newValue)
-          if (!saved.smokeMarker) writes.push(saved)
-        }
+        if (!/^DOMStorage\.domStorageItem(Updated|Added)$/.test(method)) return
+        if (params.key !== 'gitvela.sessions' && params.key !== 'gitvela.session') return
+        const value = JSON.parse(params.newValue ?? 'null')
+        const saved = params.key === 'gitvela.sessions' ? value?.byPath?.[session.path] : value
+        if (saved && !saved.smokeMarker) writes.push(saved)
       }
       socket.addEventListener('message', monitor)
       try {
@@ -972,7 +1023,7 @@ try {
     })
 
     // Session state is persisted after opening a repository.
-    await until(() => evaluate("(() => { const saved = JSON.parse(localStorage.getItem('gitvela.session') || 'null'); return !!saved && typeof saved.path === 'string' && saved.path.length > 0 })()"), 'saved session')
+    await until(() => evaluate("(() => { const index = JSON.parse(localStorage.getItem('gitvela.sessions') || 'null'); const saved = index?.byPath?.[index.last]; return !!saved && typeof saved.path === 'string' && saved.path.length > 0 && localStorage.getItem('gitvela.session') === null })()"), 'saved session')
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
   if (!testM4) assert.deepEqual(await evaluate("window.smokeRejections"), [])

@@ -20,11 +20,18 @@ function place() {
 }
 
 function outside(event: PointerEvent) {
-  if (event.target instanceof Node && !panel.value?.contains(event.target) && !props.anchor.trigger.contains(event.target)) emit('close')
+  if (!(event.target instanceof Node) || panel.value?.contains(event.target)) return
+  if (props.anchor.toggle && props.anchor.trigger.contains(event.target)) return
+  dismiss()
 }
 
-function close() {
-  emit('close')
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+  if (event.target instanceof Element && event.target.closest('dialog[open]') &&
+      !panel.value?.contains(event.target)) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  dismiss()
   props.anchor.trigger.focus({ preventScroll: true })
 }
 
@@ -41,19 +48,23 @@ function dismiss() { emit('close') }
 
 onMounted(() => {
   place()
-  document.addEventListener('pointerdown', outside)
+  document.addEventListener('pointerdown', outside, true)
+  document.addEventListener('keydown', onKeydown, true)
   window.addEventListener('resize', dismiss)
+  window.addEventListener('blur', dismiss)
 })
 onUnmounted(() => {
-  document.removeEventListener('pointerdown', outside)
+  document.removeEventListener('pointerdown', outside, true)
+  document.removeEventListener('keydown', onKeydown, true)
   window.removeEventListener('resize', dismiss)
+  window.removeEventListener('blur', dismiss)
 })
 watch(() => props.anchor, place, { flush: 'post' })
 </script>
 
 <template>
   <div ref="panel" class="command-menu context-actions" :style="position" role="group" :aria-label="label"
-       @keydown.esc.stop.prevent="close" @keydown.up.stop="move($event, -1)"
+       @keydown.up.stop="move($event, -1)"
        @keydown.down.stop="move($event, 1)">
     <slot />
   </div>

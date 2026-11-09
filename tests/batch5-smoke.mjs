@@ -424,7 +424,7 @@ try {
   })()`), 'the selected commit to be saved before switching roots')
 
   await openRepository(other)
-  await until(() => evaluate("document.querySelector('.sidebar-project strong')?.innerText.includes('other')"),
+  await until(() => evaluate("document.querySelector('.roots-menu summary')?.innerText.includes('other')"),
     'the second repository to open')
 
   const roots = await until(() => evaluate(`(() => {
@@ -456,7 +456,7 @@ try {
     console.log('menu open:', await evaluate("document.querySelector('.roots-menu')?.open"))
     throw error
   })
-  await until(() => evaluate("document.querySelector('.sidebar-project strong')?.innerText.includes('repo')"),
+  await until(() => evaluate("document.querySelector('.roots-menu summary')?.innerText.includes('repo')"),
     'the first repository to be active again')
   await until(() => evaluate(`(() => {
     const row = [...document.querySelectorAll('.commit-row.active')]

@@ -2520,23 +2520,25 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <ActivityBar v-show="!diffExpanded" :active="activityActive" :history-visible="historyVisible" :busy="indexBusy"
                      @select="onActivitySelect" />
         <aside v-show="!diffExpanded && !sidebarHidden" class="panel workspace-sidebar" aria-label="Repository workspace">
-          <div v-if="sidebar !== 'files'" class="tool-title">
-            <strong>{{ sidebar === 'changes' ? 'Commit' : 'Worktrees' }}</strong>
+          <div v-if="sidebar === 'worktrees'" class="tool-title">
+            <strong>Worktrees</strong>
             <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
                     @click="sidebarHidden = true">
               <AppIcon name="close" />
             </button>
           </div>
-          <div v-if="sidebar !== 'files'" class="sidebar-project">
+          <div v-if="sidebar === 'worktrees'" class="sidebar-project">
             <span class="eyebrow">Repository</span>
             <strong class="ellipsis" :title="store.repository.path">{{ store.repository.name }}</strong>
           </div>
           <nav v-show="sidebar === 'changes'" class="commit-tabs" aria-label="Commit workspace">
             <button :aria-pressed="commitTab === 'commit'" :disabled="indexBusy" @click="commitTab = 'commit'">Commit</button>
             <button :aria-pressed="commitTab === 'shelf'" :disabled="indexBusy" @click="openShelf">Shelf</button>
+            <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
+                    @click="sidebarHidden = true"><AppIcon name="close" /></button>
           </nav>
           <RepositoryFiles v-show="sidebar === 'files'" :key="store.repository.path" :path="store.repository.path"
-                           :active="sidebar === 'files' && !diffExpanded && !sidebarHidden" :selected="editorPath"
+                           :active="sidebar === 'files' && !diffExpanded && !sidebarHidden" :selected="previewPath"
                            :dirty-paths="editorTabs.filter(isTabDirty).map(tab => tab.path)" :blocked="store.opening"
                            v-model:busy="indexBusy" @open="openEditorFile" @git-menu="openSourceGitActions" @changed="refreshAfterProjectChange">
             <template #tools>
@@ -2544,14 +2546,14 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                       @click="sidebarHidden = true"><AppIcon name="close" /></button>
             </template>
           </RepositoryFiles>
-          <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes' && commitTab === 'commit'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
+          <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes' && commitTab === 'commit'" v-model:message="commitMessage" :files="workingFiles" :active="workingSelection?.path"
                           :error="indexError || workingError" :loading="workingLoading"
-                          :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
+                          :can-stage="currentWorkingFile?.canStage" :can-unstage="currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy || store.opening || restoringSession" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
                           :amend-author="amendTarget?.author" :amend-author-email="amendTarget?.authorEmail" :amend-date="amendTarget?.authorDate"
                           v-model:amend-reset-author="amendOptions.resetAuthor" v-model:amend-sign-off="amendOptions.signOff"
                           :history="commitHistory"
-                          @select="selectWorking" @edit="openEditorFile" @git-actions="openSourceGitActions" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
+                          @select="selectWorking" @edit="openEditorFile" @git-actions="openSourceGitActions" @refresh="loadWorking" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
                           :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" @stash="stashWorkingFiles" />
           <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"

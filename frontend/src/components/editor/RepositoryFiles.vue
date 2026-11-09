@@ -130,10 +130,15 @@ async function reveal() {
     openFolders.value.add(folder)
     await load(folder, false)
   }
-  highlighted.value = file
+  if (file !== props.selected || !props.active) return
   await nextTick()
   const index = rows.value.findIndex(row => row.path === file)
-  if (index >= 0) virtual.value.scrollToIndex(index, { align: 'auto' })
+  if (index < 0) {
+    error.value = 'The current file is not present in this working tree.'
+    return
+  }
+  highlighted.value = file
+  virtual.value.scrollToIndex(index, { align: 'auto' })
 }
 
 function filterFiles() {
@@ -297,7 +302,12 @@ function rowKey(row: TreeRow, event: KeyboardEvent) {
       <strong>Project</strong>
       <button class="project-tool" aria-label="New project item" title="New file or directory"
               @click="showMenu(selectedEntry, $event)">＋</button>
-      <button class="project-tool" aria-label="Reveal active file" title="Reveal active file" :disabled="!selected" @click="reveal">⌖</button>
+      <button class="project-tool" aria-label="Locate current file" title="Locate current file in Project"
+              :disabled="!selected" @click="reveal">
+        <svg class="tool-glyph" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="4.5" /><path d="M8 1v4m0 6v4M1 8h4m6 0h4" />
+        </svg>
+      </button>
       <button class="project-tool" aria-label="Collapse project tree" title="Collapse project tree"
               @click="openFolders = new Set(['.']); query = ''">⌃</button>
       <button class="project-tool" aria-label="Filter project files" title="Filter project files"

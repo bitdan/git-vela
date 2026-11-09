@@ -253,6 +253,21 @@ try {
     input.value = ${JSON.stringify(value)}
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
+  const openTreeMenu = row => evaluate(`${row}.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true,
+  }))`)
+  const projectMenu = "document.querySelector('[aria-label=\"Project file actions\"]')"
+  await openTreeMenu(rootRow)
+  await until(() => evaluate('!!' + projectMenu), 'the project context menu')
+  await evaluate('document.activeElement.blur()')
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await until(() => evaluate('!' + projectMenu), 'Escape dismisses the project context menu without focus')
+  assert.equal(await evaluate('document.activeElement === ' + rootRow), true, 'Escape restores focus to the tree row')
+  await openTreeMenu(rootRow)
+  await until(() => evaluate('!!' + projectMenu), 'the context menu reopens')
+  await evaluate(rootRow + ".dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,button:0}))")
+  await until(() => evaluate('!' + projectMenu), 'clicking the original row outside the menu dismisses it')
   await contextMenuRow(rootRow, 'New Directory…', treeMenu)
   await setName('empty')
   await clickButton('dialog', 'New Directory')
@@ -274,6 +289,11 @@ try {
   await until(() => evaluate("document.querySelector('.project-match strong')?.innerText === 'empty/sample.txt:2'"), 'directory search match')
   await evaluate("document.querySelector('.project-match').click()")
   await until(() => evaluate("document.querySelector('.editor-cursor')?.textContent.includes('Ln 2')"), 'result opens its source line')
+
+  await evaluate("document.querySelector('[aria-label=\"Collapse project tree\"]').click()")
+  await until(() => evaluate('!' + sample), 'the file is hidden in its collapsed directory')
+  await evaluate("document.querySelector('[aria-label=\"Locate current file\"]').click()")
+  await until(() => evaluate(sample + "?.classList.contains('active')"), 'locate expands and selects the current file')
 
   // Refresh the entry fingerprint after an external edit, then exercise paste and rename.
   await evaluate("document.querySelector('[aria-label=\"Refresh project\"]').click()")

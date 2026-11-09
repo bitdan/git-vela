@@ -7,18 +7,27 @@ import { Compartment, EditorState } from '@codemirror/state'
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view'
 import ContextActions from '../layout/ContextActions.vue'
 import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
+import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
+import { LatestRequest } from '../../stores/latestRequest'
+import { blameGutter } from './blameGutter'
 import { usePreferences } from '../../stores/preferences'
 import { textHighlighting, textLanguage } from './textLanguage'
 
+export type SourceLines = { start: number; end: number }
+
 const props = defineProps<{
-  path: string; initialContent: string; dark: boolean; active: boolean
-  dirty: boolean; saving: boolean; loading: boolean; blocked: boolean
+  repo: string; path: string; initialContent: string; dark: boolean; active: boolean; annotated: boolean
+  jump?: { line: number }; dirty: boolean; saving: boolean; loading: boolean; blocked: boolean
 }>()
-const emit = defineEmits<{ change: [content: string]; save: []; reload: []; gitMenu: [event: MouseEvent | KeyboardEvent]; cursor: [line: number, col: number] }>()
+const emit = defineEmits<{ change: [content: string]; save: []; reload: []; gitMenu: [event: MouseEvent | KeyboardEvent, lines?: SourceLines]; blameCommit: [hash: string]; cursor: [line: number, col: number] }>()
 const host = useTemplateRef<HTMLElement>('host')
 const lineInput = useTemplateRef<HTMLInputElement>('line-input')
 const preferences = usePreferences()
 const theme = new Compartment()
+const annotations = new Compartment()
+const blameRequest = new LatestRequest()
+const blameError = ref('')
+const blameLoading = ref(false)
 const wrapping = new Compartment()
 const indentation = new Compartment()
 const actions = shallowRef<ContextAnchor>()
@@ -38,7 +47,7 @@ onMounted(() => {
     state: EditorState.create({
       doc: props.initialContent,
       extensions: [
-        lineNumbers(), drawSelection(), history(), highlightActiveLine(), highlightSelectionMatches(),
+        annotations.of([]), lineNumbers(), drawSelection(), history(), highlightActiveLine(), highlightSelectionMatches(),
         bracketMatching(), indentOnInput(), textHighlighting, textLanguage(props.path),
         EditorState.allowMultipleSelections.of(true),
         wrapping.of(preferences.editorWordWrap ? EditorView.lineWrapping : []),
@@ -62,6 +71,8 @@ onMounted(() => {
     }),
   })
   if (props.active) editor.focus()
+  if (props.jump) jumpToLine(props.jump.line)
+  void loadBlame()
 })
 watch(() => props.active, active => {
   if (active) editor?.focus()
@@ -70,6 +81,7 @@ watch(() => props.active, active => {
     goToLineOpen.value = false
   }
 }, { flush: 'post' })
+watch(() => props.jump, jump => { if (jump) jumpToLine(jump.line) }, { flush: 'post' })
 watch(() => props.dark, dark => editor?.dispatch({ effects: theme.reconfigure(EditorView.theme({}, { dark })) }))
 watch(() => preferences.editorWordWrap, wrap => editor?.dispatch({
   effects: wrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
@@ -77,7 +89,47 @@ watch(() => preferences.editorWordWrap, wrap => editor?.dispatch({
 watch([() => preferences.editorFontSize, () => preferences.editorTabSize], () => {
   editor?.dispatch({ effects: indentation.reconfigure(indentationConfig()) })
 })
-onUnmounted(() => editor?.destroy())
+watch([() => props.annotated, () => props.dirty, () => props.initialContent], loadBlame)
+onUnmounted(() => {
+  blameRequest.clear()
+  editor?.destroy()
+})
+
+async function loadBlame() {
+  blameRequest.clear()
+  blameLoading.value = false
+  blameError.value = ''
+  editor?.dispatch({ effects: annotations.reconfigure([]) })
+  if (!editor || !props.annotated || props.dirty) return
+  blameLoading.value = true
+  const call = api.FileBlame(props.repo, props.path)
+  const latest = blameRequest.replace(call)
+  try {
+    const lines = await call ?? []
+    if (!latest() || !editor) return
+    const annotatedText = lines.map(line => line.text).join('\n').replace(/^\uFEFF/, '')
+    if (annotatedText !== editor.state.doc.toString().replace(/\n$/, '')) {
+      blameError.value = 'The file changed on disk. Reload it before annotating.'
+      return
+    }
+    editor.dispatch({ effects: annotations.reconfigure(blameGutter(lines, hash => emit('blameCommit', hash))) })
+  } catch (cause) {
+    if (latest()) blameError.value = String(cause)
+  } finally {
+    if (latest()) blameLoading.value = false
+    blameRequest.finish(call)
+  }
+}
+
+function openGitMenu(event: MouseEvent | KeyboardEvent) {
+  closeActions()
+  const doc = editor?.state.doc
+  const selection = editor?.state.selection.main
+  const lines = doc && selection && !selection.empty
+    ? { start: doc.lineAt(selection.from).number, end: doc.lineAt(selection.to - 1).number }
+    : undefined
+  emit('gitMenu', event, lines)
+}
 
 function closeActions() { actions.value = undefined }
 
@@ -108,21 +160,26 @@ function submitGoToLine() {
     goToLineError.value = 'Enter a line between 1 and ' + editor.state.doc.lines
     return
   }
+  jumpToLine(line)
+  goToLineOpen.value = false
+  goToLineError.value = ''
+}
+
+function jumpToLine(line: number) {
+  if (!editor || line < 1 || line > editor.state.doc.lines) return
   const target = editor.state.doc.line(line)
   editor.dispatch({
     selection: { anchor: target.from },
     effects: EditorView.scrollIntoView(target.from, { y: 'center' }),
   })
-  goToLineOpen.value = false
-  goToLineError.value = ''
   editor.focus()
 }
 </script>
 
 <template>
   <div class="workspace-editor" tabindex="-1"
-       @contextmenu.prevent.stop="closeActions(); emit('gitMenu', $event)"
-       @keydown.shift.f10.prevent.stop="closeActions(); emit('gitMenu', $event)">
+       @contextmenu.prevent.stop="openGitMenu"
+       @keydown.shift.f10.prevent.stop="openGitMenu">
     <Teleport to="#source-tools" v-if="active">
       <button class="source-actions-trigger" aria-label="Editor actions" title="Editor actions"
               :aria-expanded="!!actions" @click="actions = actions ? undefined : contextAnchor($event, false)">⋯</button>
@@ -145,6 +202,8 @@ function submitGoToLine() {
       <button type="button" @click="cancelGoToLine">Cancel</button>
       <span v-if="goToLineError" class="notice error" role="alert">{{ goToLineError }}</span>
     </form>
+    <p v-if="blameError" class="notice error" role="alert">{{ blameError }}</p>
+    <p v-else-if="blameLoading" class="notice" role="status">Loading Git annotations…</p>
     <div ref="host" class="editor-host" :style="{ '--editor-font-size': preferences.editorFontSize + 'px' }"></div>
   </div>
 </template>

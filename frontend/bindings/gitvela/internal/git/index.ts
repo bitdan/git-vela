@@ -23,6 +23,8 @@ export type {
     Lane,
     OperationState,
     Page,
+    ProjectEntry,
+    ProjectMatch,
     PublishRequest,
     PublishResult,
     PullOptions,

@@ -300,9 +300,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 }
 .commit-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; padding: 5px 8px; }
 .commit-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.files-root { display: flex; align-items: baseline; gap: 7px; min-width: 0; margin: 0; padding: 0 12px 4px; font-size: 12px; }
-.files-root strong { flex: none; }
-.files-root .muted { font-size: 11px; }
 .patch code > span { display: block; min-height: 1em; }
 .patch-added { color: var(--good); background: color-mix(in srgb, var(--good) 9%, transparent); }
 .patch-removed { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
@@ -563,7 +560,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .source-tools-anchor { display: flex; flex: none; margin-inline-start: auto; }
 .source-tools-anchor:empty { display: none; }
 .source-actions-trigger { font-size: 17px; line-height: 1; }
-.git-menu .command-menu { bottom: calc(100% + 4px); }
+.git-menu .command-menu { top: calc(100% + 4px); }
 .topbar-settings { display: grid; place-items: center; flex: none; }
 
 .context-actions {
@@ -617,23 +614,36 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   flex-wrap: wrap;
 }
 
+.project-tools { gap: 2px; min-width: 0; }
+.project-tools strong { margin-inline-end: auto; }
+.project-tools .project-tool {
+  flex: none; min-width: 22px; padding: 1px 3px; border-color: transparent;
+  background: transparent; color: var(--muted);
+}
+.project-tools .project-tool:hover:not(:disabled), .project-tools .project-tool[aria-pressed="true"] {
+  background: var(--hover); color: var(--text);
+}
+.project-scroll { padding-top: 4px; }
 .repository-file-row {
-  position: absolute;
-  inset-inline: 0;
-  top: 0;
-  width: 100%;
-  height: var(--repo-row-height);
-  padding: 3px 10px;
-  border: 0;
-  border-radius: 0;
-  text-align: start;
-  background: var(--panel);
+  position: absolute; inset-inline: 3px; top: 0; width: calc(100% - 6px);
+  height: var(--project-row-height); padding: 0 7px;
+  display: flex; align-items: center; gap: 5px;
+  border: 0; border-radius: 4px; text-align: start; background: transparent;
 }
-
-.repository-file-row.active {
-  background: var(--select);
-  box-shadow: inset 2px 0 var(--accent);
-}
+.repository-file-row:hover { background: var(--hover); }
+.repository-file-row.active:not(.project-root) { background: var(--select); }
+.repository-file-row .project-chevron { flex: 0 0 10px; text-align: center; line-height: 1; }
+.project-node-icon { flex: 0 0 15px; width: 15px; height: 15px; color: var(--muted); }
+.project-type-icon { font-size: 9px; font-weight: 750; line-height: 15px; text-align: center; color: var(--accent); }
+.project-type-icon[data-type="vue"] { color: #32916e; }
+.project-type-icon[data-type="js"], .project-type-icon[data-type="json"] { color: #9a6a24; }
+.project-root { font-weight: 650; }
+.project-root-path { font-weight: 400; font-size: 11px; }
+.project-context-menu { width: 254px; }
+.project-context-menu kbd { margin-inline-start: auto; color: var(--muted); font: inherit; font-size: 11px; }
+.project-search-dialog { width: min(640px, calc(100vw - 32px)); }
+.project-search-results { max-height: 45vh; overflow: auto; display: grid; gap: 4px; margin-top: 8px; }
+.project-match { display: grid; gap: 2px; text-align: start; min-width: 0; }
 
 .workspace-editor {
   display: flex;
@@ -919,3 +929,21 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .remote-definition .remote-fetch { display: flex; gap: 6px; }
 .remote-definition .remote-fetch input { margin: 0; }
 .remote-definition-dialog .dialog-actions button { min-width: 70px; }
+
+
+.file-git-dialog { width: min(740px, calc(100vw - 32px)); }
+.file-revision-content { max-height: 55vh; overflow: auto; margin-bottom: 0; font-family: Consolas, monospace; }
+.cm-git-blame { border-inline-end: 1px solid var(--border); }
+.cm-git-blame .blame-annotation {
+  display: grid; grid-template-columns: 66px minmax(0, 100px); gap: 8px;
+  width: 190px; padding: 0 8px; border: 0; border-radius: 0;
+  text-align: start; color: var(--muted); font: inherit; line-height: inherit;
+}
+.cm-git-blame .blame-annotation[data-group="0"] { background: color-mix(in srgb, var(--accent) 15%, var(--panel)); }
+.cm-git-blame .blame-annotation[data-group="1"] { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.cm-git-blame .blame-annotation[data-group="2"] { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.cm-git-blame button.blame-annotation:hover { color: var(--text); text-decoration: underline; }
+.blame-date { white-space: nowrap; }
+
+.file-history-tools { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.file-history-tools > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }

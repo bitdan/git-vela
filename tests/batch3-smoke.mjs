@@ -227,7 +227,7 @@ try {
   assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Cancel')
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.activity-bar button')].map(button => button.ariaLabel)"),
     ['Files', 'Commit', 'Git Log'])
-  assert.ok(await evaluate("!!document.querySelector('.statusbar .git-menu') && !!document.querySelector('.topbar [aria-label=Settings]')"))
+  assert.ok(await evaluate("!!document.querySelector('.topbar .git-menu') && !!document.querySelector('.topbar [aria-label=Settings]')"))
   const cloneField = name => `document.querySelector('[aria-label="Clone repository"] [aria-label="${name}"]')`
   await setInput(cloneField('Repository URL or path'), origin)
   await setInput(cloneField('Clone parent folder'), base)

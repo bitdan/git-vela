@@ -17,6 +17,7 @@ type BlameLine struct {
 	Number      int    `json:"number"`
 	Hash        string `json:"hash"`
 	Author      string `json:"author"`
+	Time        int64  `json:"time"`
 	Subject     string `json:"subject"`
 	Text        string `json:"text"`
 	Uncommitted bool   `json:"uncommitted"`
@@ -68,6 +69,8 @@ func FileBlame(ctx context.Context, dir, path string) ([]BlameLine, error) {
 			line = BlameLine{}
 		case strings.HasPrefix(field, "author "):
 			line.Author = strings.TrimPrefix(field, "author ")
+		case strings.HasPrefix(field, "author-time "):
+			line.Time, _ = strconv.ParseInt(strings.TrimPrefix(field, "author-time "), 10, 64)
 		case strings.HasPrefix(field, "summary "):
 			line.Subject = strings.TrimPrefix(field, "summary ")
 		case line.Number == 0:

@@ -30,6 +30,10 @@ export function AmendIndex(path: string, expectedHead: string, expectedRef: stri
     return $Call.ByID(2472700641, path, expectedHead, expectedRef, message, options);
 }
 
+export function ApplyFileMutation(repo: string, file: string, action: string, expected: string, message: string): $CancellablePromise<void> {
+    return $Call.ByID(1483071557, repo, file, action, expected, message);
+}
+
 export function ApplyHistoryOperation(path: string, action: string, targets: string[] | null, expected: git$0.HeadState, mode: string): $CancellablePromise<void> {
     return $Call.ByID(826886017, path, action, targets, expected, mode);
 }
@@ -40,6 +44,10 @@ export function BisectState(path: string): $CancellablePromise<git$0.BisectState
 
 export function BranchSync(path: string): $CancellablePromise<git$0.BranchSync[] | null> {
     return $Call.ByID(2265013207, path);
+}
+
+export function ChangeProjectEntry(repo: string, action: string, source: string, revision: string, folder: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(4109705087, repo, action, source, revision, folder, name);
 }
 
 export function CheckRepositoryPath(path: string): $CancellablePromise<git$0.RepositoryAvailability> {
@@ -146,6 +154,10 @@ export function FileHistory(path: string, file: string): $CancellablePromise<git
     return $Call.ByID(2759443050, path, file);
 }
 
+export function FileSelectionHistory(repo: string, file: string, start: number, end: number): $CancellablePromise<git$0.FileHistoryPage> {
+    return $Call.ByID(2983654188, repo, file, start, end);
+}
+
 export function Files(path: string, commit: string, parent: number): $CancellablePromise<git$0.Change[] | null> {
     return $Call.ByID(2748190763, path, commit, parent);
 }
@@ -182,6 +194,10 @@ export function Open(path: string): $CancellablePromise<git$0.Repository> {
     return $Call.ByID(2498616652, path);
 }
 
+export function OpenProjectLocation(repo: string, path: string, action: string): $CancellablePromise<void> {
+    return $Call.ByID(4246925594, repo, path, action);
+}
+
 export function OpenTextFile(path: string, file: string): $CancellablePromise<git$0.TextFile> {
     return $Call.ByID(108209189, path, file);
 }
@@ -192,6 +208,18 @@ export function OperationState(path: string): $CancellablePromise<git$0.Operatio
 
 export function PrepareAmend(path: string): $CancellablePromise<git$0.AmendTarget> {
     return $Call.ByID(2406328658, path);
+}
+
+export function PrepareFileMutation(repo: string, file: string, action: string): $CancellablePromise<string> {
+    return $Call.ByID(446245430, repo, file, action);
+}
+
+export function ProjectEntries(repo: string, folder: string): $CancellablePromise<git$0.ProjectEntry[] | null> {
+    return $Call.ByID(3392687591, repo, folder);
+}
+
+export function ProjectLocation(repo: string, path: string): $CancellablePromise<string> {
+    return $Call.ByID(292460986, repo, path);
 }
 
 export function PublishGitHub(path: string, request: git$0.PublishRequest): $CancellablePromise<git$0.PublishResult> {
@@ -208,6 +236,10 @@ export function PushBranch(path: string, branch: string, remote: string, target:
 
 export function PushTag(path: string, remote: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(3757308072, path, remote, name);
+}
+
+export function ReadFileRevision(repo: string, file: string, revision: string, compareWorking: boolean): $CancellablePromise<git$0.FilePreview> {
+    return $Call.ByID(1643947215, repo, file, revision, compareWorking);
 }
 
 export function ReadHead(path: string): $CancellablePromise<git$0.HeadState> {
@@ -264,6 +296,10 @@ export function SaveTextFile(path: string, file: string, revision: string, conte
 
 export function SearchHistory(path: string, filter: git$0.HistoryFilter, cursor: git$0.Cursor): $CancellablePromise<git$0.Page> {
     return $Call.ByID(3379203592, path, filter, cursor);
+}
+
+export function SearchProject(repo: string, folder: string, query: string): $CancellablePromise<git$0.ProjectMatch[] | null> {
+    return $Call.ByID(1798475093, repo, folder, query);
 }
 
 export function SetHunkLinesStaged(path: string, file: string, staged: boolean, revision: string, index: number, lines: number[] | null): $CancellablePromise<void> {

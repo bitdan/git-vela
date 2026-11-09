@@ -10,7 +10,7 @@ import { expandAncestors, fileTreeRows } from './fileTree'
 import type { Change } from '../../../bindings/gitvela/internal/git'
 
 const store = useWorkspace()
-const emit = defineEmits<{ select: []; openDiff: [file: Change]; maximize: []; edit: [path: string] }>()
+const emit = defineEmits<{ select: []; openDiff: [file: Change]; maximize: []; edit: [path: string]; gitActions: [path: string, anchor: ContextAnchor] }>()
 const list = useTemplateRef<HTMLElement>('list')
 const preferences = usePreferences()
 const { fileTree: tree } = storeToRefs(preferences)
@@ -121,6 +121,7 @@ watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRan
       <button @click="fileAction('maximize')">Maximize Diff</button>
       <hr />
       <button @click="fileAction('edit')" aria-keyshortcuts="F4">Jump to Source</button>
+      <button @click="emit('gitActions', menu.file.path, menu.anchor); menu = undefined">More Git Actions…</button>
     </ContextActions>
   </section>
 </template>

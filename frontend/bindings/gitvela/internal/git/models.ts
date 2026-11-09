@@ -43,6 +43,7 @@ export interface BlameLine {
     "number": number;
     "hash": string;
     "author": string;
+    "time": number;
     "subject": string;
     "text": string;
     "uncommitted": boolean;
@@ -163,6 +164,18 @@ export interface Page {
     "refs": Ref[] | null;
     "more": boolean;
     "next": Cursor;
+}
+
+export interface ProjectEntry {
+    "path": string;
+    "folder": boolean;
+    "revision": string;
+}
+
+export interface ProjectMatch {
+    "path": string;
+    "line": number;
+    "text": string;
 }
 
 export interface PublishRequest {

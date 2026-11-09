@@ -6,7 +6,7 @@ import { expandAncestors, fileTreeRows } from './fileTree'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
 const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string; amendAuthor?: string; amendAuthorEmail?: string; amendDate?: number; history: string[] }>()
-const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: []; ignore: [path: string]; stash: [paths: string[]] }>()
+const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; gitActions: [path: string, anchor: ContextAnchor]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: []; ignore: [path: string]; stash: [paths: string[]] }>()
 const message = defineModel<string>('message', { required: true })
 /** Amend options (G12): both default to off, which matches plain `git commit
  *  --amend` (keeps the author, adds no trailer). */
@@ -203,6 +203,7 @@ defineExpose({ submit })
       <button :disabled="!menuFile.canStage" @click="fileAction('unstaged')">Show Unstaged Diff</button>
       <button :disabled="!menuFile.canUnstage" @click="fileAction('staged')">Show Staged Diff</button>
       <button @click="fileAction('edit')" aria-keyshortcuts="F4">Jump to Source</button>
+      <button @click="emit('gitActions', menuFile.path, menu.anchor); menu = undefined">More Git Actions…</button>
       <hr />
       <button :disabled="indexBusy || loading || !menuFile.canStage" @click="fileAction('stage')">Stage</button>
       <button :disabled="indexBusy || loading || !menuFile.canUnstage" @click="fileAction('unstage')">Unstage</button>

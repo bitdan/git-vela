@@ -143,7 +143,44 @@ try {
   const gitActions = await until(() => evaluate(`[...document.querySelectorAll('[aria-label="File Git actions"] button')]
     .map(button => button.innerText)`).then(items => items.length && items), 'the source Git menu')
   assert.ok(gitActions.includes('Annotate with Git Blame') && gitActions.includes('Show History'))
-  assert.ok(gitActions.every(label => ['Annotate with Git Blame', 'Show History', 'Show Diff', 'Stage', 'Unstage'].includes(label)))
+  for (const action of ['Commit File…', 'Compare with Revision…', 'Compare with Branch or Tag…',
+    'Show History for Selection…', 'Show Current Revision', 'Rollback…', 'Push…', 'Merge…', 'Manage Remotes…']) {
+    assert.ok(gitActions.includes(action), action + ' is in the Git menu')
+  }
+  assert.ok(!gitActions.includes('Find / Replace'))
+  assert.ok(await evaluate("!!document.querySelector('.topbar .git-menu') && !document.querySelector('.statusbar .git-menu')"))
+
+  const openSourceMenu = () => evaluate(`document.querySelector('.workspace-editor .cm-content')
+    .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`)
+  await clickButton('[aria-label="File Git actions"]', 'Annotate with Git Blame')
+  await until(() => evaluate(`(() => {
+    const gutter = document.querySelector('.workspace-editor .cm-git-blame')
+    return gutter?.textContent.includes('Smoke') && gutter.textContent.includes('Uncommitted')
+  })()`), 'author and working changes in the editor gutter')
+  assert.ok(await evaluate("!!document.querySelector('.cm-git-blame button[title]')"))
+  assert.equal(await evaluate("document.querySelector('.file-inspection') === null"), true, 'annotating keeps the source editor visible')
+  await evaluate("document.querySelector('.cm-git-blame button').click()")
+  await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('PROJ-1')"), 'the annotation commit in the Git log')
+  await openSourceMenu()
+  await clickButton('[aria-label="File Git actions"]', 'Hide Git Blame')
+  await until(() => evaluate("!document.querySelector('.cm-git-blame')"), 'the gutter to close')
+  await openSourceMenu()
+  await clickButton('[aria-label="File Git actions"]', 'Show Current Revision')
+  await until(() => evaluate("document.querySelector('dialog .file-revision-content')?.textContent.includes('second')"), 'HEAD contents')
+  await clickButton('dialog', 'Close')
+  await openSourceMenu()
+  await clickButton('[aria-label="File Git actions"]', 'Compare with Revision…')
+  await clickButton('dialog', 'Compare')
+  await until(() => evaluate("document.querySelector('dialog .file-revision-content')?.textContent.includes('+working copy')"), 'working-copy comparison')
+  await clickButton('dialog', 'Close')
+  await openSourceMenu()
+  await clickButton('[aria-label="File Git actions"]', 'Rollback…')
+  await until(() => evaluate("document.querySelector('dialog[aria-label=\"Rollback File\"]')?.open"), 'the rollback confirmation')
+  assert.equal(await evaluate("document.activeElement.textContent.trim()"), 'Cancel')
+  await clickButton('dialog', 'Cancel')
+  assert.ok((await readRepo('tracked.txt')).includes('working copy'), 'cancel preserves the file')
+
+  await openSourceMenu()
   await clickButton('[aria-label="File Git actions"]', 'Show History')
   await until(() => evaluate("document.querySelector('[aria-label=\"File inspection\"]') || document.querySelector('.inspection-scroll')"), 'the history of the source file')
   await evaluate(`document.querySelector('.working-row[title="tracked.txt"]')
@@ -192,9 +229,80 @@ try {
   await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'tracked.txt' && tab.classList.contains('active'))"), 'pinned diff tab restored and active')
   await until(() => evaluate("!!document.querySelector('.diff-host, .patch, .cm-mergeView')"), 'restored diff tab content loaded lazily')
 
+  // Rollback is explicit and scoped even when another path is staged.
+  git('add', '.gitignore')
+  await writeFile(join(repo, 'tracked.txt'), 'discard only this edit\n')
+  await evaluate("document.querySelector('.git-menu summary').click()")
+  await clickButton('.git-menu', 'Refresh')
+  await until(() => evaluate("!!document.querySelector('.working-row[title=\"tracked.txt\"]')"), 'the edited file to appear')
+  await contextMenuRow("document.querySelector('.working-row[title=\"tracked.txt\"]')", 'More Git Actions…', 'Working file actions')
+  await clickButton('[aria-label="File Git actions"]', 'Rollback…')
+  await clickButton('dialog[aria-label="Rollback File"]', 'Rollback File')
+  await until(async () => (await readRepo('tracked.txt')).includes('working copy'), 'the selected file to be restored')
+  assert.equal(git('diff', '--cached', '--name-only').trim(), '.gitignore', 'rollback keeps other staged files')
+  await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('Ready')"), 'rollback refresh to finish')
+
+  // Project view has one header, a root node and lazily expanded directories.
+  await evaluate("document.querySelector('.activity-bar [aria-label=Files]').click()")
+  await until(() => evaluate("!!document.querySelector('.repository-file-row.project-root')"), 'the Project root row')
+  assert.equal(await evaluate("document.querySelector('.workspace-sidebar .sidebar-project')"), null)
+  const rootRow = "document.querySelector('.repository-file-row.project-root')"
+  const treeMenu = 'Project file actions'
+  const setName = value => evaluate(`(() => {
+    const input = document.querySelector('#project-entry-name')
+    input.value = ${JSON.stringify(value)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await contextMenuRow(rootRow, 'New Directory…', treeMenu)
+  await setName('empty')
+  await clickButton('dialog', 'New Directory')
+  const folderRow = "document.querySelector('.repository-file-row[title=\"empty\"]')"
+  await until(() => evaluate('!!' + folderRow), 'empty directory shown in Project')
+  await contextMenuRow(folderRow, 'New File…', treeMenu)
+  await setName('sample.txt')
+  await clickButton('dialog', 'New File')
+  const sample = "document.querySelector('.repository-file-row[title=\"empty/sample.txt\"]')"
+  await until(() => evaluate('!!' + sample), 'file shown below the expanded directory')
+  await writeFile(join(repo, 'empty', 'sample.txt'), 'first line\nsearch target\n')
+  await contextMenuRow(folderRow, 'Find in Directory…', treeMenu)
+  await evaluate(`(() => {
+    const field = document.querySelector('[aria-label="Search text"]')
+    field.value = 'search target'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await clickButton('dialog', 'Find')
+  await until(() => evaluate("document.querySelector('.project-match strong')?.innerText === 'empty/sample.txt:2'"), 'directory search match')
+  await evaluate("document.querySelector('.project-match').click()")
+  await until(() => evaluate("document.querySelector('.editor-cursor')?.textContent.includes('Ln 2')"), 'result opens its source line')
+
+  // Refresh the entry fingerprint after an external edit, then exercise paste and rename.
+  await evaluate("document.querySelector('[aria-label=\"Refresh project\"]').click()")
+  await until(() => evaluate("!document.querySelector('[aria-label=\"Refresh project\"]').disabled"), 'Project refresh')
+  const key = (row, key, ctrlKey = false) => evaluate(`${row}.dispatchEvent(new KeyboardEvent('keydown',
+    { key: ${JSON.stringify(key)}, ctrlKey: ${ctrlKey}, bubbles: true, cancelable: true }))`)
+  await key(sample, 'c', true)
+  await key(rootRow, 'v', true)
+  await clickButton('dialog', 'Copy to Directory')
+  await until(() => evaluate("!!document.querySelector('.repository-file-row[title=\"sample.txt\"]')"), 'copied file at the project root')
+  const copy = "document.querySelector('.repository-file-row[title=\"sample.txt\"]')"
+  await key(copy, 'F2')
+  await setName('renamed.txt')
+  await clickButton('dialog', 'Rename')
+  const renamed = "document.querySelector('.repository-file-row[title=\"renamed.txt\"]')"
+  await until(() => evaluate('!!' + renamed), 'renamed file visible')
+  await key(renamed, 'Delete')
+  assert.equal(await evaluate("document.activeElement.textContent.trim()"), 'Cancel')
+  await clickButton('dialog', 'Cancel')
+  assert.ok((await readRepo('renamed.txt')).includes('search target'), 'cancel keeps the file')
+  await key(renamed, 'Delete')
+  await clickButton('dialog', 'Delete from Disk')
+  await until(() => evaluate('!' + renamed), 'deleted file removed from Project')
+  assert.ok((await readRepo('empty/sample.txt')).includes('search target'), 'source copy remains')
+  await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('Ready')"), 'Project mutation refresh')
+
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
   assert.deepEqual(alerts, [])
-  console.log('Batch 1 smoke passed: .gitignore, line endings, message history, issue links, diff tab restore.')
+  console.log('Batch 1 smoke passed: Project tree and file operations, source Git menu, inline blame, revision comparison, rollback cancellation, .gitignore, line endings, message history, issue links, diff tab restore.')
 } finally {
   socket.close()
   if (!keepRepo) {

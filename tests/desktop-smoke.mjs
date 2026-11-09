@@ -725,8 +725,8 @@ try {
     await clickButton('.repository-files .file-scroll', 'm3.txt')
     await clickButton('.preview-tabs', 'File History')
     await text('.file-history-row', 'M3 side')
-    await clickButton('.file-inspection', 'Blame')
-    await text('.blame-row', 'Uncommitted')
+    await clickButton('.file-inspection', 'Annotate with Git Blame')
+    await text('.cm-git-blame', 'Uncommitted')
     await clickButton('.file-inspection', 'Close')
 
     await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")

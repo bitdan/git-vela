@@ -469,3 +469,45 @@ func (s *RepositoryService) RunInteractiveRebase(ctx context.Context, path, base
 func (*RepositoryService) SubmodulePath(ctx context.Context, path, file string) (string, error) {
 	return discardCancelled(git.SubmodulePath(ctx, path, file))
 }
+func (*RepositoryService) ReadFileRevision(ctx context.Context, repo, file, revision string, compareWorking bool) (git.FilePreview, error) {
+	return discardCancelled(git.ReadFileRevision(ctx, repo, file, revision, compareWorking))
+}
+
+func (*RepositoryService) FileSelectionHistory(ctx context.Context, repo, file string, start, end int) (git.FileHistoryPage, error) {
+	return discardCancelled(git.FileSelectionHistory(ctx, repo, file, start, end))
+}
+
+func (*RepositoryService) PrepareFileMutation(ctx context.Context, repo, file, action string) (string, error) {
+	return discardCancelled(git.PrepareFileMutation(ctx, repo, file, action))
+}
+
+func (s *RepositoryService) ApplyFileMutation(ctx context.Context, repo, file, action, expected, message string) error {
+	return s.write(ctx, func() error { return git.ApplyFileMutation(ctx, repo, file, action, expected, message) })
+}
+
+func (*RepositoryService) ProjectEntries(ctx context.Context, repo, folder string) ([]git.ProjectEntry, error) {
+	return discardCancelled(git.ProjectEntries(repo, folder))
+}
+
+func (*RepositoryService) SearchProject(ctx context.Context, repo, folder, query string) ([]git.ProjectMatch, error) {
+	return discardCancelled(git.SearchProject(ctx, repo, folder, query))
+}
+
+func (s *RepositoryService) ChangeProjectEntry(ctx context.Context, repo, action, source, revision, folder, name string) error {
+	return s.write(ctx, func() error {
+		return git.ChangeProjectEntry(ctx, repo, action, source, revision, folder, name)
+	})
+}
+
+func (*RepositoryService) ProjectLocation(repo, path string) (string, error) {
+	absolute, _, err := git.ProjectLocation(repo, path)
+	return absolute, err
+}
+
+func (*RepositoryService) OpenProjectLocation(repo, path, action string) error {
+	absolute, folder, err := git.ProjectLocation(repo, path)
+	if err != nil {
+		return err
+	}
+	return openProjectLocation(absolute, folder, action)
+}

@@ -8,6 +8,8 @@ import { useKeymap } from './stores/keymap'
 import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
 import { clearSession, clearSessionFor, readSession, readSessionFor, saveSession, type SessionState } from './stores/session'
 import { useWorkspace } from './stores/workspace'
+import FileGitDialog, { type FileGitDialogAction } from './components/operations/FileGitDialog.vue'
+import type { SourceLines } from './components/editor/WorkspaceEditor.vue'
 import CloneDialog from './components/operations/CloneDialog.vue'
 import CleanupDialog from './components/operations/CleanupDialog.vue'
 import ConfirmationDialog from './components/layout/ConfirmationDialog.vue'
@@ -318,9 +320,10 @@ const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
 const view = ref<FileView | 'commit' | 'editor' | 'inspection' | 'conflict'>('working')
-type EditorTab = { path: string; file: TextFile; draft: string; reloadKey?: number; /** Pending line-ending conversion (E1); '' keeps the stored endings. */ lineEnding?: string }
+type EditorTab = { path: string; file: TextFile; draft: string; annotated?: boolean; reloadKey?: number; /** Pending line-ending conversion (E1); '' keeps the stored endings. */ lineEnding?: string }
 const editorTabs = ref<EditorTab[]>([])
 const activeEditorPath = ref('')
+const editorJump = shallowRef<{ path: string; line: number }>()
 /** Last caret position per open tab, reported by WorkspaceEditor; the status
  *  bar shows the active tab's cursor like the IDEA editor status widget. */
 const editorCursors = reactive<Record<string, { line: number; col: number }>>({})
@@ -417,28 +420,111 @@ const pendingEditorFiles = ref<string[]>([])
 const showHunks = ref(false)
 const conflictFile = ref('')
 const submoduleError = ref('')
-const sourceGitMenu = shallowRef<{ path: string; anchor: ContextAnchor }>()
+const sourceGitMenu = shallowRef<{ path: string; anchor: ContextAnchor; lines?: SourceLines }>()
 const sourceGitChange = computed(() => workingFiles.value.find(file => file.path === sourceGitMenu.value?.path))
+const sourceGitTab = computed(() => editorTabs.value.find(tab => tab.path === sourceGitMenu.value?.path))
+const sourceGitDirty = computed(() => !!sourceGitTab.value && isTabDirty(sourceGitTab.value))
+const fileGitDialog = shallowRef<{ repo: string; file: string; action: FileGitDialogAction }>()
+const branchOperation = ref<'merge' | 'rebase'>()
+const branchOperationTarget = ref('')
 
-function openSourceGitMenu(path: string, event: MouseEvent | KeyboardEvent) {
-  sourceGitMenu.value = { path, anchor: contextAnchor(event) }
+function openSourceGitMenu(path: string, event: MouseEvent | KeyboardEvent, lines?: SourceLines) {
+  openSourceGitActions(path, contextAnchor(event), lines)
 }
 
-function sourceGitAction(action: 'history' | 'blame' | 'diff' | 'stage' | 'unstage') {
+function openSourceGitActions(path: string, anchor: ContextAnchor, lines?: SourceLines) {
+  sourceGitMenu.value = { path, anchor, lines }
+}
+
+type SourceGitAction = FileGitDialogAction | 'history' | 'selection' | 'blame' | 'stage' | 'unstage'
+
+function sourceGitAction(action: SourceGitAction) {
   const menu = sourceGitMenu.value
   const change = sourceGitChange.value
   sourceGitMenu.value = undefined
-  if (!menu) return
-  if (action === 'history' || action === 'blame') {
-    inspectFile(action, menu.path)
-  } else if (action === 'diff' && change) {
-    selectWorking(change, change.status === '??' ? 'working' : change.canStage ? 'unstaged' : 'staged')
-  } else if (change && (action === 'stage' || action === 'unstage')) {
-    void updateIncludedFiles([change.path], action === 'stage')
+  const repo = store.repository?.path
+  if (!menu || !repo) return
+  if (action === 'history' || action === 'selection') {
+    inspectFile(menu.path, action === 'selection' ? menu.lines : undefined)
+  } else if (action === 'blame') {
+    void toggleSourceBlame(menu.path)
+  } else if (action === 'diff' && change?.status === '??') {
+    selectWorking(change, 'working')
+  } else if (action === 'stage' || action === 'unstage') {
+    if (change) void updateIncludedFiles([change.path], action === 'stage')
+  } else {
+    fileGitDialog.value = { repo, file: menu.path, action }
   }
 }
 
-const inspection = shallowRef<{ file: string; mode: 'history' | 'blame'; previous: FileView | 'editor' | 'commit' }>()
+function sourceRepositoryAction(action: () => void) {
+  sourceGitMenu.value = undefined
+  action()
+}
+
+async function toggleSourceBlame(path: string) {
+  const repo = store.repository?.path
+  const tab = editorTabFor(path)
+  if (tab) {
+    tab.annotated = view.value === 'editor' && activeEditorPath.value === path ? !tab.annotated : true
+    activateEditorTab(path)
+    return
+  }
+  historyMaximized.value = false
+  diffExpanded.value = false
+  await loadEditor(path)
+  const opened = editorTabFor(path)
+  if (repo === store.repository?.path && activeEditorPath.value === path && opened) opened.annotated = true
+}
+
+async function finishFileGitAction(message: string) {
+  const target = fileGitDialog.value
+  fileGitDialog.value = undefined
+  try {
+    if (!target || target.repo !== store.repository?.path) return
+    if (target.action === 'rollback') {
+      const tab = editorTabFor(target.file)
+      if (tab && !isTabDirty(tab)) {
+        // Reopen from disk after the mutation so the editor cannot show the discarded copy.
+        closeEditorTab(target.file)
+        await loadEditor(target.file)
+      }
+      commitNotice.value = 'Rolled back ' + target.file
+    } else {
+      commitHistory.value = rememberCommitMessage(undefined, target.repo, message, commitHistory.value)
+      commitNotice.value = 'Committed ' + target.file
+    }
+    await refreshAfterDailyOperation()
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+function chooseBranchOperation(action: 'merge' | 'rebase') {
+  branchOperationTarget.value = ''
+  branchOperation.value = action
+}
+
+function reviewBranchOperation() {
+  const action = branchOperation.value
+  const ref = store.branchRefs.find(item => item.name === branchOperationTarget.value)
+  if (!action || !ref || indexBusy.value) return
+  branchOperation.value = undefined
+  void prepareOperation(action, ref.hash, refLabel(ref.name))
+}
+
+function createTagFromSelection() {
+  openSidebar('branches')
+  refKind.value = 'tags'
+  openTagForm('create')
+}
+
+function resetToSelection() {
+  const selected = store.selected
+  if (selected) void prepareOperation('reset', selected.hash, selected.subject)
+}
+
+const inspection = shallowRef<{ file: string; previous: FileView | 'editor' | 'commit'; lines?: SourceLines }>()
 const pinnedCommit = shallowRef<Commit>()
 type AdvancedAction = 'cherry-pick' | 'revert' | 'reset' | 'merge' | 'rebase'
 const advancedLabels: Record<AdvancedAction, string> = {
@@ -615,6 +701,8 @@ watch(() => store.repository?.path, repo => {
   clearEditor()
   inspection.value = undefined
   sourceGitMenu.value = undefined
+  fileGitDialog.value = undefined
+  branchOperation.value = undefined
   conflictFile.value = ''
   rebasePlan.value = []
   pinnedCommit.value = undefined
@@ -794,6 +882,7 @@ async function selectView(next: FileView | 'commit', background = false, expande
 function clearEditor() {
   editorRequest.clear()
   editorTabs.value = []
+  editorJump.value = undefined
   for (const key of Object.keys(editorCursors)) delete editorCursors[key]
   activeEditorPath.value = ''
   editorError.value = ''
@@ -840,16 +929,29 @@ function openRepository(folder: string) {
   withSavedEditor('opening another repository', () => { void store.open(folder) })
 }
 
-function openEditorFile(file: string) {
+function openEditorFile(file: string, line?: number) {
   if (!file || store.opening || editorSaving.value) return
   editorError.value = ''
-  if (editorTabFor(file)) {
+  const tab = editorTabFor(file)
+  if (tab && (!line || isTabDirty(tab))) {
     activateEditorTab(file)
+    if (line) editorJump.value = { path: file, line }
     return
   }
   historyMaximized.value = false
   diffExpanded.value = false
-  void loadEditor(file)
+  void loadEditor(file).then(() => {
+    if (line && activeEditorPath.value === file) editorJump.value = { path: file, line }
+  })
+}
+
+function refreshAfterProjectChange(source?: string) {
+  if (source) {
+    for (const tab of [...editorTabs.value]) {
+      if (tab.path === source || tab.path.startsWith(source + '/')) closeEditorTab(tab.path)
+    }
+  }
+  void loadWorking()
 }
 
 function reloadEditor() {
@@ -965,13 +1067,13 @@ function lfsPointer(content: string) {
   return oid && size ? { oid, size } : undefined
 }
 
-function inspectFile(mode: 'history' | 'blame', file = inspectionPath.value) {
+function inspectFile(file = inspectionPath.value, lines?: SourceLines) {
   if (!file || !store.repository) return
   const previous = view.value === 'editor' || view.value === 'commit'
     ? view.value : workingView.value ?? inspection.value?.previous ?? 'working'
   historyMaximized.value = false
   diffExpanded.value = false
-  inspection.value = { file, mode, previous }
+  inspection.value = { file, previous, lines }
   view.value = 'inspection'
 }
 
@@ -2233,6 +2335,39 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <AppIcon name="branches" />
         <span class="ellipsis">{{ store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head }}</span>
       </button>
+      <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
+        <summary>
+          <AppIcon class="menu-icon" name="branches" />
+          Git
+        </summary>
+        <div class="command-menu" role="group" aria-label="Git operations">
+          <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('clone'))">Clone from URL…</button>
+          <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('init'))">Initialize Project…</button>
+          <template v-if="store.repository">
+            <div class="command-divider"></div>
+            <button :disabled="indexBusy" @click="gitAction(focusCommit)">Commit…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => openSync('push'))">Push…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => openSync('pull'))">Pull…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
+            <button :disabled="indexBusy" @click="gitAction(openShelf)">Stash…</button>
+            <div class="command-divider"></div>
+            <button :disabled="indexBusy" @click="gitAction(() => { openSidebar('branches'); refKind = 'branches' })">Branches</button>
+            <button :disabled="indexBusy || !store.selected" @click="gitAction(createBranchFromCommit)">New Branch…</button>
+            <button :disabled="indexBusy" @click="gitAction(createTagFromSelection)">New Tag…</button>
+            <button :disabled="indexBusy || !store.selected" @click="gitAction(resetToSelection)">Reset HEAD…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => chooseBranchOperation('merge'))">Merge…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => chooseBranchOperation('rebase'))">Rebase…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => openSidebar('worktrees'))">Worktrees</button>
+            <button @click="gitAction(() => { historyVisible = true; diffExpanded = false; gitTab = 'log' })">Show Git Log</button>
+            <button :disabled="indexBusy || store.opening" @click="gitAction(refresh)">Refresh</button>
+            <div class="command-divider"></div>
+            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('remotes'))">Manage Remotes…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('bisect'))">Bisect…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('cleanup'))">Cleanup (git gc)…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('publish'))">Publish to GitHub…</button>
+          </template>
+        </div>
+      </details>
       <span class="topbar-spacer" aria-hidden="true"></span>
       <button ref="paletteTrigger" class="topbar-settings" aria-label="Command palette"
               :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
@@ -2370,14 +2505,14 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <ActivityBar v-show="!diffExpanded" :active="activityActive" :history-visible="historyVisible" :busy="indexBusy"
                      @select="onActivitySelect" />
         <aside v-show="!diffExpanded && !sidebarHidden" class="panel workspace-sidebar" aria-label="Repository workspace">
-          <div class="tool-title">
-            <strong>{{ sidebar === 'changes' ? 'Commit' : sidebar === 'files' ? 'Files' : 'Worktrees' }}</strong>
+          <div v-if="sidebar !== 'files'" class="tool-title">
+            <strong>{{ sidebar === 'changes' ? 'Commit' : 'Worktrees' }}</strong>
             <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
                     @click="sidebarHidden = true">
               <AppIcon name="close" />
             </button>
           </div>
-          <div class="sidebar-project">
+          <div v-if="sidebar !== 'files'" class="sidebar-project">
             <span class="eyebrow">Repository</span>
             <strong class="ellipsis" :title="store.repository.path">{{ store.repository.name }}</strong>
           </div>
@@ -2386,7 +2521,14 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <button :aria-pressed="commitTab === 'shelf'" :disabled="indexBusy" @click="openShelf">Shelf</button>
           </nav>
           <RepositoryFiles v-show="sidebar === 'files'" :key="store.repository.path" :path="store.repository.path"
-                           :active="sidebar === 'files' && !diffExpanded" :selected="editorPath" @open="openEditorFile" @git-menu="openSourceGitMenu" />
+                           :active="sidebar === 'files' && !diffExpanded && !sidebarHidden" :selected="editorPath"
+                           :dirty-paths="editorTabs.filter(isTabDirty).map(tab => tab.path)" :blocked="store.opening"
+                           v-model:busy="indexBusy" @open="openEditorFile" @git-menu="openSourceGitActions" @changed="refreshAfterProjectChange">
+            <template #tools>
+              <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
+                      @click="sidebarHidden = true"><AppIcon name="close" /></button>
+            </template>
+          </RepositoryFiles>
           <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes' && commitTab === 'commit'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
@@ -2394,7 +2536,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                           :amend-author="amendTarget?.author" :amend-author-email="amendTarget?.authorEmail" :amend-date="amendTarget?.authorDate"
                           v-model:amend-reset-author="amendOptions.resetAuthor" v-model:amend-sign-off="amendOptions.signOff"
                           :history="commitHistory"
-                          @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
+                          @select="selectWorking" @edit="openEditorFile" @git-actions="openSourceGitActions" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
                           :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" @stash="stashWorkingFiles" />
           <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"
@@ -2443,8 +2585,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                         @click="openEditorFile(workingSelection.path)">Jump to Source</button>
                 <button v-if="(view === 'staged' || view === 'unstaged') && currentWorkingFile"
                         :aria-pressed="showHunks" :disabled="indexBusy" @click="showHunks = !showHunks">Hunks</button>
-                <button v-if="view !== 'editor' && inspectionPath" @click="inspectFile('history')">File History</button>
-                <button v-if="view !== 'editor' && inspectionPath" @click="inspectFile('blame')">Blame</button>
+                <button v-if="view !== 'editor' && inspectionPath" @click="inspectFile()">File History</button>
+                <button v-if="view !== 'editor' && inspectionPath" @click="inspectionPath && toggleSourceBlame(inspectionPath)">Blame</button>
                 <button v-if="view !== 'editor' && inspectionPath && operation?.conflicts?.includes(inspectionPath)"
                         @click="openConflict(inspectionPath)">Resolve conflict…</button>
                 <button v-if="!diffExpanded && view !== 'editor'" class="history-toggle" aria-controls="history-dock" :aria-pressed="historyVisible"
@@ -2460,12 +2602,13 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                              @resolve="markResolved(conflictFile)" @close="closeConflict" />
               <template v-for="tab in editorTabs" :key="tab.path + ':' + (tab.reloadKey ?? 0)">
                 <WorkspaceEditor v-show="(view === 'editor' && activeEditorPath === tab.path || view === 'conflict' && tab.path === conflictFile) && !editorLoading"
-                                 :path="tab.path" :initial-content="tab.file.content" :dark="dark"
+                                 :repo="store.repository.path" :annotated="!!tab.annotated" :path="tab.path"
+                                 :jump="editorJump?.path === tab.path ? editorJump : undefined" :initial-content="tab.file.content" :dark="dark"
                                  :active="!editorLoading && (view === 'editor' && activeEditorPath === tab.path || view === 'conflict' && conflictFile === tab.path)"
                                  :dirty="isTabDirty(tab)" :saving="editorSaving"
                                  :loading="editorLoading && activeEditorPath === tab.path" :blocked="indexBusy || store.opening"
                                  @change="tab.draft = $event" @save="saveEditor(tab.path)" @reload="reloadEditor"
-                                 @git-menu="openSourceGitMenu(tab.path, $event)"
+                                 @git-menu="(event, lines) => openSourceGitMenu(tab.path, event, lines)" @blame-commit="hash => { gitTab = 'log'; jump(hash) }"
                                  @cursor="(line, col) => editorCursors[tab.path] = { line, col }">
                   <template #actions="{ close }">
                     <button v-if="operation?.conflicts?.includes(tab.path)" @click="close(); openConflict(tab.path)">Resolve conflict…</button>
@@ -2475,7 +2618,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               </template>
               <p v-if="view === 'editor' && !editorTabs.length && !editorLoading" class="notice">No open editor tabs. Open a file from the Changes tree or the Files panel.</p>
               <FileInspection v-if="view === 'inspection' && inspection" :path="store.repository.path" :file="inspection.file"
-                              :mode="inspection.mode" @mode="inspection = { ...inspection, mode: $event }"
+                              :lines="inspection.lines" @blame="toggleSourceBlame(inspection.file)"
                               @close="closeInspection" @commit="openHistoricalCommit" />
               <HunkPanel v-if="showHunks && currentWorkingFile && (view === 'staged' || view === 'unstaged')"
                          :path="store.repository.path" :file="currentWorkingFile.path" :staged="view === 'staged'"
@@ -2675,7 +2818,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Changed Files panel" tabindex="0"
                  @pointerdown="trackDrag" @pointermove="resizeFiles" @keydown="resizeFilesWithKey"></div>
             <div class="log-right" :style="{ width: preferences.filesWidth + 'px' }">
-              <ChangedFiles ref="filesPanel" @edit="openEditorFile" @select="handleHistorySelect" @open-diff="openHistoryDiff" @maximize="maximizeDiff" />
+              <ChangedFiles ref="filesPanel" @edit="openEditorFile" @git-actions="openSourceGitActions" @select="handleHistorySelect" @open-diff="openHistoryDiff" @maximize="maximizeDiff" />
               <div class="splitter details-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize Commit Details panel" tabindex="0"
                    @pointerdown="trackDrag" @pointermove="resizeDetails" @keydown="resizeDetailsWithKey"></div>
               <CommitDetails :style="{ height: preferences.detailsHeight + '%' }" />
@@ -2740,45 +2883,60 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <hr />
       <button :disabled="indexBusy" @click="tagAction('delete')">Delete…</button>
     </ContextActions>
+    <FileGitDialog v-if="fileGitDialog" v-bind="fileGitDialog" :refs="[...store.branchRefs, ...store.tagRefs]" v-model:busy="indexBusy"
+                   @close="fileGitDialog = undefined" @applied="finishFileGitAction" />
+    <ConfirmationDialog v-if="branchOperation" :title="branchOperation === 'merge' ? 'Merge Branch' : 'Rebase onto Branch'"
+                        @cancel="branchOperation = undefined">
+      <label class="repository-dialog-form">Branch
+        <select v-model="branchOperationTarget" aria-label="Target branch">
+          <option value="" disabled>Select a branch</option>
+          <option v-for="ref in store.branchRefs" :key="ref.name" :value="ref.name">{{ refLabel(ref.name) }}</option>
+        </select>
+      </label>
+      <template #actions>
+        <button data-cancel @click="branchOperation = undefined">Cancel</button>
+        <button class="primary" :disabled="!branchOperationTarget || indexBusy" @click="reviewBranchOperation">Review…</button>
+      </template>
+    </ConfirmationDialog>
     <ContextActions v-if="sourceGitMenu" :anchor="sourceGitMenu.anchor" label="File Git actions"
                     @close="sourceGitMenu = undefined">
-      <button @click="sourceGitAction('blame')">Annotate with Git Blame</button>
-      <button @click="sourceGitAction('history')">Show History</button>
-      <button :disabled="!sourceGitChange?.canStage && !sourceGitChange?.canUnstage"
-              @click="sourceGitAction('diff')">Show Diff</button>
-      <button v-if="sourceGitChange?.canStage" :disabled="indexBusy" @click="sourceGitAction('stage')">Stage</button>
+      <button :disabled="indexBusy || sourceGitDirty || !store.headHash || !sourceGitChange || !/^[ AMD]{2}$/.test(sourceGitChange.status)"
+              @click="sourceGitAction('commit')">Commit File…</button>
+      <button :disabled="indexBusy || !sourceGitChange?.canStage" @click="sourceGitAction('stage')">{{ sourceGitChange?.status === '??' ? 'Add' : 'Stage' }}</button>
       <button v-if="sourceGitChange?.canUnstage" :disabled="indexBusy" @click="sourceGitAction('unstage')">Unstage</button>
+      <hr>
+      <button :disabled="!store.headHash || sourceGitDirty" @click="sourceGitAction('blame')">
+        {{ sourceGitTab?.annotated ? 'Hide Git Blame' : 'Annotate with Git Blame' }}
+      </button>
+      <button :disabled="!sourceGitChange || (!sourceGitChange.canStage && !sourceGitChange.canUnstage) || (!store.headHash && sourceGitChange.status !== '??')"
+              @click="sourceGitAction('diff')">Show Diff</button>
+      <button :disabled="!store.headHash" @click="sourceGitAction('revision')">Compare with Revision…</button>
+      <button :disabled="!store.branchRefs.length && !store.tagRefs.length" @click="sourceGitAction('ref')">Compare with Branch or Tag…</button>
+      <button :disabled="!store.headHash" @click="sourceGitAction('history')">Show History</button>
+      <button :disabled="!store.headHash || !sourceGitMenu.lines || !!sourceGitChange || sourceGitDirty"
+              @click="sourceGitAction('selection')">Show History for Selection…</button>
+      <button :disabled="!store.headHash" @click="sourceGitAction('current')">Show Current Revision</button>
+      <button :disabled="indexBusy || sourceGitDirty || !store.headHash || !sourceGitChange || !/^[ MD]{2}$/.test(sourceGitChange.status)"
+              @click="sourceGitAction('rollback')">Rollback…</button>
+      <hr>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('push'))">Push…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('pull'))">Pull…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('fetch'))">Fetch…</button>
+      <hr>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => chooseBranchOperation('merge'))">Merge…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => chooseBranchOperation('rebase'))">Rebase…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => { openSidebar('branches'); refKind = 'branches' })">Branches…</button>
+      <button :disabled="indexBusy || !store.selected" @click="sourceRepositoryAction(createBranchFromCommit)">New Branch…</button>
+      <button :disabled="indexBusy || !store.headHash" @click="sourceRepositoryAction(createTagFromSelection)">New Tag…</button>
+      <button :disabled="indexBusy || !store.selected" @click="sourceRepositoryAction(resetToSelection)">Reset HEAD…</button>
+      <hr>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(openShelf)">Stash / Unstash…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => toggleDailyPanel('publish'))">Publish to GitHub…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => toggleDailyPanel('remotes'))">Manage Remotes…</button>
+      <button :disabled="indexBusy" @click="sourceRepositoryAction(() => toggleDailyPanel('clone'))">Clone…</button>
     </ContextActions>
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <footer class="statusbar">
-      <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
-        <summary>
-          <AppIcon class="menu-icon" name="branches" />
-          Git
-        </summary>
-        <div class="command-menu" role="group" aria-label="Git operations">
-          <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('clone'))">Clone from URL…</button>
-          <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('init'))">Initialize Project…</button>
-          <template v-if="store.repository">
-            <div class="command-divider"></div>
-            <button :disabled="indexBusy" @click="gitAction(focusCommit)">Commit…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => openSync('push'))">Push…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => openSync('pull'))">Pull…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
-            <button :disabled="indexBusy" @click="gitAction(openShelf)">Stash…</button>
-            <div class="command-divider"></div>
-            <button :disabled="indexBusy" @click="gitAction(() => { openSidebar('branches'); refKind = 'branches' })">Branches</button>
-            <button :disabled="indexBusy || !store.selected" @click="gitAction(createBranchFromCommit)">New Branch…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => openSidebar('worktrees'))">Worktrees</button>
-            <button :disabled="indexBusy || store.opening" @click="gitAction(refresh)">Refresh</button>
-            <div class="command-divider"></div>
-            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('remotes'))">Manage Remotes…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('bisect'))">Bisect…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('cleanup'))">Cleanup (git gc)…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('publish'))">Publish to GitHub…</button>
-          </template>
-        </div>
-      </details>
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
       <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>
       <span v-if="activeEditorTab" class="editor-meta">

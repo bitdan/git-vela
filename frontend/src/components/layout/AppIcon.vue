@@ -7,6 +7,6 @@ defineProps<{ name: IconName }>()
 
 <template>
   <svg class="app-icon" viewBox="64 64 896 896" fill="currentColor" aria-hidden="true">
-    <path v-for="(d, index) in iconPaths[name]" :key="index" :d="d" />
+    <path v-for="(d, index) in iconPaths[name]" :key="index" :d="d" :fill-rule="name === 'commit' ? 'evenodd' : undefined" />
   </svg>
 </template>

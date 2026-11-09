@@ -4,7 +4,7 @@
 //   node tests/batch1-smoke.mjs <absolute clone path>
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -31,10 +31,11 @@ git('init', '-b', 'main')
 git('config', 'user.email', 'smoke@example.com')
 git('config', 'user.name', 'Smoke')
 git('config', 'core.autocrlf', 'false')
-await (await import('node:fs/promises')).writeFile(join(repo, 'tracked.txt'), 'first\nsecond\n')
+await writeFile(join(repo, 'tracked.txt'), 'first\nsecond\n')
 git('add', 'tracked.txt')
 git('commit', '-m', 'Fix PROJ-1 issue')
-await (await import('node:fs/promises')).writeFile(join(repo, 'untracked.txt'), 'temp\n')
+await writeFile(join(repo, 'tracked.txt'), 'first\nworking copy\n')
+await writeFile(join(repo, 'untracked.txt'), 'temp\n')
 
 const readRepo = async path => readFile(join(repo, path), 'utf8')
 
@@ -127,27 +128,44 @@ try {
   /* ---- E1: line ending display + conversion ----
    * The conversion stays CRLF so the later commit has a real staged change
    * (an index identical to HEAD would make git commit refuse). */
-  await contextMenuRow("document.querySelector('.working-row[title=\"tracked.txt\"]')", 'Edit Working File', 'Working file actions')
+  await contextMenuRow("document.querySelector('.working-row[title=\"tracked.txt\"]')", 'Jump to Source', 'Working file actions')
   await until(() => evaluate("!!document.querySelector('.workspace-editor')"), 'editor opens')
-  const widget = "document.querySelector('.workspace-editor .line-ending-widget')"
-  assert.equal(await evaluate(widget + '?.innerText'), 'LF', 'editor widget shows LF')
+  const widget = "document.querySelector('.statusbar .line-ending-widget')"
+  assert.equal(await evaluate("document.querySelector('.topbar > .repo-form')"), null, 'path input stays in the project menu')
+  assert.equal(await evaluate("document.querySelector('.source-preview-tabs')?.innerText.includes('Commit diff')"), false)
+  assert.equal(await evaluate("document.querySelector('.workspace-editor .editor-tools')"), null, 'editor has no second toolbar')
+  await evaluate(`(() => {
+    const editor = document.querySelector('.workspace-editor .cm-content')
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    editor.dispatchEvent(event)
+    if (!event.defaultPrevented) throw new Error('WebView context menu was not suppressed')
+  })()`)
+  const gitActions = await until(() => evaluate(`[...document.querySelectorAll('[aria-label="File Git actions"] button')]
+    .map(button => button.innerText)`).then(items => items.length && items), 'the source Git menu')
+  assert.ok(gitActions.includes('Annotate with Git Blame') && gitActions.includes('Show History'))
+  assert.ok(gitActions.every(label => ['Annotate with Git Blame', 'Show History', 'Show Diff', 'Stage', 'Unstage'].includes(label)))
+  await clickButton('[aria-label="File Git actions"]', 'Show History')
+  await until(() => evaluate("document.querySelector('[aria-label=\"File inspection\"]') || document.querySelector('.inspection-scroll')"), 'the history of the source file')
+  await evaluate(`document.querySelector('.working-row[title="tracked.txt"]')
+    .dispatchEvent(new KeyboardEvent('keydown', { key: 'F4', bubbles: true, cancelable: true }))`)
+  await until(() => evaluate("document.querySelector('.source-preview-tabs .editor-tab.active')?.title === 'tracked.txt'"), 'F4 to return to the source tab')
   assert.ok(await evaluate("document.querySelector('.statusbar .editor-meta')?.innerText.includes('UTF-8 ·')"), 'status bar shows encoding')
   assert.equal(await evaluate("document.querySelector('.statusbar .editor-meta .line-ending-widget')?.innerText"), 'LF', 'status bar widget shows LF')
   await evaluate("document.querySelector('.statusbar .editor-meta .line-ending-widget').click()")
   await until(() => evaluate(widget + "?.innerText === 'CRLF'"), 'widget switches to CRLF')
-  await until(() => evaluate("document.querySelector('.workspace-editor')?.innerText.includes('Saved')"), 'conversion saved')
+  await until(() => evaluate("document.querySelector('.statusbar .editor-meta')?.innerText.includes('Saved')"), 'conversion saved')
   assert.ok((await readRepo('tracked.txt')).includes('\r\n'), 'stored file converted to CRLF')
-  assert.ok(await evaluate("document.querySelector('.workspace-editor')?.innerText.includes('UTF-8')"), 'UTF-8 label kept')
+  assert.ok(await evaluate("document.querySelector('.statusbar .editor-meta')?.innerText.includes('UTF-8')"), 'UTF-8 label kept')
 
   /* ---- G14: commit message history ---- */
   await contextMenuRow("document.querySelector('.working-row[title=\"tracked.txt\"]')", 'Stage', 'Working file actions')
-  await until(() => evaluate("document.querySelector('.index-actions button[title=\"Stage the selected file\"]')?.disabled"), 'selected file staged')
+  await until(() => Promise.resolve(git('diff', '--cached', '--name-only').includes('tracked.txt')), 'selected file staged')
   await evaluate(`(() => {
     const input = document.querySelector('#commit-message')
     input.value = 'Batch1 smoke PROJ-2 fix'
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })()`)
-  await evaluate("document.querySelector('.commit-actions .primary').click()")
+  await clickButton('.commit-actions', 'Commit')
   await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('PROJ-2'))"), 'PROJ-2 commit in history')
   await evaluate("document.querySelector('.commit-history button').click()")
   const item = await until(() => evaluate("[...document.querySelectorAll('.commit-history-item')].map(item => item.innerText)[0]"), 'history dropdown entries')
@@ -165,7 +183,10 @@ try {
   await until(() => evaluate("!!document.querySelector('.files-panel .file-row[title=\"tracked.txt\"]')"), 'changed file listed for PROJ-2')
   await evaluate("document.querySelector('.files-panel .file-row[title=\"tracked.txt\"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))")
   await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'tracked.txt' && tab.classList.contains('active'))"), 'pinned diff tab opens')
-  await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.session') ?? '{}').diffTabs?.length === 1"), 'diff tab persisted to the session')
+  await until(() => evaluate(`(() => {
+    const sessions = JSON.parse(localStorage.getItem('gitvela.sessions') ?? '{}')
+    return sessions.byPath?.[sessions.last]?.diffTabs?.length === 1
+  })()`), 'diff tab persisted to the session')
   await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload for restore')
   await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'tracked.txt' && tab.classList.contains('active'))"), 'pinned diff tab restored and active')
@@ -176,6 +197,8 @@ try {
   console.log('Batch 1 smoke passed: .gitignore, line endings, message history, issue links, diff tab restore.')
 } finally {
   socket.close()
-  if (!keepRepo) await rm(repo, { recursive: true, force: true })
-  else console.log('Kept temp repository: ' + repo)
+  if (!keepRepo) {
+    await rm(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
+      .catch(() => console.log('Left fixture in place: ' + repo))
+  } else console.log('Kept temp repository: ' + repo)
 }

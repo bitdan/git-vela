@@ -154,6 +154,7 @@ export interface Lane {
 
 export interface OperationState {
     "kind": string;
+    "revision": string;
     "conflicts": string[] | null;
 }
 

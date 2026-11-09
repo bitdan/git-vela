@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -93,7 +94,7 @@ func validateRepoPath(path string) error {
 // RenameStash rewrites a stash message. Git stores the message in the reflog
 // of refs/stash and cannot edit it in place, so the entry is re-created from
 // the same trees and parents under the new message and the old one is dropped.
-func RenameStash(ctx context.Context, dir, selector, hash, message string) error {
+func RenameStash(ctx context.Context, dir string, expected StashEntry, message string) error {
 	message = strings.TrimSpace(message)
 	if message == "" || len(message) > 1024 || strings.ContainsAny(message, "\x00\r\n") {
 		return errors.New("the stash message must be a single line")
@@ -101,10 +102,15 @@ func RenameStash(ctx context.Context, dir, selector, hash, message string) error
 	if err := checkOperationState(ctx, dir); err != nil {
 		return err
 	}
-	entry, err := findStash(ctx, dir, selector, hash, true)
+	previous, err := Stashes(ctx, dir)
 	if err != nil {
 		return err
 	}
+	index := slices.Index(previous, expected)
+	if index < 0 {
+		return errors.New("the stash list changed; review the refreshed entries and try again")
+	}
+	entry := previous[index]
 	parents, err := run(ctx, dir, nil, 4096, "rev-list", "--parents", "-n", "1", entry.Hash)
 	if err != nil {
 		return err
@@ -126,6 +132,9 @@ func RenameStash(ctx context.Context, dir, selector, hash, message string) error
 	if index := strings.Index(entry.Subject, ": "); index > 0 {
 		subject = entry.Subject[:index+2] + message
 	}
+	if subject == entry.Subject {
+		return nil
+	}
 	created, err := run(ctx, dir, nil, 4096, append(args, "-m", subject)...)
 	if err != nil {
 		return err
@@ -134,20 +143,42 @@ func RenameStash(ctx context.Context, dir, selector, hash, message string) error
 	if !objectID(newHash) {
 		return errors.New("Git did not return a stash commit")
 	}
-	if _, err := run(ctx, dir, nil, 1<<20, "stash", "store", "--message="+subject, newHash); err != nil {
+	current, err := Stashes(ctx, dir)
+	if err != nil {
 		return err
 	}
-	// The stored entry moves to the top, so the old one is located again.
+	if !slices.Equal(current, previous) {
+		return errors.New("the stash list changed; review the refreshed entries and try again")
+	}
+	// Stash store normally appends a reflog entry. Use the same ref update with
+	// an expected old tip so a concurrent push cannot be silently overwritten.
+	if _, err := run(ctx, dir, nil, 1<<20, "update-ref", "--create-reflog", "-m", subject, "refs/stash", newHash, previous[0].Hash); err != nil {
+		return err
+	}
+	if err := removeReplacedStash(ctx, dir, previous, index, newHash, subject); err != nil {
+		return fmt.Errorf("renamed copy saved, but the original could not be removed; review the refreshed shelf before retrying: %w", err)
+	}
+	return nil
+}
+
+func removeReplacedStash(ctx context.Context, dir string, previous []StashEntry, index int, newHash, subject string) error {
 	entries, err := Stashes(ctx, dir)
 	if err != nil {
 		return err
 	}
-	for _, current := range entries {
-		if current.Hash == entry.Hash {
-			return dropStash(ctx, dir, current.Selector, current.Hash)
+	if len(entries) != len(previous)+1 || entries[0].Hash != newHash || entries[0].Subject != subject {
+		return errors.New("the stash list changed")
+	}
+	for i, old := range previous {
+		shifted := entries[i+1]
+		shifted.Selector = old.Selector
+		if shifted != old {
+			return errors.New("the stash list changed")
 		}
 	}
-	return nil
+	// The verified append shifted each selector by one. Use the specific
+	// occurrence the user selected, since multiple entries may share a hash.
+	return dropStash(ctx, dir, entries[index+1].Selector, previous[index].Hash)
 }
 
 func UpdateStash(ctx context.Context, dir, action, selector, hash string, restoreIndex bool) error {

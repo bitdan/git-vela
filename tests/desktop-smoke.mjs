@@ -386,7 +386,7 @@ try {
     await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!!document.querySelector('.commit-row canvas')"), 'return to history graph')
     // Settings opens as a modal dialog; toggles apply live.
-    await click('.activity-bar button[aria-label="Settings"]')
+    await click('.topbar button[aria-label="Settings"]')
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog opens')
     await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Dark theme')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.theme === 'dark'"), 'dark theme from Settings')
@@ -528,7 +528,7 @@ try {
       // stayed in another state or the whole page went unresponsive.
       let last = 'unavailable'
       return until(async () => {
-        last = await evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText ?? 'missing'`)
+        last = await evaluate(`document.querySelector('.statusbar .editor-meta [role=status]')?.innerText ?? 'missing'`)
         return typeof last === 'string' && last.includes(text)
       }, 'editor status ' + JSON.stringify(text))
         .catch(error => { throw new Error(error.message + ' (last observed: ' + last + ')') })
@@ -540,12 +540,24 @@ try {
     }
     const selectFile = async (path) => {
       await inputValue('[aria-label="Filter repository files"]', path)
-      await clickButton('.repository-files .file-scroll', path)
+      await until(() => evaluate(`(() => {
+        const file = [...document.querySelectorAll('.repository-files .repository-file-row')]
+          .find(row => row.title === ${JSON.stringify(path)})
+        if (!file) return false
+        file.click()
+        return true
+      })()`), 'repository file ' + path)
     }
 
     await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile(file)
     await editorStatus('Saved')
+    await until(() => evaluate(`(() => {
+      const trigger = document.querySelector('.source-actions-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`), 'editor actions trigger')
     await clickButton('.editor-tools', 'Find / Replace')
     await until(() => evaluate("!!document.querySelector('.editor-host .cm-search')"), 'find and replace panel')
     await keyboard('Escape', 'Escape', 27, 0)
@@ -583,17 +595,32 @@ try {
     await enterText('unsaved draft')
     await editorStatus('Unsaved changes')
     await writeFile(target, 'external update')
+    await until(() => evaluate(`(() => {
+      const trigger = document.querySelector('.source-actions-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`), 'editor actions trigger')
     await clickButton('.editor-tools', 'Save')
     await until(() => evaluate("document.querySelector('.preview-panel [role=alert]')?.innerText.includes('changed on disk')"), 'external change blocked save')
     assert.equal(await readFile(target, 'utf8'), 'external update')
 
     await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile('README.md')
+    await until(() => evaluate("document.querySelector('.source-preview-tabs .editor-tab.active')?.title === 'README.md'"), 'second source tab opens')
+    await evaluate("document.querySelector('.editor-host .cm-content[aria-label=\"Edit README.md\"]').focus()")
+    await keyboard('a', 'KeyA', 65, 2)
+    await cdp('Input.insertText', { text: 'second unsaved draft' })
+    await evaluate("document.querySelector('.source-preview-tabs [aria-label=\"Close greetservice.go\"]').click()")
+    await until(() => evaluate("document.querySelector('dialog[open] li')?.innerText === 'greetservice.go'"), 'confirmation names the inactive tab')
     await clickButton('[aria-label="Unsaved file changes"]', 'Keep editing')
-    assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'unsaved draft')
-    await clickButton('.editor-tools', 'Close')
+    assert.ok(await evaluate("!!document.querySelector('.source-preview-tabs [aria-label=\"Close greetservice.go\"]')"))
+    await evaluate("document.querySelector('.source-preview-tabs [aria-label=\"Close greetservice.go\"]').click()")
     await clickButton('[aria-label="Unsaved file changes"]', 'Discard changes')
-    await until(() => evaluate("!document.querySelector('.workspace-editor')"), 'editor closed after discard confirmation')
+    assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'second unsaved draft')
+    await evaluate("document.querySelector('.source-preview-tabs .editor-tab.active .editor-close').click()")
+    await clickButton('[aria-label="Unsaved file changes"]', 'Discard changes')
+    await until(() => evaluate("!document.querySelector('.workspace-editor')"), 'both editor tabs closed after confirmation')
     git('restore', '--source=HEAD', '--staged', '--worktree', '--', file)
     assert.equal(await readFile(target, 'utf8'), original)
   }
@@ -676,11 +703,18 @@ try {
     await text('.conflict-grid', 'Theirs (stage 3)')
     await until(() => evaluate("!!document.querySelector('.editor-host .cm-content')"), 'resolution editor')
     await writeFile(target, 'resolved\n')
+    await until(() => evaluate(`(() => {
+      const trigger = document.querySelector('.source-actions-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`), 'editor actions trigger')
     await clickButton('.editor-tools', 'Reload')
     await until(() => evaluate("document.querySelector('.editor-host .cm-content')?.textContent.includes('resolved')"), 'resolution reloaded')
     await clickButton('.conflict-panel', 'Mark resolved')
     await text('.advanced-panel', '0 unmerged')
-    await clickButton('.advanced-panel', 'Continue')
+    await clickButton('.lower-console', 'Continue')
+    await clickButton('dialog[aria-label="Confirm continue"]', 'Confirm continue')
     await text('.advanced-panel [role=status]', 'Git operation continued.')
     assert.equal(git('show', 'HEAD:m3.txt'), 'resolved')
 
@@ -804,7 +838,7 @@ try {
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.commit-row')).height"), '27px')
 
     // Restore the comfortable layout, then rebind a shortcut through Settings.
-    await evaluate("document.querySelector('.activity-bar button[aria-label=\"Settings\"]').click()")
+    await evaluate("document.querySelector('.topbar button[aria-label=\"Settings\"]').click()")
     await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.density === 'comfortable'"), 'comfortable row density')
     await settingsTab('Keymap')
@@ -892,7 +926,7 @@ try {
     })()`)
     // Bind every chord in one settings session, then close the dialog: the
     // modal traps focus, so the commit field interactions below need it gone.
-    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await evaluate("document.querySelector('.topbar button[aria-label=Settings]').click()")
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened for shortcuts')
     await settingsTab('Keymap')
     await bindCommit('A', 'a')
@@ -926,7 +960,7 @@ try {
     assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), file)
     assert.equal(git('diff', '--cached', '--name-only'), '')
     // Reopen Settings to restore the default shortcuts.
-    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await evaluate("document.querySelector('.topbar button[aria-label=Settings]').click()")
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened')
     await settingsTab('Keymap')
     await clickButton('.shortcut-settings', 'Reset to defaults')

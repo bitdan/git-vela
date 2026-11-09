@@ -44,7 +44,8 @@ h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
   display: flex; align-items: center; gap: 8px; flex: none;
   padding: 8px 12px; background: var(--bg);
 }
-.brand { display: flex; align-items: center; gap: 7px; font-size: 14px; padding-right: 4px; }
+.topbar-spacer { flex: 1; min-width: 8px; }
+.project-chevron { color: var(--muted); }
 .brand-icon {
   display: grid; place-items: center; flex: none;
   width: 27px; height: 27px; border-radius: 8px;
@@ -60,7 +61,7 @@ button, input, select {
 button:hover:not(:disabled) { background: var(--hover); }
 button.primary { background: var(--accent-fill); color: var(--accent-ink); border-color: transparent; font-weight: 650; }
 button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: brightness(1.08); }
-.repo-form { display: flex; gap: 5px; min-width: 0; flex: 1; }
+.repo-form { display: flex; gap: 5px; min-width: 0; padding: 5px; }
 .repo-form input { flex: 1; min-width: 0; }
 .topbar button, .diff-actions button { white-space: nowrap; }
 .workspace { display: flex; min-height: 0; flex: 1; }
@@ -126,7 +127,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .preview-tabs button { white-space: nowrap; background: transparent; border-color: transparent; }
 .preview-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--select); }
 .branch-scroll { flex: 1; overflow: auto; min-height: 0; padding: 4px; }
-.recent-repos { max-width: 130px; }
 .splitter { display: grid; place-items: center; flex: none; height: var(--chrome-gap); cursor: row-resize; touch-action: none; }
 .splitter::before { content: ""; width: 32px; height: 2px; border-radius: 2px; background: var(--border); }
 .splitter:hover, .splitter:focus-visible { background: var(--select); }
@@ -508,10 +508,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
     gap: 5px;
     padding-inline: 8px;
   }
-
-  .recent-repos {
-    max-width: 90px;
-  }
 }
 
 .git-menu,
@@ -557,8 +553,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .roots-menu .command-menu {
   position: absolute;
   inset-inline-start: 0;
-  top: calc(100% + 4px);
 }
+
+.roots-menu .command-menu { top: calc(100% + 4px); width: min(360px, calc(100vw - 68px)); }
+.roots-menu summary { max-width: min(270px, 28vw); }
+.roots-menu .repo-form > button { text-align: center; border: 1px solid var(--border); }
+.source-preview-tabs { flex-wrap: nowrap; overflow-x: auto; }
+.source-preview-tabs .editor-tab { flex: 0 0 auto; max-width: 220px; }
+.source-tools-anchor { display: flex; flex: none; margin-inline-start: auto; }
+.source-tools-anchor:empty { display: none; }
+.source-actions-trigger { font-size: 17px; line-height: 1; }
+.git-menu .command-menu { bottom: calc(100% + 4px); }
+.topbar-settings { display: grid; place-items: center; flex: none; }
 
 .context-actions {
   position: fixed;
@@ -634,20 +640,6 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
   flex: 1;
   min-height: 0;
   flex-direction: column;
-}
-
-.editor-tools,
-.editor-tools > div {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.editor-tools {
-  justify-content: space-between;
-  padding: 4px 7px;
-  border-bottom: 1px solid var(--border);
 }
 
 .editor-host {
@@ -913,6 +905,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 .confirmation-dialog > header { justify-content: space-between; border-bottom: 1px solid var(--border); }
 .confirmation-dialog > header button { font-size: 16px; line-height: 1; }
 .dialog-body { padding: 12px; overflow-wrap: anywhere; }
+.repository-dialog-form { display: grid; gap: 8px; }
+.repository-dialog-form p { margin: 0 0 4px; }
+.repository-dialog-path { display: flex; gap: 8px; }
+.repository-dialog-path input { flex: 1; min-width: 0; }
 .dialog-body > .daily-panel { max-height: none; padding: 0; border: 0; background: transparent; }
 .dialog-actions { justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid var(--border); }
 

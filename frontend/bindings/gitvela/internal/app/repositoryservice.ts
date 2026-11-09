@@ -150,8 +150,8 @@ export function Files(path: string, commit: string, parent: number): $Cancellabl
     return $Call.ByID(2748190763, path, commit, parent);
 }
 
-export function FinishHistoryOperation(path: string, kind: string, abort: boolean): $CancellablePromise<void> {
-    return $Call.ByID(2506703526, path, kind, abort);
+export function FinishHistoryOperation(path: string, revision: string, abort: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2506703526, path, revision, abort);
 }
 
 export function FirstParent(path: string, hash: string): $CancellablePromise<string> {
@@ -234,8 +234,8 @@ export function RenameBranch(path: string, oldName: string, newName: string): $C
     return $Call.ByID(2220009630, path, oldName, newName);
 }
 
-export function RenameStash(path: string, selector: string, hash: string, message: string): $CancellablePromise<void> {
-    return $Call.ByID(3607485947, path, selector, hash, message);
+export function RenameStash(path: string, entry: git$0.StashEntry, message: string): $CancellablePromise<void> {
+    return $Call.ByID(3607485947, path, entry, message);
 }
 
 export function ResetBisect(path: string): $CancellablePromise<void> {

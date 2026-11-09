@@ -62,7 +62,7 @@ func TestRenameStashRewritesTheMessage(t *testing.T) {
 		t.Fatalf("stashes: %+v, %v", entries, err)
 	}
 	entry := entries[0]
-	if err := RenameStash(ctx, dir, entry.Selector, entry.Hash, "renamed"); err != nil {
+	if err := RenameStash(ctx, dir, entry, "renamed"); err != nil {
 		t.Fatal(err)
 	}
 	renamed, err := Stashes(ctx, dir)
@@ -83,10 +83,79 @@ func TestRenameStashRewritesTheMessage(t *testing.T) {
 		t.Fatalf("renamed stash did not apply: %q", got)
 	}
 
-	if err := RenameStash(ctx, dir, "stash@{0}", entry.Hash, ""); err == nil {
+	if err := RenameStash(ctx, dir, entry, ""); err == nil {
 		t.Fatal("accepted an empty rename")
 	}
-	if err := RenameStash(ctx, dir, "stash@{0}", entry.Hash, "two\nlines"); err == nil {
+	if err := RenameStash(ctx, dir, entry, "two\nlines"); err == nil {
 		t.Fatal("accepted a multi-line rename")
+	}
+}
+
+func TestRenameStashTargetsTheSelectedDuplicate(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "file.txt", "base\n")
+	commit(t, dir, "base")
+	write(t, dir, "file.txt", "change\n")
+	if err := SaveStash(ctx, dir, "original", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.TrimSpace(command(t, dir, "rev-parse", "stash@{0}"))
+	write(t, dir, "file.txt", "another change\n")
+	if err := SaveStash(ctx, dir, "middle", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	command(t, dir, "update-ref", "-m", "other reflog entry", "refs/stash", hash)
+	duplicates, err := Stashes(ctx, dir)
+	if err != nil || len(duplicates) != 3 {
+		t.Fatalf("duplicate shelf: %+v, %v", duplicates, err)
+	}
+	stale := duplicates[2]
+	stale.Selector = duplicates[0].Selector
+	if err := RenameStash(ctx, dir, stale, "stale rename"); err == nil {
+		t.Fatal("accepted a different reflog entry with the same hash")
+	}
+	if err := RenameStash(ctx, dir, duplicates[2], "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := Stashes(ctx, dir)
+	if err != nil || len(entries) != 3 || entries[1].Subject != "other reflog entry" {
+		t.Fatalf("rename removed the wrong reflog entry: %+v, %v", entries, err)
+	}
+}
+
+func TestRemoveReplacedStashRejectsConcurrentStackChanges(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "file.txt", "base\n")
+	commit(t, dir, "base")
+	write(t, dir, "file.txt", "original\n")
+	if err := SaveStash(ctx, dir, "original", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := Stashes(ctx, dir)
+	if err != nil || len(previous) != 1 {
+		t.Fatalf("original shelf: %+v, %v", previous, err)
+	}
+	write(t, dir, "file.txt", "renamed copy\n")
+	if err := SaveStash(ctx, dir, "renamed", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	afterAppend, err := Stashes(ctx, dir)
+	if err != nil || len(afterAppend) != 2 {
+		t.Fatalf("shelf after append: %+v, %v", afterAppend, err)
+	}
+	write(t, dir, "file.txt", "external change\n")
+	command(t, dir, "stash", "push", "-m", "external")
+	copy := afterAppend[0]
+	if err := removeReplacedStash(ctx, dir, previous, 0, copy.Hash, copy.Subject); err == nil {
+		t.Fatal("accepted a changed stash stack")
+	}
+	if err := RenameStash(ctx, dir, previous[0], "retry"); err == nil {
+		t.Fatal("accepted a retry with a stale selector")
+	}
+	current, err := Stashes(ctx, dir)
+	if err != nil || len(current) != 3 || current[2].Hash != previous[0].Hash || current[1].Hash != copy.Hash {
+		t.Fatalf("the original and renamed copy should remain: %+v, %v", current, err)
 	}
 }

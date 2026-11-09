@@ -2,14 +2,17 @@ package git
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 )
 
-// RunGC compacts the object database and prunes unreachable objects, which is
-// what IDEA's Git → Cleanup action does. It runs unattended and can take a
-// while on large repositories, so it gets its own timeout.
+// RunGC compacts objects and applies Git's configured expiration policies.
+// Large repositories may require more time than the standard Git timeout.
 func RunGC(ctx context.Context, dir string) error {
+	if availability := CheckRepositoryPath(dir); !availability.Available {
+		return errors.New(availability.Reason)
+	}
 	if err := checkOperationState(ctx, dir); err != nil {
 		return err
 	}
@@ -17,8 +20,8 @@ func RunGC(ctx context.Context, dir string) error {
 	return err
 }
 
-// UnreachableCommits counts commits no ref reaches, so the cleanup dialog can
-// say what `git gc` would prune. It runs the cheap connectivity-only check.
+// UnreachableCommits counts commits unreachable from current refs and the
+// index, ignoring reflogs. It is a diagnostic, independent of GC expiration.
 func UnreachableCommits(ctx context.Context, dir string) (int, error) {
 	data, err := run(ctx, dir, nil, 64<<10, "fsck", "--unreachable", "--no-reflogs", "--connectivity-only")
 	if err != nil {

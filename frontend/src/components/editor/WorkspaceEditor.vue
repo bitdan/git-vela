@@ -1,24 +1,27 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { bracketMatching, indentOnInput, indentUnit } from '@codemirror/language'
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from '@codemirror/search'
 import { Compartment, EditorState } from '@codemirror/state'
 import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view'
+import ContextActions from '../layout/ContextActions.vue'
+import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import { usePreferences } from '../../stores/preferences'
 import { textHighlighting, textLanguage } from './textLanguage'
 
 const props = defineProps<{
-  path: string; initialContent: string; dark: boolean; lineEnding: string; bom: boolean
+  path: string; initialContent: string; dark: boolean; active: boolean
   dirty: boolean; saving: boolean; loading: boolean; blocked: boolean
 }>()
-const emit = defineEmits<{ change: [content: string]; save: []; reload: []; close: []; cursor: [line: number, col: number]; lineEnding: [ending: string] }>()
+const emit = defineEmits<{ change: [content: string]; save: []; reload: []; gitMenu: [event: MouseEvent | KeyboardEvent]; cursor: [line: number, col: number] }>()
 const host = useTemplateRef<HTMLElement>('host')
 const lineInput = useTemplateRef<HTMLInputElement>('line-input')
 const preferences = usePreferences()
 const theme = new Compartment()
 const wrapping = new Compartment()
 const indentation = new Compartment()
+const actions = shallowRef<ContextAnchor>()
 const goToLineOpen = ref(false)
 const goToLineValue = ref('')
 const goToLineError = ref('')
@@ -58,8 +61,15 @@ onMounted(() => {
       ],
     }),
   })
-  editor.focus()
+  if (props.active) editor.focus()
 })
+watch(() => props.active, active => {
+  if (active) editor?.focus()
+  else {
+    closeActions()
+    goToLineOpen.value = false
+  }
+}, { flush: 'post' })
 watch(() => props.dark, dark => editor?.dispatch({ effects: theme.reconfigure(EditorView.theme({}, { dark })) }))
 watch(() => preferences.editorWordWrap, wrap => editor?.dispatch({
   effects: wrapping.reconfigure(wrap ? EditorView.lineWrapping : []),
@@ -68,6 +78,8 @@ watch([() => preferences.editorFontSize, () => preferences.editorTabSize], () =>
   editor?.dispatch({ effects: indentation.reconfigure(indentationConfig()) })
 })
 onUnmounted(() => editor?.destroy())
+
+function closeActions() { actions.value = undefined }
 
 function find() {
   if (editor) openSearchPanel(editor)
@@ -108,21 +120,22 @@ function submitGoToLine() {
 </script>
 
 <template>
-  <div class="workspace-editor">
-    <div class="editor-tools">
-      <span class="muted" role="status">{{ dirty ? 'Unsaved changes' : 'Saved' }} · UTF-8{{ bom ? ' BOM' : '' }} ·
-        <!-- IDEA-style line ending widget: clicking converts the file on save. -->
-        <button class="line-ending-widget" :disabled="blocked || loading"
-                :title="'Convert line endings to ' + (lineEnding === 'CRLF' ? 'LF' : 'CRLF')"
-                @click="emit('lineEnding', lineEnding === 'CRLF' ? 'LF' : 'CRLF')">{{ lineEnding }}</button></span>
-      <div>
-        <button @click="find">Find / Replace</button>
-        <button :title="'Go to line (Ctrl+G)'" @click="openGoToLine">Go to Line</button>
-        <button :disabled="blocked || loading" @click="emit('reload')">Reload</button>
-        <button :disabled="blocked || loading" @click="emit('close')">Close</button>
-        <button class="primary" :disabled="!dirty || blocked || loading" @click="emit('save')">{{ saving ? 'Saving…' : 'Save' }}</button>
-      </div>
-    </div>
+  <div class="workspace-editor" tabindex="-1"
+       @contextmenu.prevent.stop="closeActions(); emit('gitMenu', $event)"
+       @keydown.shift.f10.prevent.stop="closeActions(); emit('gitMenu', $event)">
+    <Teleport to="#source-tools" v-if="active">
+      <button class="source-actions-trigger" aria-label="Editor actions" title="Editor actions"
+              :aria-expanded="!!actions" @click="actions = actions ? undefined : contextAnchor($event, false)">⋯</button>
+    </Teleport>
+    <Teleport to=".shell" v-if="active && actions">
+      <ContextActions :anchor="actions" label="Editor actions" class="editor-tools" @close="closeActions">
+        <button @click="closeActions(); find()">Find / Replace</button>
+        <button @click="closeActions(); openGoToLine()">Go to Line</button>
+        <button :disabled="blocked || loading" @click="closeActions(); emit('reload')">Reload</button>
+        <button :disabled="!dirty || blocked || loading" @click="closeActions(); emit('save')">{{ saving ? 'Saving…' : 'Save' }}</button>
+        <slot name="actions" :close="closeActions" />
+      </ContextActions>
+    </Teleport>
     <form v-if="goToLineOpen" class="go-to-line" @submit.prevent="submitGoToLine" @keydown.esc.prevent="cancelGoToLine">
       <label>Line
         <input ref="line-input" v-model="goToLineValue" type="text" inputmode="numeric" spellcheck="false"

@@ -238,8 +238,8 @@ func (s *RepositoryService) SaveStash(ctx context.Context, path, message string,
 	return s.write(ctx, func() error { return git.SaveStash(ctx, path, message, untracked, paths) })
 }
 
-func (s *RepositoryService) RenameStash(ctx context.Context, path, selector, hash, message string) error {
-	return s.write(ctx, func() error { return git.RenameStash(ctx, path, selector, hash, message) })
+func (s *RepositoryService) RenameStash(ctx context.Context, path string, entry git.StashEntry, message string) error {
+	return s.write(ctx, func() error { return git.RenameStash(ctx, path, entry, message) })
 }
 
 func (s *RepositoryService) UpdateStash(ctx context.Context, path, action, selector, hash string, restoreIndex bool) error {
@@ -434,8 +434,8 @@ func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, act
 	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, targets, expected, mode) })
 }
 
-func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, kind string, abort bool) error {
-	return s.write(ctx, func() error { return git.FinishHistoryOperation(ctx, path, kind, abort) })
+func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, revision string, abort bool) error {
+	return s.write(ctx, func() error { return git.FinishHistoryOperation(ctx, path, revision, abort) })
 }
 
 func (s *RepositoryService) ResolveConflict(ctx context.Context, path, file string) error {

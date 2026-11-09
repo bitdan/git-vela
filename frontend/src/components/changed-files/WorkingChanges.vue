@@ -141,6 +141,7 @@ defineExpose({ submit })
                   :aria-pressed="active === row.path" :title="row.file.oldPath ? row.file.oldPath + ' → ' + row.path : row.path"
                   @click="emit('select', row.file)"
                   @dblclick="emit('select', row.file, row.file.canStage ? 'unstaged' : 'staged')"
+                  @keydown.f4.exact.prevent.stop="emit('edit', row.file.path)"
                   @contextmenu.prevent="showActions(row.file, $event)" @keydown.shift.f10.prevent="showActions(row.file, $event)">
             <code class="file-status" :data-status="row.file.status.trim()" :title="state(row.file.status)">{{ row.file.status.trim() }}</code>
             <span class="ellipsis">{{ row.name }}</span>
@@ -201,7 +202,7 @@ defineExpose({ submit })
       <button @click="fileAction('working')">Show Working File</button>
       <button :disabled="!menuFile.canStage" @click="fileAction('unstaged')">Show Unstaged Diff</button>
       <button :disabled="!menuFile.canUnstage" @click="fileAction('staged')">Show Staged Diff</button>
-      <button @click="fileAction('edit')">Edit Working File</button>
+      <button @click="fileAction('edit')" aria-keyshortcuts="F4">Jump to Source</button>
       <hr />
       <button :disabled="indexBusy || loading || !menuFile.canStage" @click="fileAction('stage')">Stage</button>
       <button :disabled="indexBusy || loading || !menuFile.canUnstage" @click="fileAction('unstage')">Unstage</button>

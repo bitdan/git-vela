@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -189,7 +189,26 @@ try {
   // app's rebase fail with "another Git process seems to be running".
   const rebaseDir = join(clone, '.git', 'rebase-merge')
   await until(() => existsSync(rebaseDir), 'the rebase to stop for the edit step')
-  await clickButton('body', 'Continue')
+  await clickButton('.lower-console', 'Continue')
+  const continuation = 'dialog[aria-label="Confirm continue"]'
+  await until(() => evaluate('document.querySelector(' + JSON.stringify(continuation) + ')?.open'), 'the Continue modal')
+  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Cancel')
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await until(() => evaluate('!document.querySelector(' + JSON.stringify(continuation) + ')'), 'Escape to close the Continue modal')
+  assert.ok(existsSync(rebaseDir), 'Escape leaves the rebase in progress')
+
+  await clickButton('.lower-console', 'Abort…')
+  const abort = 'dialog[aria-label="Confirm abort"]'
+  await until(() => evaluate('document.querySelector(' + JSON.stringify(abort) + ')?.open'), 'the Abort modal')
+  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Cancel')
+  assert.ok((await evaluate('document.querySelector(' + JSON.stringify(abort) + ').innerText')).includes(join(basename(dirname(clone)), basename(clone))))
+  await evaluate('document.querySelector(' + JSON.stringify(abort) + ').querySelector("[aria-label=\\\"Close dialog\\\"]").click()')
+  await until(() => evaluate('!document.querySelector(' + JSON.stringify(abort) + ')'), 'close button to dismiss Abort')
+  assert.ok(existsSync(rebaseDir), 'closing Abort leaves the rebase in progress')
+
+  await clickButton('.lower-console', 'Continue')
+  await clickButton(continuation, 'Confirm continue')
   await until(() => !existsSync(rebaseDir), 'the rebase to finish after continue')
   assert.equal(git(clone, 'log', '-2', '--format=%s'), 'fourth renamed\nthird change\n',
     'history is unchanged across an edit stop')
@@ -204,13 +223,17 @@ try {
     button.click()
     return true
   })()`), 'the Git menu clone action')
-  await until(() => evaluate("!!document.querySelector('[aria-label=\"Clone repository\"]')"), 'the clone panel')
+  await until(() => evaluate('document.querySelector(\'dialog[aria-label="Clone repository"]\')?.open'), 'the clone modal')
+  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Cancel')
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.activity-bar button')].map(button => button.ariaLabel)"),
+    ['Files', 'Commit', 'Git Log'])
+  assert.ok(await evaluate("!!document.querySelector('.statusbar .git-menu') && !!document.querySelector('.topbar [aria-label=Settings]')"))
   const cloneField = name => `document.querySelector('[aria-label="Clone repository"] [aria-label="${name}"]')`
   await setInput(cloneField('Repository URL or path'), origin)
   await setInput(cloneField('Clone parent folder'), base)
   await setInput(cloneField('Clone folder name'), 'cloned-repo')
   await clickButton('[aria-label="Clone repository"]', 'Clone')
-  await until(() => evaluate("document.body.innerText.includes('cloned-repo')"), 'the cloned repository to open')
+  await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('cloned-repo')"), 'the cloned repository to open')
   assert.equal(git(join(base, 'cloned-repo'), 'log', '-1', '--format=%s').trim(), 'base commit',
     'the clone holds the origin history')
 

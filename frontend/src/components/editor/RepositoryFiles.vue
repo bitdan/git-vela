@@ -9,7 +9,7 @@ import { LatestRequest } from '../../stores/latestRequest'
 import { usePreferences } from '../../stores/preferences'
 
 const props = defineProps<{ path: string; active: boolean; selected?: string }>()
-const emit = defineEmits<{ open: [path: string] }>()
+const emit = defineEmits<{ open: [path: string]; gitMenu: [path: string, event: MouseEvent | KeyboardEvent] }>()
 const preferences = usePreferences()
 const files = shallowRef<string[]>([])
 const query = ref('')
@@ -93,6 +93,9 @@ onUnmounted(() => { unsubscribe?.(); requests.clear() })
           <button v-if="row.file" class="repository-file-row ellipsis" :class="{ active: selected === row.path }"
                   :title="row.path" :aria-pressed="selected === row.path"
                   :style="{ transform: 'translateY(' + item.start + 'px)', paddingInlineStart: 10 + row.depth * 13 + 'px' }"
+                  @keydown.f4.exact.prevent.stop="emit('open', row.path)"
+                  @contextmenu.prevent.stop="emit('gitMenu', row.path, $event)"
+                  @keydown.shift.f10.prevent.stop="emit('gitMenu', row.path, $event)"
                   @click="emit('open', row.path)">{{ row.name }}</button>
           <button v-else class="repository-file-row folder-row ellipsis" :title="row.path" :disabled="!!query.trim()"
                   :aria-expanded="!!query.trim() || !collapsed.has(row.path)"

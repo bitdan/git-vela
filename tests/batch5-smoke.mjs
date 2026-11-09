@@ -155,7 +155,7 @@ try {
 
   /* ---- Editor preferences: soft wrap, font size, tab width ---- */
 
-  await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+  await evaluate("document.querySelector('.topbar button[aria-label=Settings]').click()")
   await until(() => evaluate("!!document.querySelector('dialog[open]')"), 'the settings dialog')
   // Sections are tabs now, so the editor options have their own page.
   await until(() => evaluate(`(() => {
@@ -209,6 +209,7 @@ try {
 
   /* ---- Go to Line ---- */
 
+  await evaluate("document.querySelector('.source-actions-trigger').click()")
   await clickButton('.editor-tools', 'Go to Line')
   await until(() => evaluate("!!document.querySelector('.go-to-line input')"), 'the go-to-line form')
   await inputValue('.go-to-line input', '3')
@@ -218,7 +219,7 @@ try {
     const line = document.querySelector('.editor-host .cm-activeLine')
     return !!line && line.innerText.trim() === 'gamma'
   })()`), 'the cursor to jump to line 3')
-  await clickButton('.editor-tools', 'Close')
+  await evaluate("document.querySelector('.source-preview-tabs .editor-tab.active .editor-close').click()")
 
   /* ---- Bisect: find the commit that introduced bug.txt ---- */
 
@@ -342,12 +343,18 @@ try {
   await until(() => git(repo, 'stash', 'list', '--format=%s').includes('renamed stash'),
     'the stash rename to be applied')
 
-  /* ---- Cleanup: report and prune unreachable commits ---- */
+  /* ---- Cleanup: show diagnostics, then run maintenance on confirmation ---- */
 
   git(repo, 'switch', '-c', 'throwaway')
   git(repo, 'commit', '--allow-empty', '-m', 'unreachable commit')
   git(repo, 'switch', 'main')
   git(repo, 'branch', '-D', 'throwaway')
+  await gitMenuAction('Cleanup (git gc)…')
+  const cleanup = 'dialog[aria-label="Git cleanup"]'
+  await until(() => evaluate('document.querySelector(' + JSON.stringify(cleanup) + ')?.open'), 'the cleanup modal')
+  assert.equal(await evaluate('document.activeElement.textContent.trim()'), 'Cancel')
+  await clickButton(cleanup, 'Cancel')
+  await until(() => evaluate('!document.querySelector(' + JSON.stringify(cleanup) + ')'), 'the cleanup modal to close')
   await gitMenuAction('Cleanup (git gc)…')
   const count = await until(() => evaluate(`(() => {
     const panel = document.querySelector('[aria-label="Git cleanup"]')
@@ -393,6 +400,9 @@ try {
 
   /* ---- Workspace roots: separate sessions per root ---- */
 
+  // Fetch reports success before its follow-up history refresh finishes.
+  await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('Ready')"),
+    'the fetch and repository refresh to finish')
   await until(() => evaluate(`(() => {
     const row = ${workingRow('second.txt')}
     if (!row) return false
@@ -404,10 +414,14 @@ try {
     const row = rows.find(item => item.innerText.includes('second commit'))
     if (!row) return false
     row.click()
-    return !!document.querySelector('.commit-row.active')
-  })()`), 'a commit selection before switching roots')
-  // The session is written 350 ms after the selection settles.
-  await delay(900)
+    return row.classList.contains('active')
+  })()`), 'the second commit to be selected before switching roots')
+  const selectedHash = git(repo, 'log', '-1', '--format=%H', '--grep=^second commit$').trim()
+  assert.ok(selectedHash, 'the fixture has a second commit')
+  await until(() => evaluate(`(() => {
+    const sessions = JSON.parse(localStorage.getItem('gitvela.sessions') || '{}')
+    return sessions.byPath?.[sessions.last]?.hash === ${JSON.stringify(selectedHash)}
+  })()`), 'the selected commit to be saved before switching roots')
 
   await openRepository(other)
   await until(() => evaluate("document.querySelector('.sidebar-project strong')?.innerText.includes('other')"),

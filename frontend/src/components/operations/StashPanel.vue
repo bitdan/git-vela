@@ -101,8 +101,7 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
   }
 }
 
-/** Rename re-creates the stash entry under a new message and drops the old
- *  one, so the list refreshes and the selection is restored by content. */
+// Capture the selected reflog entry before the rename form opens.
 function openRename() {
   const item = entry.value
   if (!item || busy.value) return
@@ -120,12 +119,14 @@ async function rename() {
   error.value = ''
   notice.value = ''
   try {
-    await api.RenameStash(props.path, item.selector, item.hash, message)
-    renameOpen.value = false
+    await api.RenameStash(props.path, item, message)
     notice.value = 'Stash renamed.'
   } catch (cause) {
     error.value = String(cause)
   } finally {
+    renameOpen.value = false
+    renameItem.value = undefined
+    selection.value = undefined
     try {
       await Promise.all([load(), props.refresh()])
     } finally {

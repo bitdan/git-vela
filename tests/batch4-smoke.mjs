@@ -3,7 +3,7 @@
 //   node tests/batch4-smoke.mjs
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -257,7 +257,39 @@ try {
   assert.equal(await evaluate("document.querySelector('.top-error')?.innerText ?? ''"), notice,
     'the repository notice stays stable')
 
-  console.log('Batch 4 smoke passed: multi-commit cherry-pick, fetch prune and tag modes, missing-folder polling.')
+  // Reopen the missing path, then verify its five-second fallback. Create the
+  // nested directory before opening so modifying its file emits no root event.
+  await mkdir(clone)
+  git(clone, 'init', '-b', 'main')
+  await mkdir(join(clone, 'nested'))
+  const nested = join(clone, 'nested', 'poll.txt')
+  await writeFile(nested, 'base')
+  git(clone, 'add', '--', 'nested/poll.txt')
+  git(clone, '-c', 'user.name=Smoke', '-c', 'user.email=smoke@example.com', 'commit', '-m', 'reopened')
+  const openPath = path => evaluate(`(() => {
+    const input = document.querySelector('[aria-label="Repository path"]')
+    input.value = ${JSON.stringify(path)}
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.form.requestSubmit()
+  })()`)
+  await openPath(clone)
+  await until(() => evaluate('!!' + commitRow('reopened')), 'the recreated repository')
+  await delay(6500)
+  await writeFile(nested, 'reopened repository edit')
+  await until(() => evaluate("!!document.querySelector('[aria-label=\"Include nested/poll.txt in commit\"]')"),
+    'nested change after reopening')
+
+  await rm(clone, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 })
+  await until(() => evaluate("document.querySelector('.top-error')?.innerText.includes('no longer')"), 'second missing-folder notice')
+  await mkdir(join(origin, 'nested'))
+  await openPath(origin)
+  await until(() => evaluate('!!' + commitRow('base commit')), 'the healthy repository')
+  await delay(6500)
+  await writeFile(join(origin, 'nested', 'healthy.txt'), 'healthy repository edit')
+  await until(() => evaluate("!!document.querySelector('[aria-label=\"Include nested/healthy.txt in commit\"]')"),
+    'nested change after switching repositories')
+
+  console.log('Batch 4 smoke passed: multi-commit cherry-pick, fetch prune and tag modes, missing-folder polling and recovery.')
 } finally {
   socket.close()
   if (!keepRepo) {

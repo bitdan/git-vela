@@ -1,0 +1,18 @@
+/* Element-level base styles, imported into @layer base by tailwind.css so
+ * Tailwind utilities can override them. Class-based rules stay in the
+ * unlayered styles.css. */
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+button, input, select { color: inherit; font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .5; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+code { font-family: Consolas, "Cascadia Code", monospace; }
+h1, h2, p { margin: 0; }
+h2 { font-size: 13px; font-weight: 650; }
+h2 small { font-size: 11px; margin-left: 4px; color: var(--muted); }
+button, input, select {
+  background: var(--field); border: 1px solid var(--border); border-radius: 7px; padding: 4px 8px;
+}
+button:hover:not(:disabled) { background: var(--hover); }

@@ -40,6 +40,7 @@ import SyncPanel from './components/operations/SyncPanel.vue'
 import UpdateProjectDialog from './features/sync/UpdateProjectDialog.vue'
 import { useBranchSync } from './features/sync/useBranchSync'
 import NotificationBalloons from './shared/NotificationBalloons.vue'
+import StatusBar from './features/app/StatusBar.vue'
 import BisectPanel from './components/operations/BisectPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
@@ -2986,18 +2987,10 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     </ContextActions>
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <NotificationBalloons />
-    <footer class="statusbar">
-      <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
-      <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>
-      <span v-if="activeEditorTab" class="editor-meta">
-        <span role="status">{{ editorSaving ? 'Saving…' : editorDirty ? 'Unsaved changes' : 'Saved' }}</span> ·
-        UTF-8{{ activeEditorTab.file.bom ? ' BOM' : '' }} ·
-        <!-- Same line-ending widget as the editor toolbar (E1). -->
-        <button class="line-ending-widget" :disabled="indexBusy || store.opening"
-                :title="'Convert line endings to ' + ((activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding) === 'CRLF' ? 'LF' : 'CRLF')"
-                @click="switchLineEnding(activeEditorPath)">{{ activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding }}</button>
-      </span>
-      <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
-    </footer>
+    <StatusBar :path="store.repository?.path" :head="store.repository?.head" :cursor="editorCursor"
+               :editor="activeEditorTab ? { saving: editorSaving, dirty: editorDirty, bom: !!activeEditorTab.file.bom,
+                                            lineEnding: activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding } : undefined"
+               :opening="store.opening" :busy="indexBusy" :git-version="store.gitVersion"
+               @switch-line-ending="switchLineEnding(activeEditorPath)" />
   </div>
 </template>

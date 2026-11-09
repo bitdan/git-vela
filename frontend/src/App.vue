@@ -6,7 +6,7 @@ import { storeToRefs } from 'pinia'
 import { layoutBounds, usePreferences } from './stores/preferences'
 import { useKeymap } from './stores/keymap'
 import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
-import { clearSession, readSession, saveSession } from './stores/session'
+import { clearSession, clearSessionFor, readSession, readSessionFor, saveSession, type SessionState } from './stores/session'
 import { useWorkspace } from './stores/workspace'
 import ConfirmationDialog from './components/layout/ConfirmationDialog.vue'
 import ContextActions from './components/layout/ContextActions.vue'
@@ -32,6 +32,7 @@ import HunkPanel from './components/history/HunkPanel.vue'
 import ConflictPanel from './components/history/ConflictPanel.vue'
 import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
+import BisectPanel from './components/operations/BisectPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
 import type { AmendTarget, Change, Commit, Comparison, FilePreview, HeadState, OperationState, Ref as GitRef, StashEntry, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
@@ -53,6 +54,7 @@ const content = useTemplateRef<HTMLElement>('content')
 const paletteOpen = ref(false)
 const windowError = ref('')
 const restoreNotice = ref('')
+const configNotice = ref('')
 const sessionNotice = ref('')
 const expandedPreview = ref(false)
 const expandedDiff = ref(false)
@@ -68,6 +70,10 @@ const managedBranch = ref('')
 const branchBase = ref('')
 const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
+/** Repository whose saved layout is restored as soon as it finishes opening
+ *  (a root switch), as opposed to the session restore at startup. */
+const pendingRootRestore = ref('')
+const rootsMenu = useTemplateRef<HTMLDetailsElement>('roots-menu')
 const branchMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
 type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
 const sidebar = ref<Exclude<Sidebar, 'branches'>>('changes')
@@ -441,8 +447,11 @@ const diffExpanded = ref(false)
 const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
 const amendTarget = ref<AmendTarget>()
+/** Amend checkboxes (G12). Off by default: `git commit --amend` already keeps
+ *  the original author and adds no trailer. */
+const amendOptions = ref({ resetAuthor: false, signOff: false })
 let draftBeforeAmend = ''
-type DailyPanel = 'sync' | 'init' | 'clone' | 'remotes' | 'publish'
+type DailyPanel = 'sync' | 'init' | 'clone' | 'remotes' | 'publish' | 'bisect' | 'cleanup'
 type SyncIntent = 'fetch' | 'pull' | 'push'
 const dailyPanel = ref<DailyPanel>()
 const syncIntent = ref<SyncIntent>('fetch')
@@ -562,6 +571,7 @@ watch(() => store.repository?.path, repo => {
   if (repo) {
     path.value = repo
     watchRepository(repo)
+    preferences.rememberRoot(repo)
   }
   commitHistory.value = repo ? readCommitHistory(undefined, repo) : []
   navigation.value = ''
@@ -594,7 +604,9 @@ watch(() => store.repository?.path, repo => {
   workingSelection.value = undefined
   commitMessage.value = ''
   amendTarget.value = undefined
+  amendOptions.value = { resetAuthor: false, signOff: false }
   draftBeforeAmend = ''
+  if (repo) void prefillCommitTemplate(repo)
   dailyPanel.value = undefined
   commitNotice.value = ''
   indexError.value = ''
@@ -604,7 +616,11 @@ watch(() => store.repository?.path, repo => {
   expandedPreview.value = false
   expandedDiff.value = false
   view.value = 'working'
-  if (!restoringSession.value) void loadWorking()
+  const pendingRoot = !!repo && pendingRootRestore.value === repo
+  if (pendingRoot) pendingRootRestore.value = ''
+  if (!restoringSession.value && !pendingRoot) void loadWorking()
+  // A mapped root reopens with the tabs it had when it was last active.
+  if (pendingRoot) void restoreRootSession(repo)
 })
 
 
@@ -1209,6 +1225,18 @@ async function updateIncludedFiles(paths: string[], staged: boolean) {
   }
 }
 
+/** G14: prefill an empty message from commit.template. A draft the user has
+ *  already typed always wins, and a broken template never blocks committing. */
+async function prefillCommitTemplate(repo: string) {
+  try {
+    const template = await api.CommitTemplate(repo)
+    if (!template || repo !== store.repository?.path || commitMessage.value || amendTarget.value) return
+    commitMessage.value = template
+  } catch {
+    // Ignore: an unreadable template is a configuration problem, not a block.
+  }
+}
+
 async function startAmend() {
   const repo = store.repository?.path
   if (!repo || indexBusy.value || store.opening || amendTarget.value) return
@@ -1220,6 +1248,7 @@ async function startAmend() {
     if (repo !== store.repository?.path) return
     draftBeforeAmend = commitMessage.value
     amendTarget.value = target
+    amendOptions.value = { resetAuthor: false, signOff: false }
     commitMessage.value = target.message
     void nextTick(() => document.getElementById('commit-message')?.focus())
   } catch (cause) {
@@ -1232,6 +1261,7 @@ async function startAmend() {
 function cancelAmend() {
   if (!amendTarget.value) return
   amendTarget.value = undefined
+  amendOptions.value = { resetAuthor: false, signOff: false }
   commitMessage.value = draftBeforeAmend
   draftBeforeAmend = ''
   indexError.value = ''
@@ -1252,6 +1282,49 @@ function toggleDailyPanel(panel: DailyPanel) {
   if (dailyPanel.value === 'init') {
     projectPath.value = store.repository ? '' : path.value
     projectError.value = ''
+  }
+  if (dailyPanel.value === 'cleanup') void loadUnreachable()
+}
+
+/** Cleanup dialog (IDEA Git → Cleanup): show what `git gc` would prune, then
+ *  run it on request. The count is advisory; unreachable objects are harmless. */
+const unreachable = ref<number>()
+const cleanupError = ref('')
+const cleanupNotice = ref('')
+
+async function loadUnreachable() {
+  const repo = store.repository?.path
+  unreachable.value = undefined
+  cleanupError.value = ''
+  cleanupNotice.value = ''
+  if (!repo) return
+  try {
+    const count = await api.UnreachableCommits(repo)
+    if (repo === store.repository?.path) unreachable.value = count
+  } catch (cause) {
+    if (repo === store.repository?.path) cleanupError.value = String(cause)
+  }
+}
+
+async function runCleanup() {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value) return
+  indexBusy.value = true
+  cleanupError.value = ''
+  cleanupNotice.value = ''
+  try {
+    await api.RunGC(repo)
+    if (repo !== store.repository?.path) return
+    // Reload first: the reload clears the previous notice, so the success
+    // message is set afterwards.
+    await loadUnreachable()
+    if (repo !== store.repository?.path) return
+    cleanupNotice.value = 'Git cleanup finished.'
+    await refresh()
+  } catch (cause) {
+    if (repo === store.repository?.path) cleanupError.value = String(cause)
+  } finally {
+    indexBusy.value = false
   }
 }
 
@@ -1367,6 +1440,26 @@ async function ignoreFile(path: string) {
   }
 }
 
+/** Partial stash (G8 follow-up): stash only the selected paths, leaving the
+ *  rest of the working tree untouched. */
+async function stashWorkingFiles(paths: string[]) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || !paths.length) return
+  indexBusy.value = true
+  indexError.value = ''
+  try {
+    await api.SaveStash(repo, '', false, paths)
+    if (repo !== store.repository?.path) return
+    commitNotice.value = 'Stashed ' + paths.join(', ') + '.'
+    await loadWorking()
+    if (workingView.value) await selectView(workingView.value, true)
+  } catch (cause) {
+    if (repo === store.repository?.path) indexError.value = String(cause)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
 async function commitChanges(reviewPush = false) {
   const repo = store.repository?.path
   const message = commitMessage.value
@@ -1377,11 +1470,14 @@ async function commitChanges(reviewPush = false) {
   indexError.value = ''
   commitNotice.value = ''
   try {
-    if (target) await api.AmendIndex(repo, target.hash, target.ref, message)
+    if (target) await api.AmendIndex(repo, target.hash, target.ref, message, amendOptions.value)
     else await api.CommitIndex(repo, message)
     if (repo !== store.repository?.path) return
     if (target) cancelAmend()
-    else commitMessage.value = ''
+    else {
+      commitMessage.value = ''
+      void prefillCommitTemplate(repo)
+    }
     commitNotice.value = target ? 'Commit amended' : 'Commit created'
     commitHistory.value = rememberCommitMessage(undefined, repo, message, commitHistory.value)
     await Promise.all([store.open(repo), loadWorking()])
@@ -1399,10 +1495,22 @@ async function commitChanges(reviewPush = false) {
   }
 }
 
+/** Apply the Git binary chosen in Settings before any repository is opened.
+ *  A path that no longer works falls back to PATH and says so once. */
+async function applyStoredGitPath() {
+  try {
+    await api.ConfigureGit(preferences.gitPath)
+  } catch (cause) {
+    configNotice.value = 'The configured Git executable could not be started; using Git from PATH. ' + String(cause)
+    preferences.gitPath = ''
+  }
+}
+
 onMounted(() => {
   document.addEventListener('pointerdown', outsideMenus)
   window.addEventListener('beforeunload', preventDiscard)
   window.addEventListener('keydown', onGlobalKeydown)
+  if (preferences.gitPath.trim()) void applyStoredGitPath()
   void store.detectGit()
   void restoreSession()
   unsubscribeChanges = Events.On(GitvelaRepositoryChanged, event => {
@@ -1529,6 +1637,28 @@ function closeGitMenu() {
   if (gitMenu.value) gitMenu.value.open = false
 }
 
+function closeRootsMenu() {
+  if (rootsMenu.value) rootsMenu.value.open = false
+}
+
+/** Switch the workspace to another mapped root (Directory Mappings): the
+ *  repository is reopened so every panel keeps a single active repository,
+ *  then its own saved layout is restored (see `restoreRootSession`). */
+function openRoot(root: string) {
+  closeRootsMenu()
+  if (!root || root === store.repository?.path) return
+  pendingRootRestore.value = root
+  openRepository(root)
+}
+
+/** Drop a mapping together with its saved tabs; the repository itself and its
+ *  history stay on disk. */
+function removeRoot(root: string) {
+  preferences.forgetRoot(root)
+  clearSessionFor(root)
+  closeRootsMenu()
+}
+
 function gitAction(action: () => void) {
   closeGitMenu()
   action()
@@ -1581,6 +1711,7 @@ function openBranchActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
 function outsideMenus(event: PointerEvent) {
   if (!(event.target instanceof Node)) return
   if (!gitMenu.value?.contains(event.target)) closeGitMenu()
+  if (!rootsMenu.value?.contains(event.target) && rootsMenu.value) rootsMenu.value.open = false
 }
 
 function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase' | SyncIntent) {
@@ -1857,6 +1988,47 @@ async function restoreSession() {
       restoreNotice.value = 'The last repository is no longer available. Choose a repository to continue.'
       return
     }
+    await applySession(saved, repo)
+  } finally {
+    restoringSession.value = false
+    scheduleSessionSave()
+  }
+}
+
+/** Reopen a mapped root with the tabs it had when it was last active. Called
+ *  after `store.open` finished, so every request targets the new repository. */
+async function restoreRootSession(path: string) {
+  const repo = store.repository
+  if (!repo || repo.path !== path) {
+    void loadWorking()
+    return
+  }
+  const saved = readSessionFor(path)
+  if (!saved) {
+    void loadWorking()
+    return
+  }
+  // The repository watcher fires before the first history page arrives, so the
+  // saved commit cannot be resolved yet; wait for it instead of restoring a
+  // layout that silently falls back to HEAD.
+  for (let attempt = 0; attempt < 60 && store.loading; attempt++) {
+    if (store.repository?.path !== path) return
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (store.repository?.path !== path) return
+  restoringSession.value = true
+  try {
+    await applySession(saved, repo)
+  } finally {
+    restoringSession.value = false
+    scheduleSessionSave()
+  }
+}
+
+/** Apply a saved layout to the repository that is currently open. The `repo`
+ *  identity guards every await: if the user opens another repository mid-restore,
+ *  the rest of the old layout is dropped instead of leaking into the new one. */
+async function applySession(saved: SessionState, repo: NonNullable<typeof store.repository>) {
     sidebar.value = !saved.sidebar || saved.sidebar === 'branches' ? 'changes' : saved.sidebar
     sidebarHidden.value = false
     historyVisible.value = saved.sidebar === 'branches' || (saved.historyVisible ?? true)
@@ -1924,10 +2096,6 @@ async function restoreSession() {
     if (saved.editorActive && editorTabFor(saved.editorActive)) activeEditorPath.value = saved.editorActive
     await selectView(nextView)
     if (savedView === 'editor' && activeEditorPath.value) view.value = 'editor'
-  } finally {
-    restoringSession.value = false
-    scheduleSessionSave()
-  }
 }
 
 let sessionTimer: ReturnType<typeof setTimeout> | undefined
@@ -1995,6 +2163,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     add('push', 'Push…', 'Git operations', () => openSync('push'), { disabled: busy })
     add('stash', 'Stash…', 'Git operations', openShelf, { disabled: busy })
     add('remotes', 'Manage Remotes…', 'Git operations', () => toggleDailyPanel('remotes'), { disabled: busy })
+    add('bisect', 'Bisect…', 'Git operations', () => toggleDailyPanel('bisect'), { disabled: busy })
+    add('cleanup', 'Cleanup (git gc)…', 'Git operations', () => toggleDailyPanel('cleanup'), { disabled: busy })
     add('publish', 'Publish to GitHub…', 'Git operations', () => toggleDailyPanel('publish'), { disabled: busy })
     add('new-branch', 'New Branch…', 'Git operations', createBranchFromCommit, { disabled: busy || !store.selected })
   }
@@ -2016,7 +2186,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
   add('diff', diffExpanded.value ? 'Restore diff layout' : 'Maximize diff', 'View', () => diffExpanded.value ? restoreDiffLayout() : maximizeDiff(), { hint: hint('maximizeDiff'), disabled: !diffExpanded.value && (view.value !== 'commit' || !store.file) })
   add('file-tree', fileTree.value ? 'Show Changed Files flat' : 'Show Changed Files as a tree', 'View', () => { fileTree.value = !fileTree.value })
   add('reset-size', 'Reset panel sizes', 'View', () => preferences.resetLayout())
-  add('shortcuts', 'Keyboard shortcuts…', 'Settings', openSettings)
+  add('shortcuts', 'Settings…', 'Settings', openSettings)
   add('forget-session', 'Forget saved session', 'Settings', forgetSession)
   if (store.repository) {
     for (const ref of store.branchRefs.slice(0, 30)) {
@@ -2046,12 +2216,32 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <AppIcon name="branches" />
         <span class="ellipsis">{{ store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head }}</span>
       </button>
+      <details v-if="preferences.roots.length" ref="roots-menu" class="roots-menu"
+               @keydown.esc.stop="closeRootsMenu()">
+        <summary :title="'Workspace roots (' + preferences.roots.length + ')'">
+          <AppIcon class="menu-icon" name="worktrees" />
+          Roots
+        </summary>
+        <div class="command-menu" role="group" aria-label="Workspace roots">
+          <button v-for="root in preferences.roots" :key="root" :disabled="indexBusy || store.opening"
+                  :aria-current="root === store.repository?.path ? 'true' : undefined" :title="root"
+                  @click="openRoot(root)">
+            <span class="ellipsis">{{ root.split(/[\\/]/).at(-1) || root }}</span>
+            <span class="muted ellipsis roots-path">{{ root }}</span>
+          </button>
+          <div class="command-divider"></div>
+          <button :disabled="picking || indexBusy" @click="closeRootsMenu(); choose()">Add repository root…</button>
+          <button v-if="store.repository" :disabled="indexBusy"
+                  @click="removeRoot(store.repository.path)">Remove current root</button>
+        </div>
+      </details>
       <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
         <summary>
           <AppIcon class="menu-icon" name="branches" />
           Git
         </summary>
         <div class="command-menu" role="group" aria-label="Git operations">
+          <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('clone'))">Clone from URL…</button>
           <button :disabled="indexBusy || store.opening" @click="gitAction(() => toggleDailyPanel('init'))">Initialize Project…</button>
           <template v-if="store.repository">
             <div class="command-divider"></div>
@@ -2067,6 +2257,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
             <button :disabled="indexBusy || store.opening" @click="gitAction(refresh)">Refresh</button>
             <div class="command-divider"></div>
             <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('remotes'))">Manage Remotes…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('bisect'))">Bisect…</button>
+            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('cleanup'))">Cleanup (git gc)…</button>
             <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('publish'))">Publish to GitHub…</button>
           </template>
         </div>
@@ -2081,7 +2273,6 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <option v-for="repo in store.recent" :key="repo" :value="repo">{{ repo.split(/[\\/]/).at(-1) || repo }}</option>
       </select>
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
-      <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('clone')">Clone…</button>
       <button ref="paletteTrigger" :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
               @click="paletteOpen = !paletteOpen">Commands…</button>
     </header>
@@ -2092,6 +2283,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
     <p v-if="windowError" class="notice error top-error" role="alert">{{ windowError }} <button @click="windowError = ''">Dismiss</button></p>
     <p v-if="restoreNotice" class="notice top-error" role="status">{{ restoreNotice }} <button @click="restoreNotice = ''">Dismiss</button></p>
+    <p v-if="configNotice" class="notice error top-error" role="alert">{{ configNotice }} <button @click="configNotice = ''">Dismiss</button></p>
     <p v-if="watchError" class="notice top-error" role="status" :title="watchError">File notifications unavailable. Checking for Git changes every 5 seconds.</p>
     <section v-if="dailyPanel === 'init'" class="daily-panel" aria-label="Initialize project">
       <form class="daily-controls" @submit.prevent="withSavedEditor('initializing another project', () => { void initializeProject() })">
@@ -2134,6 +2326,24 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                   :has-head="hasLocalHead" publish :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
                :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <BisectPanel v-if="dailyPanel === 'bisect' && store.repository" :key="store.repository.path"
+                 :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy"
+                 @close="dailyPanel = undefined" />
+    <section v-if="dailyPanel === 'cleanup' && store.repository" class="daily-panel" aria-label="Git cleanup">
+      <div class="daily-controls">
+        <h2>Git cleanup</h2>
+        <p>Compact the object database and prune unreachable objects. History and the working tree are not changed.</p>
+        <p v-if="unreachable === undefined" class="notice" role="status">Checking for unreachable objects…</p>
+        <p v-else class="notice">{{ unreachable }} unreachable commit{{ unreachable === 1 ? '' : 's' }} found.
+          Pruning them cannot be undone, but they are not reachable from any branch or tag.</p>
+        <div>
+          <button class="primary" :disabled="indexBusy" @click="runCleanup">{{ indexBusy ? 'Cleaning…' : 'Run git gc' }}</button>
+          <button :disabled="indexBusy" @click="dailyPanel = undefined">Close</button>
+        </div>
+      </div>
+      <p v-if="cleanupError" class="notice error" role="alert">{{ cleanupError }}</p>
+      <p v-if="cleanupNotice" class="notice" role="status">{{ cleanupNotice }}</p>
+    </section>
     <ConfirmationDialog v-if="pendingEditorAction" title="Unsaved file changes" @cancel="pendingEditorAction = undefined">
       <p>Discard unsaved changes in <strong>{{ editorPath }}</strong> before {{ pendingEditorLabel }}?</p>
       <template #actions>
@@ -2231,10 +2441,12 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
                           :index-busy="indexBusy || store.opening || restoringSession" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
+                          :amend-author="amendTarget?.author" :amend-author-email="amendTarget?.authorEmail" :amend-date="amendTarget?.authorDate"
+                          v-model:amend-reset-author="amendOptions.resetAuthor" v-model:amend-sign-off="amendOptions.signOff"
                           :history="commitHistory"
                           @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
-                          :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" />
+                          :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" @stash="stashWorkingFiles" />
           <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"
                       class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation"
                       v-model:busy="indexBusy" @view-diff="viewStashDiff" />
@@ -2530,7 +2742,15 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <div class="empty-actions">
           <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse for a repository</button>
           <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('clone')">Clone from URL…</button>
-          <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('init')">Initialize a project…</button>
+          <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('init')">Initialize Project…</button>
+        </div>
+        <div v-if="preferences.roots.length" class="empty-roots" aria-label="Workspace roots">
+          <span class="eyebrow">WORKSPACE ROOTS</span>
+          <button v-for="root in preferences.roots" :key="root" :disabled="store.opening || indexBusy"
+                  :title="root" @click="openRepository(root)">
+            <span class="ellipsis">{{ root.split(/[\\/]/).at(-1) || root }}</span>
+            <span class="muted ellipsis roots-path">{{ root }}</span>
+          </button>
         </div>
       </main>
     </div>

@@ -17,6 +17,9 @@ const selection = ref<StashEntry>()
 const entry = computed(() => entries.value.find(item =>
   item.hash === selection.value?.hash && item.selector === selection.value?.selector))
 const confirmDrop = ref(false)
+const renameOpen = ref(false)
+const renameMessage = ref('')
+const renameItem = ref<StashEntry>()
 const menu = shallowRef<ContextAnchor>()
 
 function select(item: StashEntry) {
@@ -80,13 +83,46 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
   confirmDrop.value = false
   try {
     if (action === 'save') {
-      await api.SaveStash(props.path, message.value.trim(), includeUntracked.value)
+      await api.SaveStash(props.path, message.value.trim(), includeUntracked.value, [])
       message.value = ''
       notice.value = 'Stash saved.'
     } else if (item) {
       await api.UpdateStash(props.path, action, item.selector, item.hash, restoreIndex.value)
       notice.value = { apply: 'Stash applied and kept.', pop: 'Stash applied and removed.', drop: 'Stash deleted.' }[action]
     }
+  } catch (cause) {
+    error.value = String(cause)
+  } finally {
+    try {
+      await Promise.all([load(), props.refresh()])
+    } finally {
+      busy.value = false
+    }
+  }
+}
+
+/** Rename re-creates the stash entry under a new message and drops the old
+ *  one, so the list refreshes and the selection is restored by content. */
+function openRename() {
+  const item = entry.value
+  if (!item || busy.value) return
+  const colon = item.subject.indexOf(': ')
+  renameMessage.value = colon > 0 ? item.subject.slice(colon + 2) : item.subject
+  renameItem.value = item
+  renameOpen.value = true
+}
+
+async function rename() {
+  const item = renameItem.value
+  const message = renameMessage.value.trim()
+  if (!item || !message || busy.value) return
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    await api.RenameStash(props.path, item.selector, item.hash, message)
+    renameOpen.value = false
+    notice.value = 'Stash renamed.'
   } catch (cause) {
     error.value = String(cause)
   } finally {
@@ -116,6 +152,7 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
     </div>
     <ContextActions v-if="menu && entry" :anchor="menu" label="Shelf actions" @close="menu = undefined">
       <button :disabled="busy || loading || !!loadError" @click="menu = undefined; emit('viewDiff', entry)">View Diff</button>
+      <button :disabled="busy || loading || !!loadError" @click="menu = undefined; openRename()">Rename…</button>
       <hr />
       <button :disabled="busy || loading || !!loadError" @click="menu = undefined; run('apply')">Apply</button>
       <button :disabled="busy || loading || !!loadError" @click="menu = undefined; run('pop')">Pop</button>
@@ -127,6 +164,7 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
       <button :disabled="busy || loading || !!loadError || !entry || !entry.parent" @click="entry && emit('viewDiff', entry)">View Diff</button>
       <button :disabled="busy || loading || !!loadError || !entry" @click="run('apply')">Apply</button>
       <button :disabled="busy || loading || !!loadError || !entry" @click="run('pop')">Pop</button>
+      <button :disabled="busy || loading || !!loadError || !entry" @click="openRename">Rename…</button>
       <button :disabled="busy || loading || !!loadError || !entry" :aria-expanded="confirmDrop" @click="confirmDrop = true">Drop…</button>
       <button :disabled="busy || loading" @click="load">Reload list</button>
     </div>
@@ -135,6 +173,17 @@ async function run(action: 'save' | 'apply' | 'pop' | 'drop') {
       <template #actions>
         <button data-cancel :disabled="busy" @click="confirmDrop = false">Cancel</button>
         <button class="danger-button" :disabled="busy || loading || !!loadError" @click="run('drop')">Confirm drop</button>
+      </template>
+    </ConfirmationDialog>
+    <ConfirmationDialog v-if="renameOpen && renameItem" title="Rename stash" :busy="busy" @cancel="renameOpen = false">
+      <label class="settings-field">Message
+        <input v-model="renameMessage" maxlength="1024" aria-label="New stash message" :disabled="busy"
+               @keydown.enter.prevent="rename()" />
+      </label>
+      <p class="notice">The stash content is kept; only its message changes.</p>
+      <template #actions>
+        <button data-cancel :disabled="busy" @click="renameOpen = false">Cancel</button>
+        <button class="primary" :disabled="busy || !renameMessage.trim()" @click="rename()">Rename</button>
       </template>
     </ConfirmationDialog>
     <p v-if="busy || loading" class="notice" role="status">{{ busy ? 'Running stash operation…' : 'Reading stashes…' }}</p>

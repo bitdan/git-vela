@@ -6,9 +6,12 @@ import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
 import type { SyncState } from '../../../bindings/gitvela/internal/git'
 import { LatestRequest } from '../../stores/latestRequest'
+import { usePreferences } from '../../stores/preferences'
+import { matchesProtectedBranch } from './protectedBranches'
 
 const props = defineProps<{ path: string; head: string; intent: 'fetch' | 'pull' | 'push'; refresh: () => Promise<void> }>()
 const busy = defineModel<boolean>('busy', { required: true })
+const preferences = usePreferences()
 const state = ref<SyncState>()
 const selectedRemote = ref('')
 const requests = new LatestRequest()
@@ -42,6 +45,11 @@ const pullMode = ref<'ff' | 'merge' | 'rebase'>('ff')
 const pullAutostash = ref(false)
 const fetchOptions = ref<{ prune: boolean; tags: '' | 'all' | 'none' }>({ prune: false, tags: '' })
 const pushOptions = ref({ pushTags: false, setUpstream: false, forceWithLease: false })
+
+/** Protected branch patterns are enforced again by the backend; the dialog
+ *  only explains why the force option is unavailable. */
+const targetProtected = computed(() => !!confirmation.value &&
+  matchesProtectedBranch(preferences.protectedPatterns, confirmation.value.target))
 watch(() => props.intent, () => { confirmation.value = undefined })
 watch(selectedRemote, () => { confirmation.value = undefined })
 watch(() => props.head, () => {
@@ -102,10 +110,30 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
       notice.value = 'Pull complete from ' + target.remote + '/' + target.target + '.'
     } else if (target) {
       await api.PushBranch(props.path, target.branch, target.remote, target.target,
-        { ...pushOptions.value })
+        { ...pushOptions.value, protected: preferences.protectedPatterns })
       notice.value = 'Push complete to ' + target.remote + '/' + target.target + '.'
       pushOptions.value = { pushTags: false, setUpstream: false, forceWithLease: false }
     }
+  } catch (cause) {
+    error.value = String(cause)
+  } finally {
+    try {
+      await Promise.all([load(), props.refresh()])
+    } finally {
+      running.value = ''
+      busy.value = false
+    }
+  }
+}
+async function fetchAll() {
+  if (busy.value || loading.value || loadError.value || !state.value?.remotes?.length) return
+  busy.value = true
+  error.value = ''
+  notice.value = ''
+  running.value = 'Fetching all remotes…'
+  try {
+    await api.FetchAllRemotes(props.path, fetchOptions.value)
+    notice.value = 'Fetched all remotes.'
   } catch (cause) {
     error.value = String(cause)
   } finally {
@@ -141,6 +169,8 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
         </label>
       </fieldset>
       <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !selectedRemote" @click="run('fetch')">Fetch</button>
+      <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !state?.remotes?.length"
+              title="Fetch every configured remote with the same options" @click="fetchAll">Fetch all remotes</button>
       <fieldset v-if="intent === 'pull'" class="pull-options" :disabled="busy || loading || !upstream">
         <legend>Pull strategy</legend>
         <label><input type="radio" value="ff" v-model="pullMode" /> Fast-forward only</label>
@@ -161,9 +191,13 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
         Push annotated tags reachable from these commits</label>
       <label v-if="upstream" class="push-option"><input type="checkbox" v-model="pushOptions.setUpstream" :disabled="busy" />
         Re-point the upstream to {{ confirmation.remote }}/{{ confirmation.target }}</label>
-      <label class="push-option"><input type="checkbox" v-model="pushOptions.forceWithLease" :disabled="busy" />
+      <label class="push-option"><input v-model="pushOptions.forceWithLease" type="checkbox" :disabled="busy || targetProtected" />
         Force overwrite the remote branch (force-with-lease)</label>
-      <p v-if="pushOptions.forceWithLease" class="notice error" role="alert">
+      <p v-if="targetProtected" class="notice error" role="alert">
+        {{ confirmation.remote }}/{{ confirmation.target }} matches a protected branch pattern, so it cannot be force pushed.
+        Remove the protection in Settings → Version Control to override.
+      </p>
+      <p v-else-if="pushOptions.forceWithLease" class="notice error" role="alert">
         Force overwrites commits on {{ confirmation.remote }}/{{ confirmation.target }} that this clone has not fetched.
         Only use it after rewriting local history; the lease is taken against the last fetched state.
       </p>

@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAmendChecksExpectedHead(t *testing.T) {
@@ -26,7 +28,7 @@ func TestAmendChecksExpectedHead(t *testing.T) {
 	write(t, dir, "file.txt", "staged")
 	command(t, dir, "add", "--", "file.txt")
 	write(t, dir, "file.txt", "unstaged")
-	if err := AmendIndex(ctx, dir, first.Hash, first.Ref, "updated"); err != nil {
+	if err := AmendIndex(ctx, dir, first.Hash, first.Ref, "updated", AmendOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	second, err := PrepareAmend(ctx, dir)
@@ -36,15 +38,15 @@ func TestAmendChecksExpectedHead(t *testing.T) {
 	if command(t, dir, "show", "HEAD:file.txt") != "staged" {
 		t.Fatal("amend included unstaged content")
 	}
-	if err := AmendIndex(ctx, dir, first.Hash, first.Ref, "stale"); err == nil {
+	if err := AmendIndex(ctx, dir, first.Hash, first.Ref, "stale", AmendOptions{}); err == nil {
 		t.Fatal("amended a different HEAD")
 	}
 	command(t, dir, "switch", "-c", "same-tip")
-	if err := AmendIndex(ctx, dir, second.Hash, second.Ref, "wrong branch"); err == nil {
+	if err := AmendIndex(ctx, dir, second.Hash, second.Ref, "wrong branch", AmendOptions{}); err == nil {
 		t.Fatal("amended a different branch at the same commit")
 	}
 	command(t, dir, "switch", "main")
-	if err := AmendIndex(ctx, dir, second.Hash, second.Ref, "message only"); err != nil {
+	if err := AmendIndex(ctx, dir, second.Hash, second.Ref, "message only", AmendOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(command(t, dir, "rev-list", "--count", "HEAD")); got != "1" {
@@ -61,7 +63,7 @@ func TestStashRestoresIndexAndProtectsStaleEntry(t *testing.T) {
 	command(t, dir, "add", "--", "file.txt")
 	write(t, dir, "file.txt", "working\n")
 	write(t, dir, "新 untracked.txt", "new")
-	if err := SaveStash(ctx, dir, "task work", true); err != nil {
+	if err := SaveStash(ctx, dir, "task work", true, nil); err != nil {
 		t.Fatal(err)
 	}
 	command(t, dir, "config", "log.date", "iso")
@@ -74,7 +76,7 @@ func TestStashRestoresIndexAndProtectsStaleEntry(t *testing.T) {
 		t.Fatalf("stash left changes: %q", status)
 	}
 	write(t, dir, "file.txt", "newer\n")
-	if err := SaveStash(ctx, dir, "newer", false); err != nil {
+	if err := SaveStash(ctx, dir, "newer", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := UpdateStash(ctx, dir, "drop", first.Selector, first.Hash, false); err == nil {
@@ -181,7 +183,7 @@ func TestStashPopKeepsConflictingEntry(t *testing.T) {
 	write(t, dir, "file.txt", "base\n")
 	commit(t, dir, "base")
 	write(t, dir, "file.txt", "stashed\n")
-	if err := SaveStash(ctx, dir, "saved edits", false); err != nil {
+	if err := SaveStash(ctx, dir, "saved edits", false, nil); err != nil {
 		t.Fatal(err)
 	}
 	command(t, dir, "config", "log.date", "iso")
@@ -261,5 +263,95 @@ func TestCheckRepositoryPath(t *testing.T) {
 	status = CheckRepositoryPath(empty)
 	if status.Available || !strings.Contains(status.Reason, "no longer contains a Git repository") {
 		t.Fatalf("folder without Git metadata status: %+v", status)
+	}
+}
+
+func TestAmendAuthorOptionsAndSignOff(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	command(t, dir, "config", "user.name", "Original Author")
+	command(t, dir, "config", "user.email", "original@example.invalid")
+	write(t, dir, "file.txt", "one\n")
+	command(t, dir, "add", "-A")
+	if _, err := runWithEnvironment(ctx, 2*time.Minute, dir, nil, 1<<20,
+		[]string{"GIT_AUTHOR_DATE=2020-01-02T03:04:05+00:00", "GIT_COMMITTER_DATE=2020-01-02T03:04:05+00:00"},
+		"commit", "-m", "first"); err != nil {
+		t.Fatal(err)
+	}
+	wantDate := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%at"))
+
+	// A different identity amends the commit: Git keeps the author unless the
+	// form asks to reset it, and the form must show the author it preserves.
+	command(t, dir, "config", "user.name", "Test Author")
+	command(t, dir, "config", "user.email", "test@example.invalid")
+	target, err := PrepareAmend(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Author != "Original Author" || target.AuthorEmail != "original@example.invalid" ||
+		target.AuthorDate == 0 || strconv.FormatInt(target.AuthorDate, 10) != wantDate {
+		t.Fatalf("amend target author: %+v (want date %s)", target, wantDate)
+	}
+	if err := AmendIndex(ctx, dir, target.Hash, target.Ref, "kept author", AmendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%an <%ae> %at")); !strings.HasPrefix(got, "Original Author <original@example.invalid> "+wantDate) {
+		t.Fatalf("amend changed the author: %q", got)
+	}
+
+	// Reset author adopts the current identity.
+	kept, err := PrepareAmend(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AmendIndex(ctx, dir, kept.Hash, kept.Ref, "reset author", AmendOptions{ResetAuthor: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%an <%ae>")); got != "Test Author <test@example.invalid>" {
+		t.Fatalf("reset author kept the old identity: %q", got)
+	}
+
+	// Sign-off appends a trailer for the current committer identity.
+	reset, err := PrepareAmend(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AmendIndex(ctx, dir, reset.Hash, reset.Ref, "signed", AmendOptions{SignOff: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%B")); !strings.HasSuffix(got, "Signed-off-by: Test Author <test@example.invalid>") {
+		t.Fatalf("sign-off missing: %q", got)
+	}
+}
+
+func TestCommitTemplateResolution(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "file.txt", "one\n")
+	commit(t, dir, "first")
+
+	if template, err := CommitTemplate(ctx, dir); err != nil || template != "" {
+		t.Fatalf("unset template: %q, %v", template, err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "docs/commit-template.txt", "Subject line\n\nBody\n")
+	command(t, dir, "config", "commit.template", "docs/commit-template.txt")
+	template, err := CommitTemplate(ctx, dir)
+	if err != nil || template != "Subject line\n\nBody\n" {
+		t.Fatalf("root-relative template: %q, %v", template, err)
+	}
+	absolute := filepath.Join(t.TempDir(), "absolute-template.txt")
+	if err := os.WriteFile(absolute, []byte("Absolute\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command(t, dir, "config", "commit.template", absolute)
+	if template, err := CommitTemplate(ctx, dir); err != nil || template != "Absolute\n" {
+		t.Fatalf("absolute template: %q, %v", template, err)
+	}
+	command(t, dir, "config", "commit.template", "docs/missing.txt")
+	if template, err := CommitTemplate(ctx, dir); err != nil || template != "" {
+		t.Fatalf("missing template: %q, %v", template, err)
 	}
 }

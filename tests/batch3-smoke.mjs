@@ -194,8 +194,16 @@ try {
   assert.equal(git(clone, 'log', '-2', '--format=%s'), 'fourth renamed\nthird change\n',
     'history is unchanged across an edit stop')
 
-  /* ---- G9: clone from URL through the daily panel ---- */
-  await clickButton('header', 'Clone…')
+  /* ---- G9: clone from URL, started from the Git menu ---- */
+  await until(() => evaluate(`(() => {
+    const menu = document.querySelector('.git-menu')
+    if (!menu) return false
+    if (!menu.open) menu.querySelector('summary').click()
+    const button = [...menu.querySelectorAll('button')].find(item => item.innerText === 'Clone from URL…')
+    if (!button || button.disabled) return false
+    button.click()
+    return true
+  })()`), 'the Git menu clone action')
   await until(() => evaluate("!!document.querySelector('[aria-label=\"Clone repository\"]')"), 'the clone panel')
   const cloneField = name => `document.querySelector('[aria-label="Clone repository"] [aria-label="${name}"]')`
   await setInput(cloneField('Repository URL or path'), origin)

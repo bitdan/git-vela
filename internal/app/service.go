@@ -222,16 +222,24 @@ func (*RepositoryService) PrepareAmend(ctx context.Context, path string) (git.Am
 	return discardCancelled(git.PrepareAmend(ctx, path))
 }
 
-func (s *RepositoryService) AmendIndex(ctx context.Context, path, expectedHead, expectedRef, message string) error {
-	return s.write(ctx, func() error { return git.AmendIndex(ctx, path, expectedHead, expectedRef, message) })
+func (s *RepositoryService) AmendIndex(ctx context.Context, path, expectedHead, expectedRef, message string, options git.AmendOptions) error {
+	return s.write(ctx, func() error { return git.AmendIndex(ctx, path, expectedHead, expectedRef, message, options) })
+}
+
+func (*RepositoryService) CommitTemplate(ctx context.Context, path string) (string, error) {
+	return discardCancelled(git.CommitTemplate(ctx, path))
 }
 
 func (*RepositoryService) Stashes(ctx context.Context, path string) ([]git.StashEntry, error) {
 	return discardCancelled(git.Stashes(ctx, path))
 }
 
-func (s *RepositoryService) SaveStash(ctx context.Context, path, message string, untracked bool) error {
-	return s.write(ctx, func() error { return git.SaveStash(ctx, path, message, untracked) })
+func (s *RepositoryService) SaveStash(ctx context.Context, path, message string, untracked bool, paths []string) error {
+	return s.write(ctx, func() error { return git.SaveStash(ctx, path, message, untracked, paths) })
+}
+
+func (s *RepositoryService) RenameStash(ctx context.Context, path, selector, hash, message string) error {
+	return s.write(ctx, func() error { return git.RenameStash(ctx, path, selector, hash, message) })
 }
 
 func (s *RepositoryService) UpdateStash(ctx context.Context, path, action, selector, hash string, restoreIndex bool) error {
@@ -248,6 +256,40 @@ func (*RepositoryService) CheckRepositoryPath(path string) git.RepositoryAvailab
 
 func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string, options git.FetchOptions) error {
 	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote, options) })
+}
+
+func (s *RepositoryService) FetchAllRemotes(ctx context.Context, path string, options git.FetchOptions) error {
+	return s.write(ctx, func() error { return git.FetchAllRemotes(ctx, path, options) })
+}
+
+func (s *RepositoryService) BisectState(ctx context.Context, path string) (git.BisectState, error) {
+	return discardCancelled(git.ReadBisectState(ctx, path))
+}
+
+func (s *RepositoryService) StartBisect(ctx context.Context, path, bad, good string) error {
+	return s.write(ctx, func() error { return git.StartBisect(ctx, path, bad, good) })
+}
+
+func (s *RepositoryService) MarkBisect(ctx context.Context, path, verdict string) error {
+	return s.write(ctx, func() error { return git.MarkBisect(ctx, path, verdict) })
+}
+
+func (s *RepositoryService) ResetBisect(ctx context.Context, path string) error {
+	return s.write(ctx, func() error { return git.ResetBisect(ctx, path) })
+}
+
+func (s *RepositoryService) RunGC(ctx context.Context, path string) error {
+	return s.write(ctx, func() error { return git.RunGC(ctx, path) })
+}
+
+func (*RepositoryService) UnreachableCommits(ctx context.Context, path string) (int, error) {
+	return discardCancelled(git.UnreachableCommits(ctx, path))
+}
+
+// ConfigureGit switches the Git binary for the whole process. The version of
+// the selected binary is returned so the settings form can show it.
+func (*RepositoryService) ConfigureGit(ctx context.Context, path string) (string, error) {
+	return git.ConfigureExecutable(ctx, path)
 }
 
 func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string, options git.PullOptions) error {

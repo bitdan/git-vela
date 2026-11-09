@@ -26,12 +26,16 @@ export function AddWorktree(path: string, target: string, branch: string, commit
     return $Call.ByID(2546006014, path, target, branch, commit);
 }
 
-export function AmendIndex(path: string, expectedHead: string, expectedRef: string, message: string): $CancellablePromise<void> {
-    return $Call.ByID(2472700641, path, expectedHead, expectedRef, message);
+export function AmendIndex(path: string, expectedHead: string, expectedRef: string, message: string, options: git$0.AmendOptions): $CancellablePromise<void> {
+    return $Call.ByID(2472700641, path, expectedHead, expectedRef, message, options);
 }
 
 export function ApplyHistoryOperation(path: string, action: string, targets: string[] | null, expected: git$0.HeadState, mode: string): $CancellablePromise<void> {
     return $Call.ByID(826886017, path, action, targets, expected, mode);
+}
+
+export function BisectState(path: string): $CancellablePromise<git$0.BisectState> {
+    return $Call.ByID(3676317611, path);
 }
 
 export function BranchSync(path: string): $CancellablePromise<git$0.BranchSync[] | null> {
@@ -67,6 +71,10 @@ export function CommitMessage(path: string, hash: string): $CancellablePromise<s
     return $Call.ByID(1965106864, path, hash);
 }
 
+export function CommitTemplate(path: string): $CancellablePromise<string> {
+    return $Call.ByID(1185693119, path);
+}
+
 export function CompareDiff(path: string, before: string, after: string, index: number): $CancellablePromise<git$0.Comparison> {
     return $Call.ByID(3708209960, path, before, after, index);
 }
@@ -77,6 +85,14 @@ export function CompareDiffExpanded(path: string, before: string, after: string,
 
 export function CompareFiles(path: string, before: string, after: string): $CancellablePromise<git$0.Change[] | null> {
     return $Call.ByID(376826482, path, before, after);
+}
+
+/**
+ * ConfigureGit switches the Git binary for the whole process. The version of
+ * the selected binary is returned so the settings form can show it.
+ */
+export function ConfigureGit(path: string): $CancellablePromise<string> {
+    return $Call.ByID(1359578008, path);
 }
 
 export function ConflictVersions(path: string, file: string): $CancellablePromise<git$0.ConflictVersion[] | null> {
@@ -112,6 +128,10 @@ export function DiffExpanded(path: string, commit: string, parent: number, file:
 
 export function EditableFiles(path: string): $CancellablePromise<string[] | null> {
     return $Call.ByID(3244581999, path);
+}
+
+export function FetchAllRemotes(path: string, options: git$0.FetchOptions): $CancellablePromise<void> {
+    return $Call.ByID(2348159002, path, options);
 }
 
 export function FetchRemote(path: string, remote: string, options: git$0.FetchOptions): $CancellablePromise<void> {
@@ -152,6 +172,10 @@ export function History(path: string, cursor: git$0.Cursor): $CancellablePromise
 
 export function Initialize(path: string): $CancellablePromise<git$0.Repository> {
     return $Call.ByID(2409134402, path);
+}
+
+export function MarkBisect(path: string, verdict: string): $CancellablePromise<void> {
+    return $Call.ByID(197198791, path, verdict);
 }
 
 export function Open(path: string): $CancellablePromise<git$0.Repository> {
@@ -210,16 +234,28 @@ export function RenameBranch(path: string, oldName: string, newName: string): $C
     return $Call.ByID(2220009630, path, oldName, newName);
 }
 
+export function RenameStash(path: string, selector: string, hash: string, message: string): $CancellablePromise<void> {
+    return $Call.ByID(3607485947, path, selector, hash, message);
+}
+
+export function ResetBisect(path: string): $CancellablePromise<void> {
+    return $Call.ByID(2801974969, path);
+}
+
 export function ResolveConflict(path: string, file: string): $CancellablePromise<void> {
     return $Call.ByID(189479562, path, file);
+}
+
+export function RunGC(path: string): $CancellablePromise<void> {
+    return $Call.ByID(3985836747, path);
 }
 
 export function RunInteractiveRebase(path: string, base: string, expected: git$0.HeadState, steps: git$0.RebaseStep[] | null): $CancellablePromise<void> {
     return $Call.ByID(3632786275, path, base, expected, steps);
 }
 
-export function SaveStash(path: string, message: string, untracked: boolean): $CancellablePromise<void> {
-    return $Call.ByID(3099866534, path, message, untracked);
+export function SaveStash(path: string, message: string, untracked: boolean, paths: string[] | null): $CancellablePromise<void> {
+    return $Call.ByID(3099866534, path, message, untracked, paths);
 }
 
 export function SaveTextFile(path: string, file: string, revision: string, content: string, lineEnding: string): $CancellablePromise<string> {
@@ -254,6 +290,10 @@ export function StageAll(path: string): $CancellablePromise<void> {
     return $Call.ByID(727393745, path);
 }
 
+export function StartBisect(path: string, bad: string, good: string): $CancellablePromise<void> {
+    return $Call.ByID(1978057322, path, bad, good);
+}
+
 export function Stashes(path: string): $CancellablePromise<git$0.StashEntry[] | null> {
     return $Call.ByID(1731154529, path);
 }
@@ -268,6 +308,10 @@ export function SwitchBranch(path: string, name: string): $CancellablePromise<vo
 
 export function SyncState(path: string): $CancellablePromise<git$0.SyncState> {
     return $Call.ByID(2400361248, path);
+}
+
+export function UnreachableCommits(path: string): $CancellablePromise<number> {
+    return $Call.ByID(4276726916, path);
 }
 
 export function UpdateStash(path: string, action: string, selector: string, hash: string, restoreIndex: boolean): $CancellablePromise<void> {

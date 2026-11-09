@@ -32,12 +32,22 @@
 - **仓库目录消失的刷新韧性**：`CheckRepositoryPath` 检测路径与 `.git` 是否仍存在；App 的 5 秒轮询在目录被删除/清空后停止，并给出一条 “The repository folder is no longer available / no longer contains a Git repository” 提示，不再每 5 秒对旧路径执行 Git 并刷告警；Worktree 面板轮询同样以 `store.available` 闸门。
 - **界面图标**：活动栏、Git 菜单、分支徽标、关闭/最大化按钮改用 Ant Design 官方线性图标（MIT，iconfont.cn 的「Ant Design 官方图标库」），路径内联在 `frontend/src/components/layout/icons.ts`，由 `AppIcon.vue` 渲染，离线可用、无图标字体依赖。
 
+**本轮新增（IDEA 对齐批次 5–9，2026-11-09）**：
+
+- **编辑器（E3/E4）**：CodeMirror `Compartment` 承载换行/字号/tab 三组配置，Settings → Editor 改动即时生效（不重载文件）；工具条与 Ctrl+G 打开 Go to Line，越界给出提示。
+- **Amend（G12）与提交模板（G14）**：`AmendTarget` 增加 author/email/date，`AmendOptions{ResetAuthor,SignOff}` 决定是否改用当前身份与追加 `Signed-off-by`；`CommitTemplate` 读取 `commit.template`（相对仓库根或绝对路径）预填空消息。
+- **Bisect / Cleanup / Fetch all（G13）**：`internal/git/bisect.go` 以 `BISECT_START` 与 `refs/bisect/*` 读状态，起点接受 HEAD/tag/hash（`resolveCommit` 解析），候选数用 `rev-list --count` 统计；`maintenance.go` 提供 `RunGC` 与 `UnreachableCommits`（`fsck --unreachable --no-reflogs`）；Sync 面板新增 Fetch all remotes。
+- **Git 可执行文件与受保护分支**：`ConfigureExecutable` 校验后切换 Git 路径（测试：`TestConfigureExecutable`），启动时按偏好重放、失败回退 PATH 并提示一次；保护分支按精确名/通配符匹配，前端禁用 force 选项、后端再次拒绝。
+- **部分 stash 与 rename**：`SaveStash(..., paths)` 走 `git stash push -- <paths>`；`RenameStash` 用 `commit-tree` 重建 stash 提交并删除旧条目（git 无法原地改 reflog 消息）。
+- **Directory Mappings 与会话**：偏好 `roots`/`activeRoot`（≤20），顶栏 Roots 菜单与欢迎页列表；会话改为每根一份（`gitvela.sessions`，≤12，旧 `gitvela.session` 自动迁移），切换根时等首屏历史到位再恢复选中的提交/文件。
+- **界面一致性**：Settings 改为左侧分栏（Appearance / Editor / Version Control / Git / Startup & Window / Keymap），Clone 归入 Git 菜单，Bisect/Cleanup 与 Clone/Remotes 一样以内联面板呈现，欢迎页按钮与菜单用词统一（Initialize Project…）。
+
 **与方案的偏差（事实记录）**：
 
 - §2：未引入 Tailwind CSS 4 与 Reka UI；样式为手写 CSS + CSS Variables，菜单使用原生 `<details>` 与自研控件。
 - §2 / §9：设置与最近仓库保存在 WebView `localStorage`，未建立 `internal/settings` 的 JSON 文件层。
 - §1.3 / §14：后续迭代已实现工作区文本编辑器、GitHub 发布和交互式 Rebase 计划，超出「首版不做」清单；「不要提前实现 Push / Rebase」的阶段性约束已被后续需求取代。
-- §10 M4：多仓库同时管理、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
+- §10 M4：多仓库**并排**管理（现为 Roots 多根切换，同一时刻只打开一个仓库）、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
 
 **验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 24）**：`go test ./internal/...`（含 rebase/clone/多选 cherry-pick/fetch 选项/仓库可用性用例）、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（55 项）、`wails3 generate bindings -ts -i`、`node tests/batch3-smoke.mjs`、`node tests/batch4-smoke.mjs`、`node tests/desktop-smoke.mjs`（基础 / `GITVELA_SMOKE_MVP=1` / `GITVELA_SMOKE_M4=1` / `GITVELA_SMOKE_M2_REMOTE`）均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）；冒烟脚本不要用 `git status` 轮询 rebase 停点，`git status` 会刷新并重写 index，其瞬时 `index.lock` 会让应用的 rebase 报 "another Git process seems to be running"；`batch4-smoke` 删除打开中的仓库时会重试（Windows 上 Git 进程可能短暂占用目录）。
 

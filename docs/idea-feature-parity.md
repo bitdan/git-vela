@@ -13,11 +13,11 @@
 | **Changelists**（逻辑改动分组） | ❌ 有意不做：spec §0.3 规定勾选=真实 index 语义，changelist 是逻辑分组，两者模型冲突。替代：多选勾选提交 | changes/（ActiveChangelistsPanel） | 低（需产品决策） |
 | **Commit**（提交前动作：格式化/优化 import/代码分析、commit message 历史） | 部分：Amend、Commit and Push 分离 ✅；**message 历史下拉 ✅（G14）**；提交前动作 N/A（无 IDE 检查） | checkin/（CommitOptionsPanel） | 批次 1 已交付 message 历史 |
 | **Confirmation**（新文件 add 提示、删除 remove 提示、"不再询问"） | 部分：新文件在 Working Changes 列出、手动 Stage（不走提示流）；删除文件回滚有确认 ✅ | changes/（DeferredCommitRequestProcessor…） | 低 |
-| **Directory Mappings**（多仓库根映射） | ❌ 单仓库根。Worktree 覆盖部分场景；多根/monorepo 多项目 ❌ | ProjectLevelVcsManager（platform） | 中（monorepo 支持） |
+| **Directory Mappings**（多仓库根映射） | ✅ 已交付（2026-11-09）：顶栏 Roots 菜单 + 欢迎页根列表，最多 20 个根；切换根即重开仓库，每个根各自保存标签页会话（`gitvela.sessions`，≤12 个），切回时恢复原来选中的提交/文件 | ProjectLevelVcsManager（platform） | **已交付** |
 | **File Status Colors** | 部分：M/A/?? 状态徽标有颜色（`.file-status[data-status]`）；不可配置、缺 ignored/conflict 专属色 | vcs-impl FileStatusColor；changes/FileStatusColorManager | 低 |
 | **Issue Navigation**（提交消息中 issue id → 链接） | ✅（Commit Details 主题/全文渲染 issue 链接；pattern + URL 模板在 Settings → Version Control 配置，$0/$1..$9 占位符）。Log 行内链接未做（虚拟列表行按钮内嵌 a 标签存在嵌套交互问题） | platform IssueNavigationConfiguration | 已交付（Details 级） |
 | **Log**（历史 UI 设置） | ✅ 过滤/搜索/列显隐/Graph 交互齐备；"always expand commit message"等小项部分缺 | platform/vcs-log/impl | 低 |
-| **Shelf** | 部分：Stash 列表/保存/Pop ✅（stash 实现）；缺：查看 shelf/stash 的 diff、rename、部分 shelf（IDEA shelf=补丁+排除文件）、stash 与 shelf 合并视图 | stash/、changes/shelf | 中 |
+| **Shelf** | ✅ 已交付（2026-11-09）：列表/保存/Pop/Apply/Drop、查看 stash diff、rename（重建 stash 提交并删除旧的）、按文件部分 stash（`git stash push -- <paths>`，右键工作区文件）；未做 IDEA shelf 的补丁排除集合 | stash/、changes/shelf | **已交付** |
 | **Git**（设置页选项） | 部分：暗色/密度/行高/文件树 ✅。缺：Git 可执行文件选择 ❌（固定系统 git）、auto-fetch ❌（有快照轮询 watch.go）、protected branches ❌、CRLF/detached HEAD/大文件/坏文件名警告 ❌（大文件有预览降级）、cherry-pick 后缀 ❌、credential helper N/A | config/GitVcsPanel.kt:101-316 | 分项：见 §3 |
 | **GitHub / Gitee / GitLab / Mercurial / Perforce / Subversion** | GitHub 发布/登录部分 ✅（publish 流程）；其余超出产品范围，不做 | github/（社区插件） | N/A |
 
@@ -43,12 +43,12 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
 | G6 | **incoming/outgoing 指示**：分支面板 ↑/↓ 计数、Log 中 merged 高亮 | branch/GitBranchIncomingOutgoingManager.java、DeepComparator | ✅ 已交付（2026-11-08）：本地分支行 ↑ahead/↓behind 徽标 + gone 标记（`BranchSyncCounts` 基于 remote-tracking refs，随仓库刷新更新；Log 内 merged 高亮未做） | **已交付**（面板级） |
 | G7 | **Cherry-pick 多选 + 继续/中止流** | cherrypick/、CherryPickedCommitsHighlighter | ✅ 已交付（2026-11-09）：Ctrl/Shift 多选后菜单 `Cherry-pick N selected…`，按历史顺序（旧→新）重放并在确认框逐条列出；拒绝重复目标、合并提交与超过 100 条；`--empty=drop` 跳过已应用提交；冲突由 sequencer 保留，Console 的 Continue / Abort 继续剩余提交（`internal/git/history_operations.go`、`commitSelection.ts`） | **已交付** |
 | G8 | **Squash merge**、squash/fixup 提交 | merge/、branch/GitMergeOperation | ✅ 已交付（2026-11-09）：历史右键 Squash/Fixup into parent…（`FirstParent` 取祖父为 rebase 基，父提交 pick、目标 squash/fixup，默认消息=两 subject 拼接，可编辑）；Merge 对话框 Mode 增加 Squash（只暂存合并结果、不建合并提交） | **已交付** |
-| G9 | **Clone from URL**（仓库初始化流程内） | checkout/GitCloneDialog | ✅ 已交付（2026-11-09）：顶栏 `Clone…`、欢迎页与命令面板入口；目标须不存在或为空、父目录须存在、拒绝 `-` 开头地址与非法分支名、10 分钟超时，成功后直接打开；`internal/git/clone.go` | **已交付** |
+| G9 | **Clone from URL**（仓库初始化流程内） | checkout/GitCloneDialog | ✅ 已交付（2026-11-09）：Git 菜单 `Clone from URL…`（与 Initialize Project 同组）、欢迎页与命令面板入口；目标须不存在或为空、父目录须存在、拒绝 `-` 开头地址与非法分支名、10 分钟超时，成功后直接打开；`internal/git/clone.go` | **已交付** |
 | G10 | Fetch 选项：prune、tags 模式（GitFetchTagsMode） | config/GitVcsPanel.kt:355 | ✅ 已交付（2026-11-09）：Sync 面板 Fetch options——Prune 删除远端已删除分支的 remote-tracking ref；Tags 三档（指向已取对象 / 全部 `--tags` / 不取 `--no-tags`，默认遵循 `remote.<name>.tagOpt`） | **已交付** |
 | G11 | stash diff 查看 / stash 应用时恢复 index（--index） | stash/ | ✅ 已交付（2026-11-09）：`StashEntry.Parent`（`stash^1`）+ Shelf 面板 View Diff（按钮与右键）以 `stash^1 → stash` 打开比较；恢复 index 已有 "Restore staged changes" | **已交付** |
-| G12 | Amend 时显示原 message 的 author/date 选项、sign-off | commit/（GitCheckinOptions） | amend ✅ 基础 | 低 |
-| G13 | Bisect、cleanup/GC、fetch --all | 零散 | ❌ | 低 |
-| G14 | Commit message 模板（commit.template）与历史记忆 | checkin/CommitMessageHistory | ✅ 历史记忆（每仓库 localStorage 最近 20 条，提交表单 History 下拉）；模板 ❌ | 历史已交付；模板待定 |
+| G12 | Amend 时显示原 message 的 author/date 选项、sign-off | commit/（GitCheckinOptions） | ✅ 已交付（2026-11-09）：amend 行显示原作者/邮箱/日期，`Reset author` 与 `Sign off` 复选框；`AmendOptions{ResetAuthor,SignOff}` | **已交付** |
+| G13 | Bisect、cleanup/GC、fetch --all | 零散 | ✅ 已交付（2026-11-09）：Git → Bisect 面板（起点接受 HEAD/tag/hash，good/bad 逐步标记，结束显示首个坏提交并可退回原分支）、Cleanup 面板（`git fsck --unreachable --no-reflogs` 统计后 `git gc`）、Fetch all remotes（沿用 prune/tags 选项） | **已交付** |
+| G14 | Commit message 模板（commit.template）与历史记忆 | checkin/CommitMessageHistory | ✅ 已交付（2026-11-09）：历史记忆（每仓库 localStorage 最近 20 条）+ `commit.template`（相对仓库根或绝对路径）在新仓库/提交后预填空消息，手输草稿优先 | **已交付** |
 
 ### 文件编辑对齐（IDEA editor）
 
@@ -56,8 +56,8 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
 |---|---|---|---|
 | E1 | 状态栏显示编码/换行符（IDEA 右下角），切换 CRLF/LF、编码 | ✅ 状态栏与编辑器工具条均显示 UTF-8(+BOM)/换行符；换行符可点击切换（干净文件立即转换，脏文件下次保存生效，SaveTextFile 新增 lineEnding 参数）；编码仅显示（编辑器只支持 UTF-8） | **已交付** |
 | E2 | Diff 标签会话持久化（重开仓库恢复打开的 diff） | ✅ diffTabs（key/path/hash/parent/index/range/expanded）与激活 key 入 session（≤12 条），恢复后激活标签惰性重载 comparison；标签持久化补齐 | 已交付 |
-| E3 | Editor 内 Ctrl+F 搜索面板（CodeMirror search 已有？确认交互一致）、Go to Line（Ctrl+G） | 部分缺 | 中 |
-| E4 | Soft-wrap、字号、tab 大小设置 | Settings 有密度/行高；无编辑器项 | 低 |
+| E3 | Editor 内 Ctrl+F 搜索面板、Go to Line（Ctrl+G） | ✅ 已交付（2026-11-09）：工具条 `Go to Line` 与 Ctrl+G，行号越界给出提示，跳转后居中并聚焦 | **已交付** |
+| E4 | Soft-wrap、字号、tab 大小设置 | ✅ 已交付（2026-11-09）：Settings → Editor（自动换行、10–24 px 字号、2/4/8 tab），通过 Compartment 热更新，不重载文件 | **已交付** |
 | E5 | 未保存提示（脏标记+关闭确认）✅、外部修改保护 ✅、reload ✅ | 已对齐 | — |
 
 ## 3. 建议实施批次
@@ -75,6 +75,17 @@ hunk 级暂存、多选比较（051ccc3）、逐文件 Diff 多标签（051ccc3�
    测试：`internal/git/advanced_test.go` 新增 reword+squash、edit 停止后 continue、首个
    提交不能 squash、clone 校验与重复目标等用例；`tests/batch3-smoke.mjs`（squash→reword→
    edit+continue→clone→stash diff 全链路）。
+5. **批次 5–9（2026-11-09）**：✅ 已完成——E3/E4 编辑器（go-to-line、换行、字号、tab）、
+   G12 amend 作者信息与 sign-off、G14 commit.template、G13 bisect/cleanup/fetch --all、
+   Git 可执行文件设置与受保护分支（通配符匹配，强推被拒）、部分 stash 与 stash 重命名、
+   Directory Mappings（Roots 菜单 + 每根独立会话）、Settings 改为左侧分栏（Appearance /
+   Editor / Version Control / Git / Startup & Window / Keymap），Clone 归入 Git 菜单。
+   测试：`TestAmendAuthorOptionsAndSignOff`、`TestCommitTemplateResolution`、
+   `TestStartBisectAcceptsRevisionExpressions`、`TestBisectFindsTheFirstBadCommit`、
+   `TestFetchAllRemotes`、`TestPartialStash`、`TestRenameStash`、`TestRunGC`、
+   `TestProtectedBranch`、`TestConfigureExecutable`、`src/stores/session.test.ts`（每根会话）、
+   `tests/batch5-smoke.mjs`（编辑器设置→go-to-line→bisect→amend sign-off→部分 stash→
+   stash 重命名→cleanup→fetch all→根切换与会话恢复）。
 4. **批次 4（多选与远端选项，2026-11-09）**：✅ 已完成——G7 多选 cherry-pick（顺序重放、
    冲突后 sequencer 继续剩余提交）、G10 fetch 选项（prune + tags 三档）、仓库目录消失后
    停止 5 秒轮询（`CheckRepositoryPath`）；界面图标改用 Ant Design 官方线性图标

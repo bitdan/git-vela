@@ -5,9 +5,16 @@ import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import { expandAncestors, fileTreeRows } from './fileTree'
 import type { WorkingFile } from '../../../bindings/gitvela/internal/git'
 
-const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string; history: string[] }>()
-const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: []; ignore: [path: string] }>()
+const props = defineProps<{ files: WorkingFile[]; active?: string; error: string; loading: boolean; canStage?: boolean; canUnstage?: boolean; indexBusy: boolean; notice: string; canAmend: boolean; canResolve?: boolean; amendHash?: string; amendAuthor?: string; amendAuthorEmail?: string; amendDate?: number; history: string[] }>()
+const emit = defineEmits<{ select: [file: WorkingFile, view?: 'working' | 'staged' | 'unstaged']; edit: [path: string]; updateIndex: [staged: boolean]; include: [paths: string[], staged: boolean]; commit: []; commitAndPush: []; startAmend: []; cancelAmend: []; stageAll: []; resolve: []; ignore: [path: string]; stash: [paths: string[]] }>()
 const message = defineModel<string>('message', { required: true })
+/** Amend options (G12): both default to off, which matches plain `git commit
+ *  --amend` (keeps the author, adds no trailer). */
+const resetAuthor = defineModel<boolean>('amendResetAuthor', { default: false })
+const signOff = defineModel<boolean>('amendSignOff', { default: false })
+const amendDateLabel = computed(() => props.amendDate
+  ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(props.amendDate * 1000))
+  : '')
 const canStageAll = computed(() => props.files.some(file => file.canStage))
 const stagedCount = computed(() => props.files.filter(file => file.canUnstage).length)
 const canCommit = computed(() => !!message.value.trim() && (stagedCount.value > 0 || !!props.amendHash) && !props.indexBusy)
@@ -20,13 +27,14 @@ function showActions(file: WorkingFile, event: MouseEvent | KeyboardEvent) {
   menu.value = { path: file.path, anchor: contextAnchor(event) }
 }
 
-function fileAction(action: 'working' | 'staged' | 'unstaged' | 'edit' | 'stage' | 'unstage' | 'ignore') {
+function fileAction(action: 'working' | 'staged' | 'unstaged' | 'edit' | 'stage' | 'unstage' | 'ignore' | 'stash') {
   const file = menuFile.value
   menu.value = undefined
   if (!file) return
   if (action === 'edit') emit('edit', file.path)
   else if (action === 'stage' || action === 'unstage') emit('include', [file.path], action === 'stage')
   else if (action === 'ignore') emit('ignore', file.path)
+  else if (action === 'stash') emit('stash', [file.path])
   else emit('select', file, action)
 }
 
@@ -134,7 +142,7 @@ defineExpose({ submit })
                   @click="emit('select', row.file)"
                   @dblclick="emit('select', row.file, row.file.canStage ? 'unstaged' : 'staged')"
                   @contextmenu.prevent="showActions(row.file, $event)" @keydown.shift.f10.prevent="showActions(row.file, $event)">
-            <code class="file-status" :data-status="row.file.status.trim().at(-1)" :title="state(row.file.status)">{{ row.file.status.trim() }}</code>
+            <code class="file-status" :data-status="row.file.status.trim()" :title="state(row.file.status)">{{ row.file.status.trim() }}</code>
             <span class="ellipsis">{{ row.name }}</span>
           </button>
         </template>
@@ -162,6 +170,15 @@ defineExpose({ submit })
       <p v-if="amendHash" class="amend-warning" role="status">
         Rewrites HEAD {{ amendHash.slice(0, 8) }} and includes staged changes. Check whether the commit has already been shared.
       </p>
+      <div v-if="amendHash && amendAuthor" class="amend-meta">
+        <span class="muted">Author {{ amendAuthor }}<template v-if="amendAuthorEmail"> &lt;{{ amendAuthorEmail }}&gt;</template><template v-if="amendDateLabel"> · {{ amendDateLabel }}</template></span>
+        <label title="Set the author to your configured Git identity and the author date to now">
+          <input v-model="resetAuthor" type="checkbox" /> Reset author
+        </label>
+        <label title="Append a Signed-off-by trailer from your configured Git identity">
+          <input v-model="signOff" type="checkbox" /> Sign off
+        </label>
+      </div>
       <textarea id="commit-message" v-model="message" :placeholder="amendHash ? 'Describe the amended changes' : 'Describe the staged changes'" rows="5"
                 :disabled="indexBusy" />
       <div v-if="history.length" class="commit-history">
@@ -188,6 +205,8 @@ defineExpose({ submit })
       <hr />
       <button :disabled="indexBusy || loading || !menuFile.canStage" @click="fileAction('stage')">Stage</button>
       <button :disabled="indexBusy || loading || !menuFile.canUnstage" @click="fileAction('unstage')">Unstage</button>
+      <button :disabled="indexBusy || loading || (!menuFile.canStage && !menuFile.canUnstage)"
+              title="Stash only this file's changes" @click="fileAction('stash')">Stash file changes…</button>
       <button v-if="menuFile.status === '??'" :disabled="indexBusy || loading"
               title="Append this path to the repository .gitignore" @click="fileAction('ignore')">Add to .gitignore</button>
     </ContextActions>

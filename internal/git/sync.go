@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -73,6 +74,31 @@ func FetchRemote(ctx context.Context, dir, remote string, options FetchOptions) 
 	if !slices.Contains(strings.Fields(string(data)), remote) {
 		return errors.New("select a configured Git remote")
 	}
+	args, err := fetchArgs(options)
+	if err != nil {
+		return err
+	}
+	return runRemote(ctx, dir, append(args, "--", remote)...)
+}
+
+// FetchAllRemotes updates every configured remote in one call. Git keeps the
+// per-remote refspecs, so a failure of one remote is reported by the caller.
+func FetchAllRemotes(ctx context.Context, dir string, options FetchOptions) error {
+	data, err := run(ctx, dir, nil, 1<<20, "remote")
+	if err != nil {
+		return err
+	}
+	if len(strings.Fields(string(data))) == 0 {
+		return errors.New("this repository has no remotes to fetch")
+	}
+	args, err := fetchArgs(options)
+	if err != nil {
+		return err
+	}
+	return runRemote(ctx, dir, append(args, "--all")...)
+}
+
+func fetchArgs(options FetchOptions) ([]string, error) {
 	args := []string{"fetch", "--no-recurse-submodules"}
 	if options.Prune {
 		args = append(args, "--prune")
@@ -86,9 +112,9 @@ func FetchRemote(ctx context.Context, dir, remote string, options FetchOptions) 
 	case FetchTagsNone:
 		args = append(args, "--no-tags")
 	default:
-		return errors.New("select a supported tag mode: all, reachable, or none")
+		return nil, errors.New("select a supported tag mode: all, reachable, or none")
 	}
-	return runRemote(ctx, dir, append(args, "--", remote)...)
+	return args, nil
 }
 
 // Pull modes, aligned with IDEA GitPullSettings strategies.
@@ -107,6 +133,26 @@ type PushOptions struct {
 	PushTags       bool `json:"pushTags"`
 	SetUpstream    bool `json:"setUpstream"`
 	ForceWithLease bool `json:"forceWithLease"`
+	// Protected branch patterns (exact names or shell wildcards such as
+	// release/*) refuse a force push even after the confirmation dialog.
+	Protected []string `json:"protected"`
+}
+
+// protectedBranch reports the pattern that matches a branch name, if any.
+func protectedBranch(patterns []string, branch string) (string, bool) {
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if pattern == branch {
+			return pattern, true
+		}
+		if matched, err := path.Match(pattern, branch); err == nil && matched {
+			return pattern, true
+		}
+	}
+	return "", false
 }
 
 func PullUpstream(ctx context.Context, dir, branch, remote, target string, options PullOptions) error {
@@ -218,6 +264,9 @@ func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddres
 		return errors.New("the push target changed; review the branch upstream")
 	}
 	if options.ForceWithLease {
+		if pattern, blocked := protectedBranch(options.Protected, target); blocked {
+			return fmt.Errorf("force push to protected branch %s is blocked (pattern %s); remove the protection in Settings to override", target, pattern)
+		}
 		lease, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", "refs/remotes/"+remote+"/"+target)
 		if err != nil || !objectID(strings.TrimSuffix(strings.TrimSuffix(string(lease), "\n"), "\r")) {
 			return errors.New("force-with-lease needs a local remote-tracking ref for the target; fetch before forcing")

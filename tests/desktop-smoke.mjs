@@ -106,6 +106,17 @@ async function gitMenuAction(label) {
   await clickButton('.git-menu', label)
 }
 
+/** Settings groups live behind tabs, so a test must open the page it needs. */
+async function settingsTab(label) {
+  await until(() => evaluate(`(() => {
+    const button = [...document.querySelectorAll('.settings-tabs [role=tab]')]
+      .find(item => item.innerText === ${JSON.stringify(label)})
+    if (!button) return false
+    if (button.getAttribute('aria-selected') !== 'true') button.click()
+    return button.getAttribute('aria-selected') === 'true'
+  })()`), 'settings tab ' + label)
+}
+
 async function branchMenuAction(branch, label) {
   const selector = '[title="refs/heads/' + branch + '"]'
   await until(() => evaluate(`(() => {
@@ -796,6 +807,7 @@ try {
     await evaluate("document.querySelector('.activity-bar button[aria-label=\"Settings\"]').click()")
     await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.density === 'comfortable'"), 'comfortable row density')
+    await settingsTab('Keymap')
     await until(() => evaluate("document.querySelectorAll('.shortcut-group button').length >= 16"), 'editable shortcut list')
     await evaluate(`(() => {
       const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
@@ -882,6 +894,7 @@ try {
     // modal traps focus, so the commit field interactions below need it gone.
     await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened for shortcuts')
+    await settingsTab('Keymap')
     await bindCommit('A', 'a')
     await bindCommit('Enter', 'Enter')
     await bindCommit('Shift+A', 'A', { shiftKey: true })
@@ -915,6 +928,7 @@ try {
     // Reopen Settings to restore the default shortcuts.
     await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
     await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened')
+    await settingsTab('Keymap')
     await clickButton('.shortcut-settings', 'Reset to defaults')
     await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
     await evaluate("document.querySelector('.settings-dialog .dialog-actions button').click()")
@@ -928,12 +942,15 @@ try {
         sidebar: 'changes', view, historyVisible: false, range, smokeMarker: true,
       }
       const writes = []
+      // Sessions are stored per workspace root; the injected legacy key is
+      // migrated into that map by the next save.
       const monitor = ({ data }) => {
         const { method, params } = JSON.parse(data)
-        if (method === 'DOMStorage.domStorageItemUpdated' && params.key === 'gitvela.session') {
-          const saved = JSON.parse(params.newValue)
-          if (!saved.smokeMarker) writes.push(saved)
-        }
+        if (!/^DOMStorage\.domStorageItem(Updated|Added)$/.test(method)) return
+        if (params.key !== 'gitvela.sessions' && params.key !== 'gitvela.session') return
+        const value = JSON.parse(params.newValue ?? 'null')
+        const saved = params.key === 'gitvela.sessions' ? value?.byPath?.[session.path] : value
+        if (saved && !saved.smokeMarker) writes.push(saved)
       }
       socket.addEventListener('message', monitor)
       try {
@@ -972,7 +989,7 @@ try {
     })
 
     // Session state is persisted after opening a repository.
-    await until(() => evaluate("(() => { const saved = JSON.parse(localStorage.getItem('gitvela.session') || 'null'); return !!saved && typeof saved.path === 'string' && saved.path.length > 0 })()"), 'saved session')
+    await until(() => evaluate("(() => { const index = JSON.parse(localStorage.getItem('gitvela.sessions') || 'null'); const saved = index?.byPath?.[index.last]; return !!saved && typeof saved.path === 'string' && saved.path.length > 0 && localStorage.getItem('gitvela.session') === null })()"), 'saved session')
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
   if (!testM4) assert.deepEqual(await evaluate("window.smokeRejections"), [])

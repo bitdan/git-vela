@@ -107,7 +107,7 @@ try {
   // preferences store picks it up on startup.
   await evaluate("localStorage.clear()")
   await evaluate("localStorage.setItem('gitvela.issueURL', 'https://example.com/issue/$1')")
-  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
+  await cdp('Page.navigate', { url: (await evaluate('location.origin')) + '/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
   await evaluate(`(() => {
@@ -224,7 +224,7 @@ try {
     const sessions = JSON.parse(localStorage.getItem('gitvela.sessions') ?? '{}')
     return sessions.byPath?.[sessions.last]?.diffTabs?.length === 1
   })()`), 'diff tab persisted to the session')
-  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
+  await cdp('Page.navigate', { url: (await evaluate('location.origin')) + '/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload for restore')
   await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'tracked.txt' && tab.classList.contains('active'))"), 'pinned diff tab restored and active')
   await until(() => evaluate("!!document.querySelector('.diff-host, .patch, .cm-mergeView')"), 'restored diff tab content loaded lazily')

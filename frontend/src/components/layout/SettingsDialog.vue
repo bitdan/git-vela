@@ -138,6 +138,13 @@ onBeforeUnmount(() => dialog.value?.close())
         <section v-if="tab === 'git'" id="settings-panel-git" class="settings-group"
                  role="tabpanel" aria-labelledby="settings-tab-git">
           <h3>Git</h3>
+          <label class="settings-field">Update method
+            <select v-model="preferences.updateMethod" aria-label="Update method for the current branch">
+              <option value="merge">Merge</option>
+              <option value="rebase">Rebase</option>
+            </select>
+          </label>
+          <p class="notice">Used by Update Project and a branch's Update action for the checked-out branch. Other branches are only fast-forwarded.</p>
           <label class="settings-field">Git executable
             <input v-model="preferences.gitPath" type="text" spellcheck="false"
                    placeholder="Leave empty to use Git from PATH"

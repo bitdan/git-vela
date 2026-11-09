@@ -117,18 +117,6 @@ func fetchArgs(options FetchOptions) ([]string, error) {
 	return args, nil
 }
 
-// Pull modes, aligned with IDEA GitPullSettings strategies.
-const (
-	PullFastForward = "ff"
-	PullMerge       = "merge"
-	PullRebase      = "rebase"
-)
-
-type PullOptions struct {
-	Mode      string `json:"mode"`
-	Autostash bool   `json:"autostash"`
-}
-
 type PushOptions struct {
 	PushTags       bool `json:"pushTags"`
 	SetUpstream    bool `json:"setUpstream"`
@@ -155,103 +143,38 @@ func protectedBranch(patterns []string, branch string) (string, bool) {
 	return "", false
 }
 
-func PullUpstream(ctx context.Context, dir, branch, remote, target string, options PullOptions) error {
-	state, err := ReadSyncState(ctx, dir)
-	if err != nil {
-		return err
-	}
-	if branch == "" || state.Branch != branch {
-		return errors.New("the current branch changed; review the synchronization target")
-	}
-	if !slices.Contains(state.Remotes, remote) || remote != state.UpstreamRemote ||
-		target == "" || target != state.UpstreamBranch || !strings.HasPrefix(state.TrackingRef, "refs/remotes/") {
-		return errors.New("the current branch needs a configured remote upstream")
-	}
-	if err := checkOperationState(ctx, dir); err != nil {
-		return err
-	}
-	head, err := headID(ctx, dir)
-	if err != nil {
-		return err
-	}
-	if !options.Autostash {
-		if err := requireCleanWorktree(ctx, dir); err != nil {
-			return err
-		}
-	}
-	// Use a remote-tracking ref, since other Git clients can replace FETCH_HEAD.
-	refspec := "+refs/heads/" + target + ":" + state.TrackingRef
-	if err := runRemote(ctx, dir, "fetch", "--no-write-fetch-head", "--no-tags", "--no-prune", "--refmap=",
-		"--no-recurse-submodules", "--", remote, refspec); err != nil {
-		return err
-	}
-	current, err := ReadSyncState(ctx, dir)
-	if err != nil {
-		return err
-	}
-	currentHead, err := headID(ctx, dir)
-	if err != nil {
-		return err
-	}
-	if current.Branch != branch || currentHead != head || current.TrackingRef != state.TrackingRef ||
-		current.UpstreamRemote != remote || current.UpstreamBranch != target {
-		return errors.New("HEAD or its upstream changed during fetch; review the repository before pulling again")
-	}
-	if err := checkOperationState(ctx, dir); err != nil {
-		return err
-	}
-	if !options.Autostash {
-		if err := requireCleanWorktree(ctx, dir); err != nil {
-			return err
-		}
-	}
-	switch options.Mode {
-	case "", PullFastForward:
-		_, err = run(ctx, dir, nil, 1<<20, "-c", "submodule.recurse=false", "merge",
-			"--ff-only", "--no-squash", "--commit", "--no-autostash", "--no-overwrite-ignore", "--", state.TrackingRef)
-	case PullMerge:
-		args := []string{"-c", "submodule.recurse=false", "merge", "--no-squash", "--commit", "--no-overwrite-ignore"}
-		if options.Autostash {
-			args = append(args, "--autostash")
-		} else {
-			args = append(args, "--no-autostash")
-		}
-		args = append(args, "--", state.TrackingRef)
-		_, err = run(ctx, dir, nil, 1<<20, args...)
-	case PullRebase:
-		args := []string{"-c", "submodule.recurse=false", "rebase"}
-		if options.Autostash {
-			args = append(args, "--autostash")
-		}
-		args = append(args, "--", state.TrackingRef)
-		_, err = run(ctx, dir, nil, 1<<20, args...)
-	default:
-		return errors.New("select a supported pull mode: fast-forward, merge, or rebase")
-	}
-	return remoteFailure(err)
-}
-
 func PushBranch(ctx context.Context, dir, branch, remote, target string, options PushOptions) error {
 	return pushBranch(ctx, dir, branch, remote, target, "", options)
 }
 
 func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddress string, options PushOptions) error {
-	state, err := ReadSyncState(ctx, dir)
+	// Push acts on the branch the user selected (IDEA GitPushBranchAction), which
+	// does not have to be checked out; its own upstream decides the default target.
+	tracking, err := branchTracking(ctx, dir, branch)
 	if err != nil {
 		return err
 	}
-	if branch == "" || state.Branch != branch {
-		return errors.New("the current branch changed; review the synchronization target")
+	remotes, err := remoteNames(ctx, dir)
+	if err != nil {
+		return err
 	}
-	if !slices.Contains(state.Remotes, remote) {
+	if !slices.Contains(remotes, remote) {
 		return errors.New("select a configured Git remote")
 	}
-	if err := checkOperationState(ctx, dir); err != nil {
+	if headRef, err := headReference(ctx, dir); err != nil {
 		return err
+	} else if headRef == "refs/heads/"+branch {
+		if err := checkOperationState(ctx, dir); err != nil {
+			return err
+		}
 	}
-	if _, err := headID(ctx, dir); err != nil {
-		return err
+	if _, err := revision(ctx, dir, "refs/heads/"+branch); err != nil {
+		return errors.New("the branch has no commits to push")
 	}
+	if target == "" || strings.HasPrefix(target, "-") || checkBranchName(ctx, dir, target) != nil {
+		return errors.New("enter a valid remote branch name")
+	}
+	state := struct{ UpstreamRemote, UpstreamBranch string }{tracking.Remote, tracking.RemoteBranch}
 	args := []string{"push", "--no-mirror", "--no-prune", "--recurse-submodules=no"}
 	if options.PushTags {
 		args = append(args, "--follow-tags")

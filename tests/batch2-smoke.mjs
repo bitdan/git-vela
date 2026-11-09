@@ -1,4 +1,4 @@
-// Batch-2 feature smoke (G1 tags, G2 push options, G3 pull strategies,
+// Batch-2 feature smoke (G1 tags, G2 push options, G3 branch Update and Pull semantics,
 // G6 ahead/behind badges) against a running `wails3 dev -tags desktop_smoke`
 // instance. Usage:
 //   node tests/batch2-smoke.mjs
@@ -36,18 +36,24 @@ git(origin, 'init', '-b', 'main')
 git(origin, 'config', 'user.email', 'smoke@example.com')
 git(origin, 'config', 'user.name', 'Smoke')
 execFileSync('git', ['-C', origin, 'commit', '--allow-empty', '-m', 'base commit'], { stdio: 'pipe' })
+git(origin, 'branch', 'feature')
 execFileSync('git', ['-C', base, 'clone', '--bare', '--quiet', origin, 'remote.git'])
 const bare = join(base, 'remote.git')
 
 execFileSync('git', ['-C', base, 'clone', '--quiet', 'remote.git', 'clone'], { stdio: 'pipe' })
 git(clone, 'config', 'user.email', 'smoke@example.com')
 git(clone, 'config', 'user.name', 'Smoke')
+git(clone, 'branch', '--quiet', '--track', 'feature', 'origin/feature')
 
 execFileSync('git', ['-C', base, 'clone', '--quiet', 'remote.git', 'peer'], { stdio: 'pipe' })
 git(peer, 'config', 'user.email', 'peer@example.com')
 git(peer, 'config', 'user.name', 'Peer')
 execFileSync('git', ['-C', peer, 'commit', '--allow-empty', '-m', 'peer commit'], { stdio: 'pipe' })
 git(peer, 'push', '--quiet', 'origin', 'main')
+git(peer, 'checkout', '--quiet', '-b', 'feature', 'origin/feature')
+execFileSync('git', ['-C', peer, 'commit', '--allow-empty', '-m', 'peer feature commit'], { stdio: 'pipe' })
+git(peer, 'push', '--quiet', 'origin', 'feature')
+const rev = (repo, ref) => git(repo, 'rev-parse', ref).trim()
 
 /* ---- CDP plumbing (same pattern as batch1-smoke.mjs) ---- */
 
@@ -105,6 +111,14 @@ const clickButton = (scope, label) => until(() => evaluate(`(() => {
   return true
 })()`), 'enabled button ' + label)
 
+const openContextMenu = (selector, label) => until(() => evaluate(`(() => {
+  const row = ${selector}
+  if (!row) return false
+  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+  return true
+})()`), 'context menu on ' + label)
+const menuLabels = menuLabel => evaluate(`[...document.querySelectorAll(${JSON.stringify(`[aria-label="${menuLabel}"] button`)})].map(button => button.innerText)`)
+
 const contextMenuRow = (selector, label, menuLabel) => until(() => evaluate(`(() => {
   const row = ${selector}
   if (!row) return false
@@ -114,7 +128,7 @@ const contextMenuRow = (selector, label, menuLabel) => until(() => evaluate(`(()
 
 try {
   await evaluate("localStorage.clear()")
-  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
+  await cdp('Page.navigate', { url: (await evaluate('location.origin')) + '/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await evaluate(`(() => {
     const input = document.querySelector('[aria-label="Repository path"]')
@@ -133,17 +147,42 @@ try {
   await until(async () => (await evaluate(branchRow + '?.querySelector(".sync-badge")?.innerText')) === '↓1',
     'behind badge after fetching a peer commit')
 
-  /* ---- G3: pull strategies in the sync panel ---- */
-  await contextMenuRow(branchRow, 'Pull…', 'Branch actions')
-  await until(() => evaluate("!!document.querySelector('.pull-options')"), 'pull strategy options')
-  assert.equal(await evaluate("[...document.querySelectorAll('.pull-options input[type=radio]')].find(input => input.checked)?.value"), 'ff',
-    'fast-forward is the default strategy')
+  /* ---- G3: branch Update is not Pull (IDEA GitUpdateSelectedBranchAction) ---- */
+  const featureRow = "document.querySelector('.branch-row button.side-item[title=\"refs/heads/feature\"]')"
+  const mainBefore = rev(clone, 'HEAD')
+  await openContextMenu(featureRow, 'feature')
+  const featureMenu = await menuLabels('Branch actions')
+  assert.ok(featureMenu.includes('Update') && featureMenu.includes('Push…'), 'non-current branch offers Update and Push: ' + featureMenu)
+  assert.ok(!featureMenu.some(label => /^Pull/.test(label)), 'branch menu does not offer Pull: ' + featureMenu)
+  await clickButton('[aria-label="Branch actions"]', 'Update')
+  await until(async () => rev(clone, 'refs/heads/feature') === rev(clone, 'refs/remotes/origin/feature'), 'feature fast-forwarded')
+  assert.equal(rev(clone, 'HEAD'), mainBefore, 'updating a non-current branch kept HEAD')
+  assert.equal(git(clone, 'symbolic-ref', 'HEAD').trim(), 'refs/heads/main', 'HEAD stays on main')
+
+  await openContextMenu(branchRow, 'main')
+  const mainMenu = await menuLabels('Branch actions')
+  assert.ok(mainMenu.includes('Update') && !mainMenu.some(label => /^Pull/.test(label)), 'current branch offers Update, not Pull: ' + mainMenu)
+  await clickButton('[aria-label="Branch actions"]', 'Update')
+  await until(async () => rev(clone, 'HEAD') === rev(clone, 'refs/remotes/origin/main'), 'main fast-forwarded by Update')
+  await until(() => evaluate("[...document.querySelectorAll('.notification-balloon')].some(node => node.innerText.includes('fast-forwarded'))"),
+    'update notification')
+
+  /* ---- G3: Pull chooses its source explicitly (IDEA GitPullDialog) ---- */
+  await evaluate("document.querySelector('.git-menu summary').click()")
+  await clickButton('.git-menu', 'Pull…')
+  await until(() => evaluate("!!document.querySelector('[aria-label=\"Remote branch to pull\"] option[value=feature]')"), 'pull branch list')
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"Remote branch to pull\"]').value"), 'main', 'upstream preselected')
+  assert.equal(await evaluate("[...document.querySelectorAll('.pull-options input[type=radio]')].find(input => input.checked)?.value"), 'merge',
+    'merge is the default pull mode')
   await evaluate(`(() => {
-    const radio = [...document.querySelectorAll('.pull-options input[type=radio]')].find(input => input.value === 'merge')
-    radio.click()
+    const select = document.querySelector('[aria-label="Remote branch to pull"]')
+    select.value = 'feature'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
   })()`)
   await clickButton('.daily-panel', 'Pull')
-  await until(() => evaluate("document.querySelector('.daily-panel')?.innerText.includes('Pull complete')"), 'merge-strategy pull notice')
+  await until(() => evaluate("document.querySelector('.daily-panel')?.innerText.includes('Pull complete')"), 'pull notice')
+  assert.equal(git(clone, 'log', '-1', '--format=%P').trim().split(' ').length, 2, 'pulling feature merged into main')
+  assert.equal(git(clone, 'rev-parse', '--abbrev-ref', 'main@{upstream}').trim(), 'origin/main', 'pull kept the upstream')
 
   /* ---- G2: push options dialog ---- */
   await contextMenuRow(branchRow, 'Push…', 'Branch actions')
@@ -193,7 +232,7 @@ try {
 
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
   assert.deepEqual(alerts, [])
-  console.log('Batch 2 smoke passed: sync badges, pull strategies, push options, tag lifecycle.')
+  console.log('Batch 2 smoke passed: sync badges, branch update, pull source, push options, tag lifecycle.')
 } finally {
   socket.close()
   if (!keepRepo) {

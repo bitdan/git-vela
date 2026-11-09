@@ -130,7 +130,7 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: PullRebase}); err != nil {
+	if err := pullMain(ctx, dir, PullRebase, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(command(t, dir, "log", "--format=%s")); !strings.HasPrefix(got, "local update\npeer update") {
@@ -146,7 +146,7 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 	if err := FetchRemote(ctx, dir, "origin", FetchOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: PullMerge}); err != nil {
+	if err := pullMain(ctx, dir, PullMerge, false); err != nil {
 		t.Fatal(err)
 	}
 	if parents := strings.Fields(command(t, dir, "log", "-1", "--format=%P")); len(parents) != 2 {
@@ -161,7 +161,7 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, dir, "local.txt", "unsaved edits")
-	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: PullMerge, Autostash: true}); err != nil {
+	if err := pullMain(ctx, dir, PullMerge, true); err != nil {
 		t.Fatal(err)
 	}
 	if content, err := WorkingPreview(dir, "local.txt"); err != nil || content.Content != "unsaved edits" {
@@ -170,10 +170,10 @@ func TestPullModesMergeRebaseAutostash(t *testing.T) {
 
 	// Unknown mode rejected; autostash=false still guards a dirty worktree.
 	write(t, dir, "local.txt", "still dirty")
-	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: "cherry"}); err == nil {
+	if err := pullMain(ctx, dir, "cherry", false); err == nil {
 		t.Fatal("accepted an unknown pull mode")
 	}
-	if err := PullUpstream(ctx, dir, "main", "origin", "main", PullOptions{Mode: PullMerge}); err == nil {
+	if err := pullMain(ctx, dir, PullMerge, false); err == nil {
 		t.Fatal("merged into a dirty worktree without autostash")
 	}
 }

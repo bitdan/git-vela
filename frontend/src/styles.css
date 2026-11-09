@@ -979,3 +979,11 @@ button.primary:hover:not(:disabled) { background: var(--accent-fill); filter: br
 
 .file-history-tools { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
 .file-history-tools > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* IDEA-style notification balloons (bottom right, above the status bar). */
+.notification-balloons { position: fixed; right: 14px; bottom: 34px; z-index: 60; display: flex; flex-direction: column; gap: 6px; width: min(360px, calc(100vw - 28px)); pointer-events: none; }
+.notification-balloon { pointer-events: auto; display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--popup); box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
+.notification-balloon.error { border-color: var(--error); }
+.notification-balloon.error strong { color: var(--error); }
+.notification-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.notification-close { border: 0; background: transparent; color: var(--muted); padding: 0 4px; line-height: 1; }

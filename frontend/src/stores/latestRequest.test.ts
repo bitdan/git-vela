@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { LatestRequest } from './latestRequest'
+import { LatestRequest, cancellableAll } from './latestRequest'
 
 describe('LatestRequest', () => {
   it('cancels and invalidates the previous request when selection changes', () => {
@@ -24,5 +24,16 @@ describe('LatestRequest', () => {
     expect(isCurrent()).toBe(false)
     slot.clear()
     expect(call.cancel).not.toHaveBeenCalled()
+  })
+})
+
+describe('cancellableAll', () => {
+  it('resolves every member and cancels them together', async () => {
+    const cancelled: string[] = []
+    const member = (name: string, value: number) => Object.assign(Promise.resolve(value), { cancel: () => { cancelled.push(name) } })
+    const combined = cancellableAll(member('a', 1), member('b', 2), Promise.resolve('plain'))
+    expect(await combined).toEqual([1, 2, 'plain'])
+    combined.cancel()
+    expect(cancelled).toEqual(['a', 'b'])
   })
 })

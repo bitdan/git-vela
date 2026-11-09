@@ -3,7 +3,7 @@
 // as "Ctrl+K", "Alt+Up" or "F11". An empty string means "unbound".
 
 export type ShortcutId =
-  | 'palette' | 'openRepository' | 'refresh' | 'searchHistory' | 'commit'
+  | 'palette' | 'openRepository' | 'refresh' | 'searchHistory' | 'commit' | 'updateProject'
   | 'previousCommit' | 'nextCommit' | 'previousChange' | 'nextChange'
   | 'previousHunk' | 'nextHunk' | 'toggleHistory' | 'maximizeDiff'
   | 'toggleTheme' | 'toggleDensity' | 'toggleFullscreen'
@@ -21,6 +21,7 @@ export const shortcutDefinitions: ShortcutDefinition[] = [
   { id: 'refresh', label: 'Refresh repository', group: 'Repository', binding: 'Alt+R' },
   { id: 'searchHistory', label: 'Search Git history', group: 'Repository', binding: 'Ctrl+F' },
   { id: 'commit', label: 'Focus commit message', group: 'Repository', binding: 'Ctrl+Enter' },
+  { id: 'updateProject', label: 'Update Project', group: 'Repository', binding: 'Ctrl+T' },
   { id: 'previousCommit', label: 'Previous commit', group: 'Navigation', binding: 'Alt+PageUp' },
   { id: 'nextCommit', label: 'Next commit', group: 'Navigation', binding: 'Alt+PageDown' },
   { id: 'previousChange', label: 'Previous changed file', group: 'Navigation', binding: 'Alt+Up' },

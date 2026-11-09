@@ -37,6 +37,9 @@ import HunkPanel from './components/history/HunkPanel.vue'
 import ConflictPanel from './components/history/ConflictPanel.vue'
 import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
+import UpdateProjectDialog from './features/sync/UpdateProjectDialog.vue'
+import { useBranchSync } from './features/sync/useBranchSync'
+import NotificationBalloons from './shared/NotificationBalloons.vue'
 import BisectPanel from './components/operations/BisectPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
@@ -317,6 +320,13 @@ const workingLoading = ref(false)
 const workingSelection = ref<WorkingFile>()
 const currentWorkingFile = computed(() => workingFiles.value.find(file => file.path === workingSelection.value?.path))
 const indexBusy = ref(false)
+/** Branch Update / Push / Pull-into-current and Update Project. */
+const branchSync = useBranchSync({
+  busy: indexBusy,
+  refresh: () => refreshAfterDailyOperation(),
+  conflicted: () => { gitTab.value = 'console'; void loadOperationState() },
+  openPush: branch => openSync('push', branch),
+})
 const indexError = ref('')
 const preview = ref<FilePreview>()
 const previewError = ref('')
@@ -569,6 +579,9 @@ type DailyPanel = 'sync' | 'init' | 'clone' | 'remotes' | 'publish' | 'bisect' |
 type SyncIntent = 'fetch' | 'pull' | 'push'
 const dailyPanel = ref<DailyPanel>()
 const syncIntent = ref<SyncIntent>('fetch')
+/** Local branch the Push dialog acts on; undefined means the checked-out one. */
+const syncBranch = ref<string>()
+const remoteRefNames = computed(() => store.branchRefs.map(item => item.name).filter(name => name.startsWith('refs/remotes/')))
 const projectPath = ref('')
 const projectError = ref('')
 const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 'refs/heads/' + store.repository?.head))
@@ -1760,11 +1773,12 @@ function gitAction(action: () => void) {
   action()
 }
 
-function openSync(intent: SyncIntent) {
+function openSync(intent: SyncIntent, branch?: string) {
   if (indexBusy.value || store.opening) return
-  if (dailyPanel.value === 'sync' && syncIntent.value === intent) dailyPanel.value = undefined
+  if (dailyPanel.value === 'sync' && syncIntent.value === intent && syncBranch.value === branch) dailyPanel.value = undefined
   else {
     syncIntent.value = intent
+    syncBranch.value = branch
     dailyPanel.value = 'sync'
   }
 }
@@ -1811,7 +1825,7 @@ function outsideMenus(event: PointerEvent) {
   if (!rootsMenu.value?.contains(event.target) && rootsMenu.value) rootsMenu.value.open = false
 }
 
-function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase' | SyncIntent) {
+function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase') {
   const item = branchMenu.value?.item
   if (!item) return
   closeBranchMenu()
@@ -1823,8 +1837,15 @@ function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'dele
     case 'create': openBranchForm('create', name, item.hash); break
     case 'switch': withSavedEditor('switching branches', () => { void updateBranch('switch', name) }); break
     case 'rename': case 'delete': openBranchForm(action, name); break
-    default: openSync(action)
   }
+}
+
+/** Runs a branch-context sync action on the ref the menu was opened for. */
+function branchSyncAction(id: Parameters<typeof branchSync.run>[1]) {
+  const item = branchMenu.value?.item
+  if (!item) return
+  closeBranchMenu()
+  branchSync.run(item, id)
 }
 
 function split(event: PointerEvent) {
@@ -2005,6 +2026,7 @@ function runShortcut(id: ShortcutId) {
     case 'palette': paletteOpen.value = !paletteOpen.value; break
     case 'openRepository': void choose(); break
     case 'refresh': refresh(); break
+    case 'updateProject': if (store.repository) branchSync.openUpdateProject(); break
     case 'searchHistory':
       if (store.repository) {
         historyVisible.value = true
@@ -2263,6 +2285,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       void nextTick(() => log.value?.openSearch())
     }, { hint: hint('searchHistory') })
     add('commit', 'Commit changes…', 'Git operations', focusCommit, { hint: hint('commit'), disabled: busy })
+    add('update-project', 'Update Project…', 'Git operations', branchSync.openUpdateProject,
+      { hint: hint('updateProject'), disabled: busy || !branchSync.canUpdateProject.value })
     add('fetch', 'Fetch…', 'Git operations', () => openSync('fetch'), { disabled: busy })
     add('pull', 'Pull…', 'Git operations', () => openSync('pull'), { disabled: busy })
     add('push', 'Push…', 'Git operations', () => openSync('push'), { disabled: busy })
@@ -2359,6 +2383,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           <template v-if="store.repository">
             <div class="command-divider"></div>
             <button :disabled="indexBusy" @click="gitAction(focusCommit)">Commit…</button>
+            <button :disabled="indexBusy || !branchSync.canUpdateProject.value" @click="gitAction(branchSync.openUpdateProject)" :title="keymap.bindings.updateProject">Update Project…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('push'))">Push…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('pull'))">Pull…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
@@ -2437,7 +2462,11 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                   :path="store.repository.path" :name="store.repository.name" :branch="store.repository.head"
                   :has-head="hasLocalHead" publish :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
-               :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+               :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :branch="syncBranch"
+               :remote-refs="remoteRefNames" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <UpdateProjectDialog v-if="branchSync.updateProjectOpen.value && store.repository" v-model:method="branchSync.updateProjectMethod.value"
+                         :branch="store.repository.head" :busy="indexBusy"
+                         @cancel="branchSync.updateProjectOpen.value = false" @confirm="branchSync.confirmUpdateProject" />
     <BisectPanel v-if="dailyPanel === 'bisect' && store.repository" :key="store.repository.path"
                  :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy"
                  @close="dailyPanel = undefined" />
@@ -2881,12 +2910,14 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('merge')">Merge into current branch…</button>
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('rebase')">Interactive rebase onto this…</button>
       </template>
+      <template v-if="branchSync.actionsFor(branchMenu.item).length">
+        <hr />
+        <button v-for="action in branchSync.actionsFor(branchMenu.item)" :key="action.id"
+                :disabled="indexBusy || store.opening || !action.enabled" :title="action.description"
+                @click="branchSyncAction(action.id)">{{ action.label }}</button>
+      </template>
       <template v-if="branchMenu.item.name.startsWith('refs/heads/')">
         <hr />
-        <template v-if="branchMenu.item.name === 'refs/heads/' + store.repository.head">
-          <button :disabled="indexBusy" @click="branchAction('pull')">Pull…</button>
-          <button :disabled="indexBusy" @click="branchAction('push')">Push…</button>
-        </template>
         <button :disabled="indexBusy" @click="branchAction('rename')">Rename…</button>
         <button :disabled="indexBusy || branchMenu.item.name === 'refs/heads/' + store.repository.head"
                 @click="branchAction('delete')">Delete…</button>
@@ -2936,6 +2967,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button :disabled="indexBusy || sourceGitDirty || !store.headHash || !sourceGitChange || !/^[ MD]{2}$/.test(sourceGitChange.status)"
               @click="sourceGitAction('rollback')">Rollback…</button>
       <hr>
+      <button :disabled="indexBusy || !branchSync.canUpdateProject.value" @click="sourceRepositoryAction(branchSync.openUpdateProject)">Update Project…</button>
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('push'))">Push…</button>
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('pull'))">Pull…</button>
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('fetch'))">Fetch…</button>
@@ -2953,6 +2985,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => toggleDailyPanel('clone'))">Clone…</button>
     </ContextActions>
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
+    <NotificationBalloons />
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
       <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>

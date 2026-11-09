@@ -292,8 +292,28 @@ func (*RepositoryService) ConfigureGit(ctx context.Context, path string) (string
 	return git.ConfigureExecutable(ctx, path)
 }
 
-func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string, options git.PullOptions) error {
-	return s.write(ctx, func() error { return git.PullUpstream(ctx, path, branch, remote, target, options) })
+func (*RepositoryService) BranchTracking(ctx context.Context, path, branch string) (git.BranchTracking, error) {
+	return discardCancelled(git.ReadBranchTracking(ctx, path, branch))
+}
+
+// UpdateBranch runs the branch "Update" action on an explicit local branch.
+func (s *RepositoryService) UpdateBranch(ctx context.Context, path, branch, method string) (git.UpdateResult, error) {
+	var result git.UpdateResult
+	err := s.write(ctx, func() (err error) {
+		result, err = git.UpdateBranch(ctx, path, branch, method)
+		return err
+	})
+	return result, err
+}
+
+// Pull integrates an explicitly selected remote branch into the checked-out branch.
+func (s *RepositoryService) Pull(ctx context.Context, path string, request git.PullRequest) (git.UpdateResult, error) {
+	var result git.UpdateResult
+	err := s.write(ctx, func() (err error) {
+		result, err = git.Pull(ctx, path, request)
+		return err
+	})
+	return result, err
 }
 
 func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string, options git.PushOptions) error {

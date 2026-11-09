@@ -144,7 +144,7 @@ try {
   // goes through Page.navigate because calling location.reload() inside a
   // Runtime.evaluate can deadlock the WebView2 renderer.
   await evaluate("localStorage.clear()")
-  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
+  await cdp('Page.navigate', { url: (await evaluate('location.origin')) + '/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
   await evaluate(`(() => {
@@ -507,7 +507,7 @@ try {
     await text('[aria-label="Remote synchronization"] [role=status]', 'Fetched m2-smoke.')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit and push review')
     await gitMenuAction('Pull…')
-    // G3 added pull strategies; the default stays fast-forward-only.
+    // Pull preselects the upstream; the default mode is a plain merge (IDEA), which fast-forwards here.
     await click('[aria-label="Remote synchronization"]', 'Pull')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit from smoke peer')

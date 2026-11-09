@@ -4,16 +4,35 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
-import type { SyncState } from '../../../bindings/gitvela/internal/git'
-import { LatestRequest } from '../../stores/latestRequest'
+import type { BranchTracking, SyncState } from '../../../bindings/gitvela/internal/git'
+import { LatestRequest, cancellableAll } from '../../stores/latestRequest'
 import { usePreferences } from '../../stores/preferences'
 import { matchesProtectedBranch } from './protectedBranches'
+import { currentBranch, describeUpdate, parseRemoteRef } from '../../features/sync/branchActions'
+import { pullModes, type PullMode } from '../../features/sync/pullOptions'
 
-const props = defineProps<{ path: string; head: string; intent: 'fetch' | 'pull' | 'push'; refresh: () => Promise<void> }>()
+/** Fetch, Pull and Push dialogs. Each intent names its own target:
+ *  - Fetch: a remote (or all); never touches HEAD or the working tree.
+ *  - Pull: a remote branch chosen here, integrated into the checked-out branch
+ *    (IDEA GitPullDialog); defaults to the upstream but is not limited to it.
+ *  - Push: the explicit local `branch` (defaults to HEAD) and its own upstream
+ *    (IDEA GitPushBranchAction). */
+const props = defineProps<{
+  path: string
+  head: string
+  intent: 'fetch' | 'pull' | 'push'
+  /** Local branch to push; the checked-out branch when omitted. */
+  branch?: string
+  /** Known remote-tracking refs (refs/remotes/<remote>/<branch>). */
+  remoteRefs: string[]
+  refresh: () => Promise<void>
+}>()
 const busy = defineModel<boolean>('busy', { required: true })
 const preferences = usePreferences()
 const state = ref<SyncState>()
+const tracking = ref<BranchTracking>()
 const selectedRemote = ref('')
+const pullBranch = ref('')
 const requests = new LatestRequest()
 const loading = ref(false)
 const loadError = ref('')
@@ -28,20 +47,32 @@ interface Destination {
   target: string
 }
 
+const pullTarget = computed(() => currentBranch(props.head))
+const pushSource = computed(() => props.branch || pullTarget.value || '')
+const remotes = computed(() => state.value?.remotes ?? [])
 const upstream = computed<Destination | undefined>(() => {
-  const info = state.value
-  if (!info?.branch || !info.upstreamBranch || !info.remotes?.includes(info.upstreamRemote)) return
-  return { branch: info.branch, remote: info.upstreamRemote, target: info.upstreamBranch }
+  const info = tracking.value
+  if (!info?.branch || !info.remoteBranch || !remotes.value.includes(info.remote)) return
+  return { branch: info.branch, remote: info.remote, target: info.remoteBranch }
 })
 
 const destination = computed<Destination | undefined>(() => {
-  if (state.value?.upstreamRemote) return upstream.value
-  if (!state.value?.hasHead || !state.value.branch || !selectedRemote.value) return
-  return { branch: state.value.branch, remote: selectedRemote.value, target: state.value.branch }
+  if (tracking.value?.remote) return upstream.value
+  if (!pushSource.value || !selectedRemote.value || (pushSource.value === props.head && !state.value?.hasHead)) return
+  return { branch: pushSource.value, remote: selectedRemote.value, target: pushSource.value }
 })
 
+/** Remote branches of the selected remote, for the Pull source list. */
+const remoteBranches = computed(() => props.remoteRefs
+  .map(ref => parseRemoteRef(ref, remotes.value))
+  .filter((entry): entry is { remote: string; branch: string } => !!entry && entry.remote === selectedRemote.value)
+  .map(entry => entry.branch)
+  .sort((a, b) => a.localeCompare(b)))
+
 const confirmation = ref<Destination>()
-const pullMode = ref<'ff' | 'merge' | 'rebase'>('ff')
+const pullMode = ref<PullMode>('merge')
+const pullNoCommit = ref(false)
+const pullNoVerify = ref(false)
 const pullAutostash = ref(false)
 const fetchOptions = ref<{ prune: boolean; tags: '' | 'all' | 'none' }>({ prune: false, tags: '' })
 const pushOptions = ref({ pushTags: false, setUpstream: false, forceWithLease: false })
@@ -50,28 +81,50 @@ const pushOptions = ref({ pushTags: false, setUpstream: false, forceWithLease: f
  *  only explains why the force option is unavailable. */
 const targetProtected = computed(() => !!confirmation.value &&
   matchesProtectedBranch(preferences.protectedPatterns, confirmation.value.target))
-watch(() => props.intent, () => { confirmation.value = undefined })
-watch(selectedRemote, () => { confirmation.value = undefined })
+watch(() => [props.intent, props.branch], () => {
+  confirmation.value = undefined
+  void load()
+})
+watch(selectedRemote, () => {
+  confirmation.value = undefined
+  choosePullBranch()
+})
+watch(remoteBranches, () => choosePullBranch())
+watch(pullMode, mode => { if (mode === 'rebase') pullNoCommit.value = false })
 watch(() => props.head, () => {
   confirmation.value = undefined
   if (!busy.value) void load()
 })
 
+/** IDEA preselects the tracked branch, else the same name as the current one. */
+function choosePullBranch() {
+  const choices = remoteBranches.value
+  if (choices.includes(pullBranch.value)) return
+  const tracked = tracking.value?.remote === selectedRemote.value ? tracking.value.remoteBranch : ''
+  pullBranch.value = [tracked, pullTarget.value ?? ''].find(name => !!name && choices.includes(name)) ?? ''
+}
+
 async function load() {
-  const call = api.SyncState(props.path)
+  // Pull reads the checked-out branch's upstream, Push the selected branch's.
+  const branch = props.intent === 'push' ? pushSource.value : pullTarget.value ?? ''
+  const call = cancellableAll(
+    api.SyncState(props.path),
+    branch ? api.BranchTracking(props.path, branch) : Promise.resolve(undefined),
+  )
   const current = requests.replace(call)
   loading.value = true
   loadError.value = ''
   try {
-    const result = await call
+    const [result, branchTracking] = await call
     if (!current()) return
     state.value = result
-    const remotes = result.remotes ?? []
-    if (!remotes.includes(selectedRemote.value)) {
-      selectedRemote.value = remotes.includes(result.upstreamRemote)
-        ? result.upstreamRemote
-        : remotes.includes('origin') ? 'origin' : remotes[0] ?? ''
+    tracking.value = branchTracking ?? undefined
+    const names = result.remotes ?? []
+    if (!names.includes(selectedRemote.value)) {
+      const tracked = branchTracking?.remote ?? ''
+      selectedRemote.value = names.includes(tracked) ? tracked : names.includes('origin') ? 'origin' : names[0] ?? ''
     }
+    choosePullBranch()
   } catch (cause) {
     if (current()) loadError.value = String(cause)
   } finally {
@@ -91,29 +144,15 @@ onUnmounted(() => {
   requests.clear()
 })
 
-async function run(operation: 'fetch' | 'pull' | 'push') {
-  const remote = selectedRemote.value
-  const target = operation === 'push' ? confirmation.value : upstream.value
-  if (busy.value || loading.value || loadError.value || (operation === 'fetch' ? !remote : !target)) return
+async function exclusive(label: string, action: () => Promise<string>) {
+  if (busy.value || loading.value || loadError.value) return
   busy.value = true
   error.value = ''
   notice.value = ''
-  running.value = operation === 'fetch' ? 'Fetching…' : operation === 'pull' ? 'Pulling…' : 'Pushing…'
+  running.value = label
   confirmation.value = undefined
   try {
-    if (operation === 'fetch') {
-      await api.FetchRemote(props.path, remote, fetchOptions.value)
-      notice.value = 'Fetched ' + remote + '.'
-    } else if (target && operation === 'pull') {
-      await api.PullUpstream(props.path, target.branch, target.remote, target.target,
-        { mode: pullMode.value, autostash: pullAutostash.value })
-      notice.value = 'Pull complete from ' + target.remote + '/' + target.target + '.'
-    } else if (target) {
-      await api.PushBranch(props.path, target.branch, target.remote, target.target,
-        { ...pushOptions.value, protected: preferences.protectedPatterns })
-      notice.value = 'Push complete to ' + target.remote + '/' + target.target + '.'
-      pushOptions.value = { pushTags: false, setUpstream: false, forceWithLease: false }
-    }
+    notice.value = await action()
   } catch (cause) {
     error.value = String(cause)
   } finally {
@@ -125,34 +164,56 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
     }
   }
 }
-async function fetchAll() {
-  if (busy.value || loading.value || loadError.value || !state.value?.remotes?.length) return
-  busy.value = true
-  error.value = ''
-  notice.value = ''
-  running.value = 'Fetching all remotes…'
-  try {
+
+function fetchRemote() {
+  const remote = selectedRemote.value
+  if (!remote) return
+  void exclusive('Fetching…', async () => {
+    await api.FetchRemote(props.path, remote, fetchOptions.value)
+    return 'Fetched ' + remote + '.'
+  })
+}
+
+function fetchAll() {
+  if (!remotes.value.length) return
+  void exclusive('Fetching all remotes…', async () => {
     await api.FetchAllRemotes(props.path, fetchOptions.value)
-    notice.value = 'Fetched all remotes.'
-  } catch (cause) {
-    error.value = String(cause)
-  } finally {
-    try {
-      await Promise.all([load(), props.refresh()])
-    } finally {
-      running.value = ''
-      busy.value = false
-    }
-  }
+    return 'Fetched all remotes.'
+  })
+}
+
+function pull() {
+  const branch = pullTarget.value
+  const remote = selectedRemote.value
+  const source = pullBranch.value
+  if (!branch || !remote || !source) return
+  void exclusive('Pulling…', async () => {
+    const result = await api.Pull(props.path, {
+      branch, remote, remoteBranch: source, mode: pullMode.value,
+      noCommit: pullNoCommit.value, noVerify: pullNoVerify.value, autostash: pullAutostash.value,
+    })
+    return 'Pull complete: ' + describeUpdate(result)
+  })
+}
+
+function push() {
+  const target = confirmation.value
+  if (!target) return
+  void exclusive('Pushing…', async () => {
+    await api.PushBranch(props.path, target.branch, target.remote, target.target,
+      { ...pushOptions.value, protected: preferences.protectedPatterns })
+    pushOptions.value = { pushTags: false, setUpstream: false, forceWithLease: false }
+    return 'Push complete to ' + target.remote + '/' + target.target + '.'
+  })
 }
 </script>
 
 <template>
   <section class="daily-panel" aria-label="Remote synchronization">
     <div class="daily-controls">
-      <h2>{{ { fetch: 'Fetch', pull: 'Pull', push: 'Push' }[intent] }}</h2>
-      <label v-if="intent === 'fetch' || (intent === 'push' && !upstream)">Remote
-        <select v-model="selectedRemote" :disabled="busy || loading || !state?.remotes?.length">
+      <h2>{{ intent === 'fetch' ? 'Fetch' : intent === 'pull' ? 'Pull to ' + (pullTarget ?? 'HEAD') : 'Push ' + (pushSource || 'HEAD') }}</h2>
+      <label v-if="intent !== 'push' || !upstream">Remote
+        <select v-model="selectedRemote" aria-label="Remote" :disabled="busy || loading || !state?.remotes?.length">
           <option v-if="!state?.remotes?.length" value="">No remotes</option>
           <option v-for="remote in state?.remotes" :key="remote">{{ remote }}</option>
         </select>
@@ -168,17 +229,24 @@ async function fetchAll() {
           </select>
         </label>
       </fieldset>
-      <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !selectedRemote" @click="run('fetch')">Fetch</button>
+      <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !selectedRemote" @click="fetchRemote">Fetch</button>
       <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !state?.remotes?.length"
               title="Fetch every configured remote with the same options" @click="fetchAll">Fetch all remotes</button>
-      <fieldset v-if="intent === 'pull'" class="pull-options" :disabled="busy || loading || !upstream">
-        <legend>Pull strategy</legend>
-        <label><input type="radio" value="ff" v-model="pullMode" /> Fast-forward only</label>
-        <label><input type="radio" value="merge" v-model="pullMode" /> Merge</label>
-        <label><input type="radio" value="rebase" v-model="pullMode" /> Rebase</label>
-        <label><input type="checkbox" v-model="pullAutostash" /> Autostash local changes</label>
+      <label v-if="intent === 'pull'">Branch
+        <select v-model="pullBranch" aria-label="Remote branch to pull" :disabled="busy || loading || !remoteBranches.length">
+          <option v-if="!remoteBranches.length" value="">No fetched branches</option>
+          <option v-for="name in remoteBranches" :key="name" :value="name">{{ selectedRemote }}/{{ name }}</option>
+        </select>
+      </label>
+      <fieldset v-if="intent === 'pull'" class="pull-options" :disabled="busy || loading || !pullTarget">
+        <legend>Pull options</legend>
+        <label v-for="mode in pullModes" :key="mode.value" :title="mode.option">
+          <input type="radio" :value="mode.value" v-model="pullMode" /> {{ mode.label }}</label>
+        <label title="--no-commit"><input type="checkbox" v-model="pullNoCommit" :disabled="pullMode === 'rebase'" /> Do not commit the merge</label>
+        <label title="--no-verify"><input type="checkbox" v-model="pullNoVerify" /> Bypass Git hooks</label>
+        <label title="--autostash"><input type="checkbox" v-model="pullAutostash" /> Autostash local changes</label>
       </fieldset>
-      <button v-if="intent === 'pull'" :disabled="busy || loading || !!loadError || !upstream" @click="run('pull')">Pull</button>
+      <button v-if="intent === 'pull'" :disabled="busy || loading || !!loadError || !pullTarget || !pullBranch" @click="pull">Pull</button>
       <button v-if="intent === 'push'" :disabled="busy || loading || !!loadError || !destination" :aria-expanded="!!confirmation"
               @click="confirmation = destination">Push…</button>
       <button :disabled="busy || loading" @click="load">Reload targets</button>
@@ -204,19 +272,22 @@ async function fetchAll() {
       <template #actions>
         <button data-cancel :disabled="busy" @click="confirmation = undefined">Cancel</button>
         <button class="primary" :class="{ 'danger-button': pushOptions.forceWithLease }" :disabled="busy || loading || !!loadError"
-                @click="run('push')">{{ pushOptions.forceWithLease ? 'Force push (lease)' : 'Confirm push' }}</button>
+                @click="push">{{ pushOptions.forceWithLease ? 'Force push (lease)' : 'Confirm push' }}</button>
       </template>
     </ConfirmationDialog>
     <p v-if="running || loading" class="notice" role="status">{{ running || 'Reading Git remotes…' }}</p>
     <p v-if="error || loadError" class="notice error" role="alert">{{ error || loadError }}</p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-else-if="state && !running && !loading && !error" class="notice">
-      <template v-if="upstream">Upstream {{ upstream.remote }}/{{ upstream.target }} for {{ upstream.branch }}.</template>
-      <template v-else-if="!state.remotes?.length">Configure a Git remote to synchronize this repository.</template>
-      <template v-else-if="!state.branch">Check out a local branch to pull or push.</template>
-      <template v-else-if="!state.hasHead">Create the first commit before publishing this branch.</template>
-      <template v-else-if="state.upstreamRemote">This branch requires a configured remote branch as its upstream.</template>
-      <template v-else>Branch {{ state.branch }} has no upstream. Push can publish it to the selected remote.</template>
+      <template v-if="!state.remotes?.length">Configure a Git remote to synchronize this repository.</template>
+      <template v-else-if="intent === 'fetch'">Fetch updates remote-tracking branches only; HEAD and the working tree are unchanged.</template>
+      <template v-else-if="intent === 'pull' && !pullTarget">Check out a local branch to pull into.</template>
+      <template v-else-if="intent === 'pull'">Pull {{ selectedRemote }}/{{ pullBranch || '…' }} into {{ pullTarget }}<template v-if="upstream"> (upstream {{ upstream.remote }}/{{ upstream.target }})</template>.</template>
+      <template v-else-if="!pushSource">Check out a local branch to push.</template>
+      <template v-else-if="upstream">Upstream {{ upstream.remote }}/{{ upstream.target }} for {{ upstream.branch }}.</template>
+      <template v-else-if="pushSource === head && !state.hasHead">Create the first commit before publishing this branch.</template>
+      <template v-else-if="tracking?.remote">This branch requires a configured remote branch as its upstream.</template>
+      <template v-else>Branch {{ pushSource }} has no upstream. Push can publish it to the selected remote.</template>
     </p>
   </section>
 </template>

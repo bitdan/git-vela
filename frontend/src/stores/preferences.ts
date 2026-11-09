@@ -87,6 +87,9 @@ export const usePreferences = defineStore('preferences', () => {
   /** Protected branch patterns (IDEA Protected branches): exact names or
    *  shell wildcards, one per line. Force pushes to them are refused. */
   const protectedBranches = ref(preference('gitvela.protectedBranches') ?? '')
+  /** Update method (IDEA Settings → Git → Update method) used by the branch
+   *  Update action and Update Project for the checked-out branch. */
+  const updateMethod = ref<'merge' | 'rebase'>(preference('gitvela.updateMethod') === 'rebase' ? 'rebase' : 'merge')
   const protectedPatterns = computed(() =>
     protectedBranches.value.split(/[\n,]/).map(value => value.trim()).filter(Boolean))
   /** Workspace roots (IDEA Directory Mappings): the repositories this
@@ -113,6 +116,7 @@ export const usePreferences = defineStore('preferences', () => {
   watch(editorFontSize, value => persist('gitvela.editorFontSize', String(clampEditorFont(value))))
   watch(editorTabSize, value => persist('gitvela.editorTabSize', String(value)))
   watch(gitPath, value => persist('gitvela.gitPath', value))
+  watch(updateMethod, value => persist('gitvela.updateMethod', value))
   watch(protectedBranches, value => persist('gitvela.protectedBranches', value))
   watch(roots, value => persist('gitvela.roots', JSON.stringify(value)), { deep: true })
   watch(activeRoot, value => persist('gitvela.activeRoot', value))
@@ -141,5 +145,5 @@ export const usePreferences = defineStore('preferences', () => {
     density.value = density.value === 'compact' ? 'comfortable' : 'compact'
   }
 
-  return { dark, previewHeight, fileTree, density, resumeOnStart, sidebarWidth, branchesWidth, filesWidth, detailsHeight, issuePattern, issueURL, editorWordWrap, editorFontSize, editorTabSize, gitPath, protectedBranches, protectedPatterns, roots, activeRoot, rememberRoot, forgetRoot, rowHeight, repoRowHeight, workingRowHeight, toggleDensity, resetLayout }
+  return { dark, previewHeight, fileTree, density, resumeOnStart, sidebarWidth, branchesWidth, filesWidth, detailsHeight, issuePattern, issueURL, editorWordWrap, editorFontSize, editorTabSize, gitPath, updateMethod, protectedBranches, protectedPatterns, roots, activeRoot, rememberRoot, forgetRoot, rowHeight, repoRowHeight, workingRowHeight, toggleDensity, resetLayout }
 })

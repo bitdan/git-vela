@@ -37,6 +37,11 @@ import HunkPanel from './components/history/HunkPanel.vue'
 import ConflictPanel from './components/history/ConflictPanel.vue'
 import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
+import UpdateProjectDialog from './features/sync/UpdateProjectDialog.vue'
+import { useBranchSync } from './features/sync/useBranchSync'
+import { useRefOperations } from './features/branches/useRefOperations'
+import NotificationBalloons from './shared/NotificationBalloons.vue'
+import StatusBar from './features/app/StatusBar.vue'
 import BisectPanel from './components/operations/BisectPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
@@ -67,15 +72,7 @@ const expandedPreview = ref(false)
 const expandedDiff = ref(false)
 const path = ref('')
 const navigation = ref('')
-const branchError = ref('')
-const branchNotice = ref('')
-const branchName = ref('')
 const branchFilter = ref('')
-type BranchForm = 'create' | 'rename' | 'delete'
-const branchForm = ref<BranchForm>()
-const managedBranch = ref('')
-const branchBase = ref('')
-const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
 /** Repository whose saved layout is restored as soon as it finishes opening
  *  (a root switch), as opposed to the session restore at startup. */
@@ -141,34 +138,7 @@ function refLabel(ref: string) {
   return ref.replace(/^refs\/(heads|remotes|tags)\//, '')
 }
 
-function openBranchForm(form?: BranchForm, branch = '', base = '') {
-  branchBase.value = base
-  branchForm.value = form
-  managedBranch.value = branch
-  branchName.value = form === 'rename' ? branch : ''
-  branchError.value = ''
-  branchNotice.value = ''
-  tagForm.value = undefined
-}
-
-// ---- Tags (G1): create / delete / push / checkout via the Tags panel ----
-type TagForm = 'create' | 'delete' | 'push'
-const tagForm = ref<TagForm>()
-const tagName = ref('')
-const tagMessage = ref('')
-const tagRemote = ref('')
-const tagRemotes = ref<string[]>([])
 const tagMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
-const tagBase = computed(() => store.selected?.hash ?? store.headHash)
-
-function openTagForm(form?: TagForm, name = '') {
-  branchForm.value = undefined
-  tagForm.value = form
-  tagName.value = name
-  tagMessage.value = ''
-  branchError.value = ''
-  branchNotice.value = ''
-}
 
 function closeTagMenu() {
   tagMenu.value = undefined
@@ -176,104 +146,6 @@ function closeTagMenu() {
 
 function openTagActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
   tagMenu.value = { item, anchor: contextAnchor(event) }
-}
-
-async function createTag() {
-  const repo = store.repository?.path
-  const name = tagName.value.trim()
-  const base = tagBase.value
-  if (!repo || !name || !base || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.CreateTag(repo, name, base, tagMessage.value.trim())
-    openTagForm()
-    branchNotice.value = 'Created tag ' + name
-    await store.open(repo, true)
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
-}
-
-async function deleteTag(name: string) {
-  const repo = store.repository?.path
-  if (!repo || !name || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.DeleteTag(repo, name)
-    openTagForm()
-    branchNotice.value = 'Deleted tag ' + name
-    await store.open(repo, true)
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
-}
-
-async function pushTag(name: string) {
-  const repo = store.repository?.path
-  if (!repo || !name || !tagRemote.value || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.PushTag(repo, tagRemote.value, name)
-    openTagForm()
-    branchNotice.value = 'Pushed tag ' + name + ' to ' + tagRemote.value
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
-}
-
-async function openTagPush(name: string) {
-  const repo = store.repository?.path
-  if (!repo || store.opening) return
-  try {
-    const state = await api.SyncState(repo)
-    const remotes = state.remotes ?? []
-    if (!remotes.length) {
-      branchError.value = 'Configure a Git remote before pushing tags.'
-      return
-    }
-    tagRemotes.value = remotes
-    tagRemote.value = remotes.includes('origin') ? 'origin' : remotes[0]
-    openTagForm('push', name)
-  } catch (error) {
-    branchError.value = String(error)
-  }
-}
-
-async function checkoutTag(name: string) {
-  const repo = store.repository?.path
-  if (!repo || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.CheckoutTag(repo, name)
-    if (repo !== store.repository?.path) return
-    cancelAmend()
-    branchNotice.value = 'Checked out tag ' + name
-    previewRequest.clear()
-    workingSelection.value = undefined
-    preview.value = undefined
-    previewError.value = ''
-    previewLoading.value = false
-    view.value = 'working'
-    await Promise.all([store.open(repo), loadWorking()])
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
 }
 
 function tagAction(action: 'history' | 'checkout' | 'push' | 'delete') {
@@ -317,6 +189,25 @@ const workingLoading = ref(false)
 const workingSelection = ref<WorkingFile>()
 const currentWorkingFile = computed(() => workingFiles.value.find(file => file.path === workingSelection.value?.path))
 const indexBusy = ref(false)
+/** Branch Update / Push / Pull-into-current and Update Project. */
+const branchSync = useBranchSync({
+  busy: indexBusy,
+  refresh: () => refreshAfterDailyOperation(),
+  failed: () => void showStoppedOperation(),
+  openPush: branch => openSync('push', branch),
+})
+/** Branch and tag operations of the Branches panel. */
+const refOperations = useRefOperations({
+  busy: indexBusy,
+  refreshRefs: repo => store.open(repo, true),
+  afterHeadMoved,
+  branchChanged: () => { branchFilter.value = '' },
+})
+const {
+  branchError, branchNotice, branchName, branchForm, managedBranch, createBase, deletion, deletionError,
+  tagForm, tagName, tagMessage, tagRemote, tagRemotes, tagBase,
+  openBranchForm, openTagForm, createTag, deleteTag, pushTag, checkoutTag, openTagPush,
+} = refOperations
 const indexError = ref('')
 const preview = ref<FilePreview>()
 const previewError = ref('')
@@ -569,6 +460,9 @@ type DailyPanel = 'sync' | 'init' | 'clone' | 'remotes' | 'publish' | 'bisect' |
 type SyncIntent = 'fetch' | 'pull' | 'push'
 const dailyPanel = ref<DailyPanel>()
 const syncIntent = ref<SyncIntent>('fetch')
+/** Local branch the Push dialog acts on; undefined means the checked-out one. */
+const syncBranch = ref<string>()
+const remoteRefNames = computed(() => store.branchRefs.map(item => item.name).filter(name => name.startsWith('refs/remotes/')))
 const projectPath = ref('')
 const projectError = ref('')
 const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 'refs/heads/' + store.repository?.head))
@@ -689,14 +583,9 @@ watch(() => store.repository?.path, repo => {
   }
   commitHistory.value = repo ? readCommitHistory(undefined, repo) : []
   navigation.value = ''
-  branchError.value = ''
-  branchNotice.value = ''
-  branchName.value = ''
+  refOperations.reset()
   branchFilter.value = ''
   collapsedBranches.value.clear()
-  branchForm.value = undefined
-  managedBranch.value = ''
-  branchBase.value = ''
   branchMenu.value = undefined
   refKind.value = 'branches'
   statusRequest.clear()
@@ -1114,6 +1003,13 @@ function compareCommit(commit: Commit) {
 /** Compare the two rows of a Ctrl/Shift multi-selection directly (T06). */
 function compareCommits(before: Commit, after: Commit) {
   compareRevisions(before.hash, after.hash, before.hash.slice(0, 8) + ' → ' + after.hash.slice(0, 8))
+}
+
+/** After a failed write, read the real Git state: a stopped merge or rebase
+ *  is shown in the console with its continue/abort controls. */
+async function showStoppedOperation() {
+  await loadOperationState()
+  if (operation.value?.kind || operation.value?.conflicts?.length) gitTab.value = 'console'
 }
 
 async function loadOperationState() {
@@ -1641,53 +1537,22 @@ function refresh() {
   if (workingSelection.value && workingView.value) void selectView(workingView.value)
 }
 
-async function updateBranch(operation: 'create' | 'switch' | 'rename' | 'delete', name: string) {
-  const repo = store.repository?.path
-  const base = createBase.value
-  const original = managedBranch.value
-  if (!repo || !name || indexBusy.value || (operation === 'create' && !base)) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
+/** HEAD moved (branch or tag checkout): drop editor/preview state that
+ *  belonged to the previous HEAD and reload history and working changes. */
+async function afterHeadMoved(repo: string) {
+  cancelAmend()
+  previewRequest.clear()
+  workingSelection.value = undefined
+  preview.value = undefined
+  previewError.value = ''
+  previewLoading.value = false
+  view.value = 'working'
+  await Promise.all([store.open(repo), loadWorking()])
+}
+
+function changeBranch(operation: Parameters<typeof refOperations.changeBranch>[0], name: string) {
   navigation.value = ''
-  try {
-    switch (operation) {
-      case 'create':
-        if (!base) return
-        await api.CreateBranch(repo, name, base)
-        break
-      case 'switch':
-        await api.SwitchBranch(repo, name)
-        break
-      case 'rename':
-        await api.RenameBranch(repo, original, name)
-        break
-      case 'delete':
-        await api.DeleteBranch(repo, name)
-        break
-    }
-    if (repo !== store.repository?.path) return
-    if (operation === 'switch') {
-      cancelAmend()
-      branchNotice.value = 'Switched to ' + name
-      previewRequest.clear()
-      workingSelection.value = undefined
-      preview.value = undefined
-      previewError.value = ''
-      previewLoading.value = false
-      view.value = 'working'
-      await Promise.all([store.open(repo), loadWorking()])
-    } else {
-      openBranchForm()
-      branchFilter.value = ''
-      branchNotice.value = { create: 'Created ', rename: 'Renamed to ', delete: 'Deleted ' }[operation] + name
-      await store.open(repo, true)
-    }
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
+  return refOperations.changeBranch(operation, name)
 }
 
 async function jump(hash: string) {
@@ -1760,11 +1625,12 @@ function gitAction(action: () => void) {
   action()
 }
 
-function openSync(intent: SyncIntent) {
+function openSync(intent: SyncIntent, branch?: string) {
   if (indexBusy.value || store.opening) return
-  if (dailyPanel.value === 'sync' && syncIntent.value === intent) dailyPanel.value = undefined
+  if (dailyPanel.value === 'sync' && syncIntent.value === intent && syncBranch.value === branch) dailyPanel.value = undefined
   else {
     syncIntent.value = intent
+    syncBranch.value = branch
     dailyPanel.value = 'sync'
   }
 }
@@ -1811,7 +1677,7 @@ function outsideMenus(event: PointerEvent) {
   if (!rootsMenu.value?.contains(event.target) && rootsMenu.value) rootsMenu.value.open = false
 }
 
-function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase' | SyncIntent) {
+function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase') {
   const item = branchMenu.value?.item
   if (!item) return
   closeBranchMenu()
@@ -1821,10 +1687,17 @@ function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'dele
     case 'compare': compareRevisions(store.headHash, item.hash, 'HEAD → ' + name); break
     case 'merge': case 'rebase': void prepareOperation(action, item.hash, name); break
     case 'create': openBranchForm('create', name, item.hash); break
-    case 'switch': withSavedEditor('switching branches', () => { void updateBranch('switch', name) }); break
+    case 'switch': withSavedEditor('switching branches', () => { void changeBranch('switch', name) }); break
     case 'rename': case 'delete': openBranchForm(action, name); break
-    default: openSync(action)
   }
+}
+
+/** Runs a branch-context sync action on the ref the menu was opened for. */
+function branchSyncAction(id: Parameters<typeof branchSync.run>[1]) {
+  const item = branchMenu.value?.item
+  if (!item) return
+  closeBranchMenu()
+  branchSync.run(item, id)
 }
 
 function split(event: PointerEvent) {
@@ -2005,6 +1878,7 @@ function runShortcut(id: ShortcutId) {
     case 'palette': paletteOpen.value = !paletteOpen.value; break
     case 'openRepository': void choose(); break
     case 'refresh': refresh(); break
+    case 'updateProject': if (store.repository) branchSync.openUpdateProject(); break
     case 'searchHistory':
       if (store.repository) {
         historyVisible.value = true
@@ -2263,6 +2137,8 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       void nextTick(() => log.value?.openSearch())
     }, { hint: hint('searchHistory') })
     add('commit', 'Commit changes…', 'Git operations', focusCommit, { hint: hint('commit'), disabled: busy })
+    add('update-project', 'Update Project…', 'Git operations', branchSync.openUpdateProject,
+      { hint: hint('updateProject'), disabled: busy || !branchSync.canUpdateProject.value })
     add('fetch', 'Fetch…', 'Git operations', () => openSync('fetch'), { disabled: busy })
     add('pull', 'Pull…', 'Git operations', () => openSync('pull'), { disabled: busy })
     add('push', 'Push…', 'Git operations', () => openSync('push'), { disabled: busy })
@@ -2359,6 +2235,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
           <template v-if="store.repository">
             <div class="command-divider"></div>
             <button :disabled="indexBusy" @click="gitAction(focusCommit)">Commit…</button>
+            <button :disabled="indexBusy || !branchSync.canUpdateProject.value" @click="gitAction(branchSync.openUpdateProject)" :title="keymap.bindings.updateProject">Update Project…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('push'))">Push…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('pull'))">Pull…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
@@ -2437,7 +2314,11 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                   :path="store.repository.path" :name="store.repository.name" :branch="store.repository.head"
                   :has-head="hasLocalHead" publish :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
-               :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+               :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :branch="syncBranch"
+               :remote-refs="remoteRefNames" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <UpdateProjectDialog v-if="branchSync.updateProjectOpen.value && store.repository" v-model:method="branchSync.updateProjectMethod.value"
+                         :branch="store.repository.head" :busy="indexBusy"
+                         @cancel="branchSync.updateProjectOpen.value = false" @confirm="branchSync.confirmUpdateProject" />
     <BisectPanel v-if="dailyPanel === 'bisect' && store.repository" :key="store.repository.path"
                  :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy"
                  @close="dailyPanel = undefined" />
@@ -2734,7 +2615,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                         @click="openTagForm(tagForm === 'create' ? undefined : 'create')">New…</button>
               </header>
               <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
-                    @submit.prevent="updateBranch(branchForm, branchName.trim())">
+                    @submit.prevent="changeBranch(branchForm, branchName.trim())">
                 <input v-model="branchName" aria-label="New branch name" placeholder="Branch name" spellcheck="false" />
                 <small v-if="branchForm === 'create' && createBase" class="muted">From {{ createBase.slice(0, 8) }}</small>
                 <small v-if="branchForm === 'rename'" class="muted ellipsis" :title="managedBranch">Rename {{ managedBranch }}</small>
@@ -2745,11 +2626,18 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
               </form>
               <ConfirmationDialog v-else-if="branchForm === 'delete'" title="Confirm branch deletion"
                                   :busy="indexBusy" @cancel="openBranchForm()">
-                <p>Delete <strong>{{ managedBranch }}</strong> if it is merged into the current HEAD?</p>
-                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <p>Delete local branch <strong>{{ managedBranch }}</strong>?</p>
+                <p v-if="!deletion && !deletionError" class="notice" role="status">Checking whether the branch is merged…</p>
+                <p v-else-if="deletion && deletion.unmerged" class="notice error" role="alert">
+                  {{ deletion.unmerged }} commit{{ deletion.unmerged === 1 ? ' is' : 's are' }} not merged into {{ deletion.base }}
+                  and will be discarded. The notification after deletion offers Restore.
+                </p>
+                <p v-else-if="deletion" class="notice">The branch is fully merged into {{ deletion.base }}.</p>
+                <p v-if="deletionError || branchError" class="notice error" role="alert">{{ deletionError || branchError }}</p>
                 <template #actions>
                   <button data-cancel :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-                  <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
+                  <button class="danger-button" :disabled="indexBusy || !deletion" @click="changeBranch('delete', managedBranch)">
+                    {{ deletion?.unmerged ? 'Delete anyway' : 'Delete branch' }}</button>
                 </template>
               </ConfirmationDialog>
               <form v-if="tagForm === 'create'" class="new-branch" @submit.prevent="createTag()">
@@ -2881,12 +2769,14 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('merge')">Merge into current branch…</button>
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('rebase')">Interactive rebase onto this…</button>
       </template>
+      <template v-if="branchSync.actionsFor(branchMenu.item).length">
+        <hr />
+        <button v-for="action in branchSync.actionsFor(branchMenu.item)" :key="action.id"
+                :disabled="indexBusy || store.opening || !action.enabled" :title="action.description"
+                @click="branchSyncAction(action.id)">{{ action.label }}</button>
+      </template>
       <template v-if="branchMenu.item.name.startsWith('refs/heads/')">
         <hr />
-        <template v-if="branchMenu.item.name === 'refs/heads/' + store.repository.head">
-          <button :disabled="indexBusy" @click="branchAction('pull')">Pull…</button>
-          <button :disabled="indexBusy" @click="branchAction('push')">Push…</button>
-        </template>
         <button :disabled="indexBusy" @click="branchAction('rename')">Rename…</button>
         <button :disabled="indexBusy || branchMenu.item.name === 'refs/heads/' + store.repository.head"
                 @click="branchAction('delete')">Delete…</button>
@@ -2936,6 +2826,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button :disabled="indexBusy || sourceGitDirty || !store.headHash || !sourceGitChange || !/^[ MD]{2}$/.test(sourceGitChange.status)"
               @click="sourceGitAction('rollback')">Rollback…</button>
       <hr>
+      <button :disabled="indexBusy || !branchSync.canUpdateProject.value" @click="sourceRepositoryAction(branchSync.openUpdateProject)">Update Project…</button>
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('push'))">Push…</button>
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('pull'))">Pull…</button>
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => openSync('fetch'))">Fetch…</button>
@@ -2953,18 +2844,11 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
       <button :disabled="indexBusy" @click="sourceRepositoryAction(() => toggleDailyPanel('clone'))">Clone…</button>
     </ContextActions>
     <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
-    <footer class="statusbar">
-      <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
-      <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>
-      <span v-if="activeEditorTab" class="editor-meta">
-        <span role="status">{{ editorSaving ? 'Saving…' : editorDirty ? 'Unsaved changes' : 'Saved' }}</span> ·
-        UTF-8{{ activeEditorTab.file.bom ? ' BOM' : '' }} ·
-        <!-- Same line-ending widget as the editor toolbar (E1). -->
-        <button class="line-ending-widget" :disabled="indexBusy || store.opening"
-                :title="'Convert line endings to ' + ((activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding) === 'CRLF' ? 'LF' : 'CRLF')"
-                @click="switchLineEnding(activeEditorPath)">{{ activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding }}</button>
-      </span>
-      <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
-    </footer>
+    <NotificationBalloons />
+    <StatusBar :path="store.repository?.path" :head="store.repository?.head" :cursor="editorCursor"
+               :editor="activeEditorTab ? { saving: editorSaving, dirty: editorDirty, bom: !!activeEditorTab.file.bom,
+                                            lineEnding: activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding } : undefined"
+               :opening="store.opening" :busy="indexBusy" :git-version="store.gitVersion"
+               @switch-line-ending="switchLineEnding(activeEditorPath)" />
   </div>
 </template>

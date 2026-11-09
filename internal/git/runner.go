@@ -160,7 +160,7 @@ func Open(ctx context.Context, path string) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
-	root := filepath.Clean(strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r"))
+	root := filepath.Clean(outputLine(data))
 	data, err = run(ctx, root, nil, 32768, "rev-parse", "--abbrev-ref", "HEAD")
 	head := strings.TrimSpace(string(data))
 	if err != nil {

@@ -90,7 +90,7 @@ func publishGitHub(ctx context.Context, dir string, req PublishRequest, create f
 	}
 	// Keep fetch and push on the GitHub repository the user approved.
 	effective, err := run(ctx, dir, nil, 32768, "remote", "get-url", "--all", "origin")
-	if err != nil || strings.TrimSuffix(strings.TrimSuffix(string(effective), "\n"), "\r") != address {
+	if err != nil || outputLine(effective) != address {
 		result.Failure = "Git rewrote the fetch destination; review the effective URL in Manage remotes"
 		return result, nil
 	}

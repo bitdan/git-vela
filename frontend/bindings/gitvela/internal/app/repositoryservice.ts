@@ -46,6 +46,10 @@ export function BranchSync(path: string): $CancellablePromise<git$0.BranchSync[]
     return $Call.ByID(2265013207, path);
 }
 
+export function BranchTracking(path: string, branch: string): $CancellablePromise<git$0.BranchTracking> {
+    return $Call.ByID(1606094349, path, branch);
+}
+
 export function ChangeProjectEntry(repo: string, action: string, source: string, revision: string, folder: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(4109705087, repo, action, source, revision, folder, name);
 }
@@ -115,8 +119,8 @@ export function CreateTag(path: string, name: string, commit: string, message: s
     return $Call.ByID(3727072456, path, name, commit, message);
 }
 
-export function DeleteBranch(path: string, name: string): $CancellablePromise<void> {
-    return $Call.ByID(3639123479, path, name);
+export function DeleteBranch(path: string, name: string, expectedTip: string, force: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3639123479, path, name, expectedTip, force);
 }
 
 export function DeleteTag(path: string, name: string): $CancellablePromise<void> {
@@ -186,6 +190,10 @@ export function Initialize(path: string): $CancellablePromise<git$0.Repository> 
     return $Call.ByID(2409134402, path);
 }
 
+export function InspectBranchDeletion(path: string, name: string): $CancellablePromise<git$0.BranchDeletion> {
+    return $Call.ByID(876343322, path, name);
+}
+
 export function MarkBisect(path: string, verdict: string): $CancellablePromise<void> {
     return $Call.ByID(197198791, path, verdict);
 }
@@ -226,8 +234,11 @@ export function PublishGitHub(path: string, request: git$0.PublishRequest): $Can
     return $Call.ByID(283352124, path, request);
 }
 
-export function PullUpstream(path: string, branch: string, remote: string, target: string, options: git$0.PullOptions): $CancellablePromise<void> {
-    return $Call.ByID(3373252214, path, branch, remote, target, options);
+/**
+ * Pull integrates an explicitly selected remote branch into the checked-out branch.
+ */
+export function Pull(path: string, request: git$0.PullRequest): $CancellablePromise<git$0.UpdateResult> {
+    return $Call.ByID(3503877267, path, request);
 }
 
 export function PushBranch(path: string, branch: string, remote: string, target: string, options: git$0.PushOptions): $CancellablePromise<void> {
@@ -348,6 +359,13 @@ export function SyncState(path: string): $CancellablePromise<git$0.SyncState> {
 
 export function UnreachableCommits(path: string): $CancellablePromise<number> {
     return $Call.ByID(4276726916, path);
+}
+
+/**
+ * UpdateBranch runs the branch "Update" action on an explicit local branch.
+ */
+export function UpdateBranch(path: string, branch: string, method: string): $CancellablePromise<git$0.UpdateResult> {
+    return $Call.ByID(4227768589, path, branch, method);
 }
 
 export function UpdateStash(path: string, action: string, selector: string, hash: string, restoreIndex: boolean): $CancellablePromise<void> {

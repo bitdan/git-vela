@@ -7,6 +7,8 @@
 - When a Go binding or event changes, regenerate the TypeScript interfaces with `wails3 generate bindings -ts -i` from the repository root and review the generated diff. Keep the contract and its generated output together.
 - Use Rebased 1.1.23 as the desktop UI and interaction reference. Keep the Windows executable and version-resource display name `git-vela`.
 
+- Styling uses Tailwind CSS 4 (`frontend/src/tailwind.css`) without Preflight. Use the semantic tokens mapped from the `.shell` CSS variables (`bg-panel`, `text-muted`, `border-line`, …) instead of raw colors. `styles.css` stays unlayered for CodeMirror overrides, so delete a component's legacy rules when moving it to utilities.
+- Route Git write actions through `shared/gitCommand.ts` (explicit repository, duplicate-click guard, stale-result protection) and keep availability rules in pure, unit-tested modules such as `features/sync/branchActions.ts`.
 - Use IDEA as the reference for Git workflows and familiar code-editor interactions for source editing. File right-click menus should show Git actions. Keep editing commands in keyboard shortcuts or the editor actions menu.
 
 ## Confirmation and Git safety

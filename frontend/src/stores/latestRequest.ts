@@ -1,4 +1,4 @@
-interface Cancellable {
+export interface Cancellable {
   cancel(): void | PromiseLike<void>
 }
 
@@ -20,4 +20,17 @@ export class LatestRequest {
     this.active = undefined
     if (previous) void Promise.resolve(previous.cancel()).catch(() => undefined)
   }
+}
+
+/** Runs several requests as one cancellable unit for LatestRequest; cancelling
+ *  it cancels every member that supports cancellation. */
+export function cancellableAll<T extends readonly unknown[]>(
+  ...calls: { [K in keyof T]: PromiseLike<T[K]> & Partial<Cancellable> }
+): Promise<T> & Cancellable {
+  const members = calls as readonly (PromiseLike<unknown> & Partial<Cancellable>)[]
+  const combined = Promise.all(members) as unknown as Promise<T> & Cancellable
+  combined.cancel = () => {
+    for (const call of members) void Promise.resolve(call.cancel?.()).catch(() => undefined)
+  }
+  return combined
 }

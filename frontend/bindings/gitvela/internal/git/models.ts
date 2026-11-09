@@ -49,12 +49,38 @@ export interface BlameLine {
     "uncommitted": boolean;
 }
 
+/**
+ * BranchDeletion describes what deleting a local branch would discard, so
+ * the confirmation dialog can name it (IDEA GitDeleteBranchOperation detects
+ * "not fully merged" and offers Restore afterwards).
+ */
+export interface BranchDeletion {
+    "branch": string;
+    "tip": string;
+
+    /**
+     * Base is the checked-out branch, or HEAD when detached.
+     */
+    "base": string;
+    "unmerged": number;
+}
+
 export interface BranchSync {
     "branch": string;
     "upstream": string;
     "ahead": number;
     "behind": number;
     "gone": boolean;
+}
+
+/**
+ * BranchTracking describes one local branch and its configured upstream.
+ */
+export interface BranchTracking {
+    "branch": string;
+    "remote": string;
+    "remoteBranch": string;
+    "trackingRef": string;
 }
 
 export interface Change {
@@ -192,8 +218,16 @@ export interface PublishResult {
     "failure": string;
 }
 
-export interface PullOptions {
+export interface PullRequest {
+    /**
+     * Branch is the checked-out local branch the user reviewed in the dialog.
+     */
+    "branch": string;
+    "remote": string;
+    "remoteBranch": string;
     "mode": string;
+    "noCommit": boolean;
+    "noVerify": boolean;
     "autostash": boolean;
 }
 
@@ -262,6 +296,15 @@ export interface TextFile {
     "revision": string;
     "lineEnding": string;
     "bom": boolean;
+}
+
+export interface UpdateResult {
+    "branch": string;
+    "upstream": string;
+    "current": boolean;
+    "outcome": string;
+    "before": string;
+    "after": string;
 }
 
 export interface WorkingFile {

@@ -3,7 +3,6 @@ package git
 import (
 	"context"
 	"errors"
-	"slices"
 	"strings"
 )
 
@@ -59,12 +58,8 @@ func PushTag(ctx context.Context, dir, remote, name string) error {
 	if err := checkTagName(ctx, dir, name); err != nil {
 		return err
 	}
-	data, err := run(ctx, dir, nil, 1<<20, "remote")
-	if err != nil {
+	if err := requireRemote(ctx, dir, remote); err != nil {
 		return err
-	}
-	if !slices.Contains(strings.Fields(string(data)), remote) {
-		return errors.New("select a configured Git remote")
 	}
 	if _, err := run(ctx, dir, nil, 8192, "show-ref", "--verify", "--quiet", "refs/tags/"+name); err != nil {
 		return err

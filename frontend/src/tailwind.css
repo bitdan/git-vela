@@ -1,0 +1,59 @@
+/*
+ * Tailwind CSS 4 entry. Migration rules (docs/GITVELA_SPEC.md §4):
+ *  - No Preflight: the legacy element reset (base.css) is imported into the
+ *    base layer instead, so existing components render as before while
+ *    utilities can still override element defaults such as `button`.
+ *  - styles.css remains unlayered on purpose. CodeMirror injects unlayered
+ *    styles that the legacy editor/diff rules must keep overriding; moving it
+ *    into a layer would silently lose those overrides. Consequently a legacy
+ *    rule beats a utility on the same element: delete the legacy rule when a
+ *    component moves to utilities.
+ *  - Colors resolve to the semantic CSS variables defined on .shell, so the
+ *    light/dark switch keeps working without `dark:` variants. Tailwind's
+ *    default palette is disabled to keep components on the design tokens.
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "./base.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme inline {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-field: var(--field);
+  --color-header: var(--header);
+  --color-popup: var(--popup);
+  --color-line: var(--border);
+  --color-fg: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-fill: var(--accent-fill);
+  --color-accent-ink: var(--accent-ink);
+  --color-select: var(--select);
+  --color-hover: var(--hover);
+  --color-error: var(--error);
+  --color-good: var(--good);
+  --color-conflict: var(--conflict);
+
+  --radius-panel: var(--panel-radius);
+  --spacing-row: var(--row-height);
+  --spacing-repo-row: var(--repo-row-height);
+  --spacing-working-row: var(--working-row-height);
+  --spacing-chrome: var(--chrome-gap);
+
+  /* IDEA-density type scale; the body base is 13px. */
+  --text-2xs: 9px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --font-mono: Consolas, "Cascadia Code", monospace;
+
+  --shadow-popup: 0 6px 18px rgb(0 0 0 / 0.25);
+}
+
+/* Dark is the default theme; light is opted into on .shell. */
+@custom-variant dark (&:where(.shell:not([data-theme="light"]), .shell:not([data-theme="light"]) *));
+@custom-variant light (&:where(.shell[data-theme="light"], .shell[data-theme="light"] *));

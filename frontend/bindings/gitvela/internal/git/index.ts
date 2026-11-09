@@ -6,7 +6,9 @@ export type {
     AmendTarget,
     BisectState,
     BlameLine,
+    BranchDeletion,
     BranchSync,
+    BranchTracking,
     Change,
     Commit,
     Comparison,
@@ -27,7 +29,7 @@ export type {
     ProjectMatch,
     PublishRequest,
     PublishResult,
-    PullOptions,
+    PullRequest,
     PushOptions,
     RebaseStep,
     Ref,
@@ -37,6 +39,7 @@ export type {
     StashEntry,
     SyncState,
     TextFile,
+    UpdateResult,
     WorkingFile,
     Worktree
 } from "./models.js";

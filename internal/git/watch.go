@@ -125,5 +125,5 @@ func WatchRepository(ctx context.Context, root string, changed func()) (func(), 
 
 func metadataPath(ctx context.Context, root, flag string) (string, error) {
 	path, err := run(ctx, root, nil, 32768, "rev-parse", "--path-format=absolute", flag)
-	return filepath.Clean(strings.TrimSuffix(strings.TrimSuffix(string(path), "\n"), "\r")), err
+	return filepath.Clean(outputLine(path)), err
 }

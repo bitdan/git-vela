@@ -136,7 +136,7 @@ const visibleTextarea = "[...document.querySelectorAll('.rebase-plan textarea')]
 
 try {
   await evaluate("localStorage.clear()")
-  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
+  await cdp('Page.navigate', { url: (await evaluate('location.origin')) + '/' })
   await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await evaluate(`(() => {
     const input = document.querySelector('[aria-label="Repository path"]')

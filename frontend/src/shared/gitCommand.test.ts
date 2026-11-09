@@ -61,4 +61,16 @@ describe('git command runner', () => {
     expect(failed).toHaveBeenCalled()
     expect(value.busy.value).toBe(false)
   })
+
+  it('uses a per-command refresh and applies results before it', async () => {
+    const { value } = host()
+    const order: string[] = []
+    await createGitCommandRunner(value).run({
+      title: 'Checkout', path: '/repo', execute: async () => 'main', success: name => 'Switched to ' + name,
+      applied: () => { order.push('applied') },
+      refresh: async () => { order.push('refresh') },
+    })
+    expect(order).toEqual(['applied', 'refresh'])
+    expect(value.refresh).not.toHaveBeenCalled()
+  })
 })

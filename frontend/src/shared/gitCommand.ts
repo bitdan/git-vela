@@ -26,6 +26,10 @@ export interface GitCommand<T> {
   path: string
   execute: () => Promise<T>
   success: (result: T) => string
+  /** Runs after success while the repository is still shown, before refresh. */
+  applied?: (result: T) => void
+  /** Replaces the host refresh for commands that move HEAD or need more. */
+  refresh?: (path: string) => Promise<void>
   /** Some failures (conflicts) leave state the console should show. */
   failed?: (cause: unknown) => void
 }
@@ -37,7 +41,10 @@ export function createGitCommandRunner(host: GitCommandHost) {
     let result: T | undefined
     try {
       result = await command.execute()
-      if (host.activeRepository() === command.path) host.notify('info', command.title, command.success(result))
+      if (host.activeRepository() === command.path) {
+        command.applied?.(result)
+        host.notify('info', command.title, command.success(result))
+      }
     } catch (cause) {
       if (host.activeRepository() === command.path) {
         host.notify('error', command.title + ' failed', errorText(cause))
@@ -45,7 +52,7 @@ export function createGitCommandRunner(host: GitCommandHost) {
       }
     } finally {
       try {
-        if (host.activeRepository() === command.path) await host.refresh(command.path)
+        if (host.activeRepository() === command.path) await (command.refresh ?? host.refresh)(command.path)
       } finally {
         host.busy.value = false
       }

@@ -4,7 +4,7 @@
 //   node tests/batch2-smoke.mjs
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -232,6 +232,30 @@ try {
 
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
   assert.deepEqual(alerts, [])
+
+  /* ---- G3: a conflicting Update stops in the console instead of failing silently ---- */
+  git(peer, 'checkout', '--quiet', 'main')
+  git(peer, 'pull', '--quiet', '--no-rebase', 'origin', 'main')
+  await writeFile(join(peer, 'conflict.txt'), 'peer\n')
+  git(peer, 'add', 'conflict.txt')
+  execFileSync('git', ['-C', peer, 'commit', '-m', 'peer conflict'], { stdio: 'pipe' })
+  git(peer, 'push', '--quiet', 'origin', 'main')
+  await writeFile(join(clone, 'conflict.txt'), 'local\n')
+  git(clone, 'add', 'conflict.txt')
+  execFileSync('git', ['-C', clone, 'commit', '-m', 'local conflict'], { stdio: 'pipe' })
+  await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('local conflict'))"), 'local commit listed')
+  await evaluate(`(() => {
+    const select = document.querySelector('[aria-label="Reference type"]')
+    select.value = 'branches'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })()`)
+  await openContextMenu(branchRow, 'main')
+  await clickButton('[aria-label="Branch actions"]', 'Update')
+  await until(() => evaluate("document.querySelector('[role=tab][aria-selected=true]')?.innerText === 'Console'"), 'console opened after a conflict')
+  await until(() => evaluate("document.querySelector('.console-panel')?.innerText.includes('in progress')"), 'stopped merge shown')
+  assert.ok(await evaluate("[...document.querySelectorAll('.notification-balloon.error')].some(node => node.innerText.includes('conflicts'))"),
+    'conflict notification')
+  git(clone, 'merge', '--abort')
   console.log('Batch 2 smoke passed: sync badges, branch update, pull source, push options, tag lifecycle.')
 } finally {
   socket.close()

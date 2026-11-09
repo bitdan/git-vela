@@ -14,8 +14,9 @@ import {
 export interface BranchSyncHost {
   busy: Ref<boolean>
   refresh: (path: string) => Promise<void>
-  /** Called when an update stopped with conflicts so the console can show them. */
-  conflicted: () => void
+  /** Called after a failed update or pull; the host re-reads the Git
+   *  operation state and shows the console when a merge/rebase stopped. */
+  failed: () => void
   openPush: (branch: string) => void
 }
 
@@ -88,7 +89,7 @@ export function useBranchSync(host: BranchSyncHost) {
       path,
       execute: () => api.UpdateBranch(path, branch, method),
       success: describeUpdate,
-      failed: cause => { if (String(cause).includes('conflicts')) host.conflicted() },
+      failed: host.failed,
     })
   }
 
@@ -105,7 +106,7 @@ export function useBranchSync(host: BranchSyncHost) {
         mode: method, noCommit: false, noVerify: false, autostash: true,
       }),
       success: describeUpdate,
-      failed: cause => { if (String(cause).includes('conflicts')) host.conflicted() },
+      failed: host.failed,
     })
   }
 

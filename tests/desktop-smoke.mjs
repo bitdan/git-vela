@@ -122,7 +122,8 @@ async function branchMenuAction(branch, label) {
   await until(() => evaluate(`(() => {
     const row = document.querySelector(${JSON.stringify(selector)})
     if (!row) return false
-    row.click()
+    // Single click navigates Git Log; branch actions are on the context menu (IDEA).
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
     return true
   })()`), 'branch ' + branch)
   await clickButton('[aria-label="Branch actions"]', label)
@@ -235,14 +236,17 @@ try {
     await branchMenuAction('feature/renamed', 'Delete…')
     await action('Delete branch')
     await until(() => evaluate("!document.querySelector('[title=\"refs/heads/feature/renamed\"]')"), 'confirmed deletion')
+    // The smoke repository is a disposable clone, so it can carry its own tag.
+    const tagged = execFileSync('git', ['-C', repo, 'log', '-1', '--format=%s', 'HEAD~1'], { encoding: 'utf8' }).trim()
+    execFileSync('git', ['-C', repo, 'tag', 'gitvela-smoke-tag', 'HEAD~1'])
     await evaluate(`(() => {
       const picker = document.querySelector('[aria-label="Reference type"]')
       picker.value = 'tags'
       picker.dispatchEvent(new Event('change', { bubbles: true }))
     })()`)
-    await until(() => evaluate("!!document.querySelector('[title=\"refs/tags/v1.0\"]')"), 'repository tag listed')
-    await click('[title="refs/tags/v1.0"]')
-    await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('Initialize GitVela')"), 'tag commit selected')
+    await until(() => evaluate("!!document.querySelector('[title=\"refs/tags/gitvela-smoke-tag\"]')"), 'repository tag listed')
+    await click('[title="refs/tags/gitvela-smoke-tag"]')
+    await until(() => evaluate(`document.querySelector('.commit-row.active')?.innerText.includes(${JSON.stringify(tagged.slice(0, 40))})`), 'tag commit selected')
   }
   if (worktreeTarget) {
     const click = (selector) => until(() => evaluate(`(() => {

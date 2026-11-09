@@ -39,6 +39,7 @@ import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
 import UpdateProjectDialog from './features/sync/UpdateProjectDialog.vue'
 import { useBranchSync } from './features/sync/useBranchSync'
+import { useRefOperations } from './features/branches/useRefOperations'
 import NotificationBalloons from './shared/NotificationBalloons.vue'
 import StatusBar from './features/app/StatusBar.vue'
 import BisectPanel from './components/operations/BisectPanel.vue'
@@ -71,15 +72,7 @@ const expandedPreview = ref(false)
 const expandedDiff = ref(false)
 const path = ref('')
 const navigation = ref('')
-const branchError = ref('')
-const branchNotice = ref('')
-const branchName = ref('')
 const branchFilter = ref('')
-type BranchForm = 'create' | 'rename' | 'delete'
-const branchForm = ref<BranchForm>()
-const managedBranch = ref('')
-const branchBase = ref('')
-const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
 /** Repository whose saved layout is restored as soon as it finishes opening
  *  (a root switch), as opposed to the session restore at startup. */
@@ -145,34 +138,7 @@ function refLabel(ref: string) {
   return ref.replace(/^refs\/(heads|remotes|tags)\//, '')
 }
 
-function openBranchForm(form?: BranchForm, branch = '', base = '') {
-  branchBase.value = base
-  branchForm.value = form
-  managedBranch.value = branch
-  branchName.value = form === 'rename' ? branch : ''
-  branchError.value = ''
-  branchNotice.value = ''
-  tagForm.value = undefined
-}
-
-// ---- Tags (G1): create / delete / push / checkout via the Tags panel ----
-type TagForm = 'create' | 'delete' | 'push'
-const tagForm = ref<TagForm>()
-const tagName = ref('')
-const tagMessage = ref('')
-const tagRemote = ref('')
-const tagRemotes = ref<string[]>([])
 const tagMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
-const tagBase = computed(() => store.selected?.hash ?? store.headHash)
-
-function openTagForm(form?: TagForm, name = '') {
-  branchForm.value = undefined
-  tagForm.value = form
-  tagName.value = name
-  tagMessage.value = ''
-  branchError.value = ''
-  branchNotice.value = ''
-}
 
 function closeTagMenu() {
   tagMenu.value = undefined
@@ -180,104 +146,6 @@ function closeTagMenu() {
 
 function openTagActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
   tagMenu.value = { item, anchor: contextAnchor(event) }
-}
-
-async function createTag() {
-  const repo = store.repository?.path
-  const name = tagName.value.trim()
-  const base = tagBase.value
-  if (!repo || !name || !base || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.CreateTag(repo, name, base, tagMessage.value.trim())
-    openTagForm()
-    branchNotice.value = 'Created tag ' + name
-    await store.open(repo, true)
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
-}
-
-async function deleteTag(name: string) {
-  const repo = store.repository?.path
-  if (!repo || !name || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.DeleteTag(repo, name)
-    openTagForm()
-    branchNotice.value = 'Deleted tag ' + name
-    await store.open(repo, true)
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
-}
-
-async function pushTag(name: string) {
-  const repo = store.repository?.path
-  if (!repo || !name || !tagRemote.value || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.PushTag(repo, tagRemote.value, name)
-    openTagForm()
-    branchNotice.value = 'Pushed tag ' + name + ' to ' + tagRemote.value
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
-}
-
-async function openTagPush(name: string) {
-  const repo = store.repository?.path
-  if (!repo || store.opening) return
-  try {
-    const state = await api.SyncState(repo)
-    const remotes = state.remotes ?? []
-    if (!remotes.length) {
-      branchError.value = 'Configure a Git remote before pushing tags.'
-      return
-    }
-    tagRemotes.value = remotes
-    tagRemote.value = remotes.includes('origin') ? 'origin' : remotes[0]
-    openTagForm('push', name)
-  } catch (error) {
-    branchError.value = String(error)
-  }
-}
-
-async function checkoutTag(name: string) {
-  const repo = store.repository?.path
-  if (!repo || indexBusy.value) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
-  try {
-    await api.CheckoutTag(repo, name)
-    if (repo !== store.repository?.path) return
-    cancelAmend()
-    branchNotice.value = 'Checked out tag ' + name
-    previewRequest.clear()
-    workingSelection.value = undefined
-    preview.value = undefined
-    previewError.value = ''
-    previewLoading.value = false
-    view.value = 'working'
-    await Promise.all([store.open(repo), loadWorking()])
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
 }
 
 function tagAction(action: 'history' | 'checkout' | 'push' | 'delete') {
@@ -325,9 +193,21 @@ const indexBusy = ref(false)
 const branchSync = useBranchSync({
   busy: indexBusy,
   refresh: () => refreshAfterDailyOperation(),
-  conflicted: () => { gitTab.value = 'console'; void loadOperationState() },
+  failed: () => void showStoppedOperation(),
   openPush: branch => openSync('push', branch),
 })
+/** Branch and tag operations of the Branches panel. */
+const refOperations = useRefOperations({
+  busy: indexBusy,
+  refreshRefs: repo => store.open(repo, true),
+  afterHeadMoved,
+  branchChanged: () => { branchFilter.value = '' },
+})
+const {
+  branchError, branchNotice, branchName, branchForm, managedBranch, createBase,
+  tagForm, tagName, tagMessage, tagRemote, tagRemotes, tagBase,
+  openBranchForm, openTagForm, createTag, deleteTag, pushTag, checkoutTag, openTagPush,
+} = refOperations
 const indexError = ref('')
 const preview = ref<FilePreview>()
 const previewError = ref('')
@@ -703,14 +583,9 @@ watch(() => store.repository?.path, repo => {
   }
   commitHistory.value = repo ? readCommitHistory(undefined, repo) : []
   navigation.value = ''
-  branchError.value = ''
-  branchNotice.value = ''
-  branchName.value = ''
+  refOperations.reset()
   branchFilter.value = ''
   collapsedBranches.value.clear()
-  branchForm.value = undefined
-  managedBranch.value = ''
-  branchBase.value = ''
   branchMenu.value = undefined
   refKind.value = 'branches'
   statusRequest.clear()
@@ -1128,6 +1003,13 @@ function compareCommit(commit: Commit) {
 /** Compare the two rows of a Ctrl/Shift multi-selection directly (T06). */
 function compareCommits(before: Commit, after: Commit) {
   compareRevisions(before.hash, after.hash, before.hash.slice(0, 8) + ' → ' + after.hash.slice(0, 8))
+}
+
+/** After a failed write, read the real Git state: a stopped merge or rebase
+ *  is shown in the console with its continue/abort controls. */
+async function showStoppedOperation() {
+  await loadOperationState()
+  if (operation.value?.kind || operation.value?.conflicts?.length) gitTab.value = 'console'
 }
 
 async function loadOperationState() {
@@ -1655,53 +1537,22 @@ function refresh() {
   if (workingSelection.value && workingView.value) void selectView(workingView.value)
 }
 
-async function updateBranch(operation: 'create' | 'switch' | 'rename' | 'delete', name: string) {
-  const repo = store.repository?.path
-  const base = createBase.value
-  const original = managedBranch.value
-  if (!repo || !name || indexBusy.value || (operation === 'create' && !base)) return
-  indexBusy.value = true
-  branchError.value = ''
-  branchNotice.value = ''
+/** HEAD moved (branch or tag checkout): drop editor/preview state that
+ *  belonged to the previous HEAD and reload history and working changes. */
+async function afterHeadMoved(repo: string) {
+  cancelAmend()
+  previewRequest.clear()
+  workingSelection.value = undefined
+  preview.value = undefined
+  previewError.value = ''
+  previewLoading.value = false
+  view.value = 'working'
+  await Promise.all([store.open(repo), loadWorking()])
+}
+
+function changeBranch(operation: Parameters<typeof refOperations.changeBranch>[0], name: string) {
   navigation.value = ''
-  try {
-    switch (operation) {
-      case 'create':
-        if (!base) return
-        await api.CreateBranch(repo, name, base)
-        break
-      case 'switch':
-        await api.SwitchBranch(repo, name)
-        break
-      case 'rename':
-        await api.RenameBranch(repo, original, name)
-        break
-      case 'delete':
-        await api.DeleteBranch(repo, name)
-        break
-    }
-    if (repo !== store.repository?.path) return
-    if (operation === 'switch') {
-      cancelAmend()
-      branchNotice.value = 'Switched to ' + name
-      previewRequest.clear()
-      workingSelection.value = undefined
-      preview.value = undefined
-      previewError.value = ''
-      previewLoading.value = false
-      view.value = 'working'
-      await Promise.all([store.open(repo), loadWorking()])
-    } else {
-      openBranchForm()
-      branchFilter.value = ''
-      branchNotice.value = { create: 'Created ', rename: 'Renamed to ', delete: 'Deleted ' }[operation] + name
-      await store.open(repo, true)
-    }
-  } catch (error) {
-    if (repo === store.repository?.path) branchError.value = String(error)
-  } finally {
-    indexBusy.value = false
-  }
+  return refOperations.changeBranch(operation, name)
 }
 
 async function jump(hash: string) {
@@ -1836,7 +1687,7 @@ function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'dele
     case 'compare': compareRevisions(store.headHash, item.hash, 'HEAD → ' + name); break
     case 'merge': case 'rebase': void prepareOperation(action, item.hash, name); break
     case 'create': openBranchForm('create', name, item.hash); break
-    case 'switch': withSavedEditor('switching branches', () => { void updateBranch('switch', name) }); break
+    case 'switch': withSavedEditor('switching branches', () => { void changeBranch('switch', name) }); break
     case 'rename': case 'delete': openBranchForm(action, name); break
   }
 }
@@ -2764,7 +2615,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                         @click="openTagForm(tagForm === 'create' ? undefined : 'create')">New…</button>
               </header>
               <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
-                    @submit.prevent="updateBranch(branchForm, branchName.trim())">
+                    @submit.prevent="changeBranch(branchForm, branchName.trim())">
                 <input v-model="branchName" aria-label="New branch name" placeholder="Branch name" spellcheck="false" />
                 <small v-if="branchForm === 'create' && createBase" class="muted">From {{ createBase.slice(0, 8) }}</small>
                 <small v-if="branchForm === 'rename'" class="muted ellipsis" :title="managedBranch">Rename {{ managedBranch }}</small>
@@ -2779,7 +2630,7 @@ const paletteCommands = computed<PaletteCommand[]>(() => {
                 <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
                 <template #actions>
                   <button data-cancel :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-                  <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
+                  <button class="danger-button" :disabled="indexBusy" @click="changeBranch('delete', managedBranch)">Delete branch</button>
                 </template>
               </ConfirmationDialog>
               <form v-if="tagForm === 'create'" class="new-branch" @submit.prevent="createTag()">

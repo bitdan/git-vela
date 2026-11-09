@@ -1,14 +1,31 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
-import { Events } from '@wailsio/runtime'
+import { computed, defineAsyncComponent, nextTick, onErrorCaptured, onMounted, onUnmounted, reactive, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { Events, Window } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../bindings/events'
 import { storeToRefs } from 'pinia'
-import { defaultPreviewHeight, usePreferences } from './stores/preferences'
+import { layoutBounds, usePreferences } from './stores/preferences'
+import { useKeymap } from './stores/keymap'
+import { editorScopeShortcuts, isTextEntry, navigationShortcuts, type ShortcutId } from './stores/shortcuts'
+import { clearSession, readSession, saveSession } from './stores/session'
 import { useWorkspace } from './stores/workspace'
+import ConfirmationDialog from './components/layout/ConfirmationDialog.vue'
+import ContextActions from './components/layout/ContextActions.vue'
+import ActivityBar, { type ActivityItem } from './components/layout/ActivityBar.vue'
+import AppIcon from './components/layout/AppIcon.vue'
+import { contextAnchor, type ContextAnchor } from './components/layout/contextAnchor'
+import CommandPalette from './components/layout/CommandPalette.vue'
+import SettingsDialog from './components/layout/SettingsDialog.vue'
+import type { PaletteCommand } from './components/layout/commandFilter'
+import { exceedsRenderLimit } from './components/diff/renderGuard'
+import { navigateDiff } from './components/diff/diffNavigation'
 import CommitLog from './components/git-log/CommitLog.vue'
+import CommitDetails from './components/git-log/CommitDetails.vue'
+import GitConsole from './components/operations/GitConsole.vue'
 import WorktreePanel from './components/worktrees/WorktreePanel.vue'
 import ChangedFiles from './components/changed-files/ChangedFiles.vue'
+import { compareNames, fileTreeRows } from './components/changed-files/fileTree'
 import WorkingChanges from './components/changed-files/WorkingChanges.vue'
+import { readCommitHistory, rememberCommitMessage } from './components/changed-files/commitHistory'
 import RepositoryFiles from './components/editor/RepositoryFiles.vue'
 import FileInspection from './components/history/FileInspection.vue'
 import HunkPanel from './components/history/HunkPanel.vue'
@@ -17,15 +34,28 @@ import StashPanel from './components/operations/StashPanel.vue'
 import SyncPanel from './components/operations/SyncPanel.vue'
 import RemotesPanel from './components/operations/RemotesPanel.vue'
 import { RepositoryService as api } from '../bindings/gitvela/internal/app'
-import type { AmendTarget, Commit, FilePreview, HeadState, OperationState, Ref as GitRef, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
+import type { AmendTarget, Change, Commit, Comparison, FilePreview, HeadState, OperationState, Ref as GitRef, StashEntry, TextFile, WorkingFile } from '../bindings/gitvela/internal/git'
 import { LatestRequest } from './stores/latestRequest'
+import appIcon from './git-vela.svg'
 import './styles.css'
 
 const TextDiff = defineAsyncComponent(() => import('./components/diff/TextDiff.vue'))
 const WorkspaceEditor = defineAsyncComponent(() => import('./components/editor/WorkspaceEditor.vue'))
 const store = useWorkspace()
+const keymap = useKeymap()
+const preferences = usePreferences()
 const log = useTemplateRef<InstanceType<typeof CommitLog>>('log')
+const filesPanel = useTemplateRef<{ step: (direction: number) => void }>('filesPanel')
+const changesPanel = useTemplateRef<InstanceType<typeof WorkingChanges>>('changes-panel')
+const settingsOpen = ref(false)
+const paletteTrigger = useTemplateRef<HTMLButtonElement>('paletteTrigger')
 const content = useTemplateRef<HTMLElement>('content')
+const paletteOpen = ref(false)
+const windowError = ref('')
+const restoreNotice = ref('')
+const sessionNotice = ref('')
+const expandedPreview = ref(false)
+const expandedDiff = ref(false)
 const path = ref('')
 const navigation = ref('')
 const branchError = ref('')
@@ -38,14 +68,38 @@ const managedBranch = ref('')
 const branchBase = ref('')
 const createBase = computed(() => branchBase.value || store.selected?.hash)
 const gitMenu = useTemplateRef<HTMLDetailsElement>('git-menu')
-const branchActions = useTemplateRef<HTMLElement>('branch-actions')
-const branchMenu = ref<{ item: GitRef; trigger: HTMLElement; x: number; y: number }>()
+const branchMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
 type Sidebar = 'files' | 'changes' | 'branches' | 'worktrees'
-const sidebar = ref<Sidebar>('changes')
+const sidebar = ref<Exclude<Sidebar, 'branches'>>('changes')
+const sidebarHidden = ref(false)
+const commitTab = ref<'commit' | 'shelf'>('commit')
+const historyMaximized = ref(false)
+const gitTab = ref<'log' | 'console'>('log')
+const activityActive = computed<ActivityItem | undefined>(() => {
+  if (historyVisible.value) return 'git'
+  if (sidebarHidden.value) return undefined
+  return sidebar.value === 'changes' ? 'commit' : sidebar.value
+})
+
+function onActivitySelect(item: ActivityItem) {
+  if (indexBusy.value) return
+  closeBranchMenu()
+  closeTagMenu()
+  diffExpanded.value = false
+  if (item === 'git') {
+    historyVisible.value = true
+    return
+  }
+  historyMaximized.value = false
+  sidebarHidden.value = false
+  sidebar.value = item === 'commit' ? 'changes' : item
+  if (item === 'commit') commitTab.value = 'commit'
+}
 const historyVisible = ref(true)
+const restoringSession = ref(false)
 const sidebarTabs: { id: Sidebar; label: string }[] = [
   { id: 'files', label: 'Files' },
-  { id: 'changes', label: 'Changes' },
+  { id: 'changes', label: 'Commit' },
   { id: 'branches', label: 'Branches' },
   { id: 'worktrees', label: 'Worktrees' },
 ]
@@ -53,8 +107,22 @@ const refKind = ref<'branches' | 'tags'>('branches')
 const visibleRefs = computed(() => {
   const query = branchFilter.value.trim().toLowerCase()
   const refs = refKind.value === 'branches' ? store.branchRefs : store.tagRefs
+  const current = 'refs/heads/' + store.repository?.head
+  const rank = (name: string) => name === current ? 0 : name.startsWith('refs/remotes/') ? 2 : 1
   return refs.filter(item => refLabel(item.name).toLowerCase().includes(query))
+    .sort((a, b) => rank(a.name) - rank(b.name) || compareNames(refLabel(a.name), refLabel(b.name)))
 })
+
+const collapsedBranches = ref(new Set<string>())
+const branchRows = computed(() => fileTreeRows(visibleRefs.value.map(item => ({
+  item,
+  path: (item.name.startsWith('refs/remotes/') ? 'Remote/' : 'Local/') + refLabel(item.name),
+})), branchFilter.value.trim() ? new Set() : collapsedBranches.value))
+
+function toggleBranchFolder(path: string) {
+  if (collapsedBranches.value.has(path)) collapsedBranches.value.delete(path)
+  else collapsedBranches.value.add(path)
+}
 
 function refLabel(ref: string) {
   return ref.replace(/^refs\/(heads|remotes|tags)\//, '')
@@ -67,9 +135,163 @@ function openBranchForm(form?: BranchForm, branch = '', base = '') {
   branchName.value = form === 'rename' ? branch : ''
   branchError.value = ''
   branchNotice.value = ''
+  tagForm.value = undefined
 }
+
+// ---- Tags (G1): create / delete / push / checkout via the Tags panel ----
+type TagForm = 'create' | 'delete' | 'push'
+const tagForm = ref<TagForm>()
+const tagName = ref('')
+const tagMessage = ref('')
+const tagRemote = ref('')
+const tagRemotes = ref<string[]>([])
+const tagMenu = shallowRef<{ item: GitRef; anchor: ContextAnchor }>()
+const tagBase = computed(() => store.selected?.hash ?? store.headHash)
+
+function openTagForm(form?: TagForm, name = '') {
+  branchForm.value = undefined
+  tagForm.value = form
+  tagName.value = name
+  tagMessage.value = ''
+  branchError.value = ''
+  branchNotice.value = ''
+}
+
+function closeTagMenu() {
+  tagMenu.value = undefined
+}
+
+function openTagActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
+  tagMenu.value = { item, anchor: contextAnchor(event) }
+}
+
+async function createTag() {
+  const repo = store.repository?.path
+  const name = tagName.value.trim()
+  const base = tagBase.value
+  if (!repo || !name || !base || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.CreateTag(repo, name, base, tagMessage.value.trim())
+    openTagForm()
+    branchNotice.value = 'Created tag ' + name
+    await store.open(repo, true)
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function deleteTag(name: string) {
+  const repo = store.repository?.path
+  if (!repo || !name || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.DeleteTag(repo, name)
+    openTagForm()
+    branchNotice.value = 'Deleted tag ' + name
+    await store.open(repo, true)
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function pushTag(name: string) {
+  const repo = store.repository?.path
+  if (!repo || !name || !tagRemote.value || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.PushTag(repo, tagRemote.value, name)
+    openTagForm()
+    branchNotice.value = 'Pushed tag ' + name + ' to ' + tagRemote.value
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function openTagPush(name: string) {
+  const repo = store.repository?.path
+  if (!repo || store.opening) return
+  try {
+    const state = await api.SyncState(repo)
+    const remotes = state.remotes ?? []
+    if (!remotes.length) {
+      branchError.value = 'Configure a Git remote before pushing tags.'
+      return
+    }
+    tagRemotes.value = remotes
+    tagRemote.value = remotes.includes('origin') ? 'origin' : remotes[0]
+    openTagForm('push', name)
+  } catch (error) {
+    branchError.value = String(error)
+  }
+}
+
+async function checkoutTag(name: string) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value) return
+  indexBusy.value = true
+  branchError.value = ''
+  branchNotice.value = ''
+  try {
+    await api.CheckoutTag(repo, name)
+    if (repo !== store.repository?.path) return
+    cancelAmend()
+    branchNotice.value = 'Checked out tag ' + name
+    previewRequest.clear()
+    workingSelection.value = undefined
+    preview.value = undefined
+    previewError.value = ''
+    previewLoading.value = false
+    view.value = 'working'
+    await Promise.all([store.open(repo), loadWorking()])
+  } catch (error) {
+    if (repo === store.repository?.path) branchError.value = String(error)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+function tagAction(action: 'history' | 'checkout' | 'push' | 'delete') {
+  const item = tagMenu.value?.item
+  if (!item) return
+  closeTagMenu()
+  const name = refLabel(item.name)
+  switch (action) {
+    case 'history': void jump(item.hash); break
+    case 'checkout': withSavedEditor('checking out a tag', () => { void checkoutTag(name) }); break
+    case 'push': void openTagPush(name); break
+    case 'delete': openTagForm('delete', name); break
+  }
+}
+
+// ---- Ahead/behind markers (G6) for local branches ----
+const syncEntries = computed(() => new Map((store.branchSync ?? []).map(entry => [entry.branch, entry])))
+
+function syncBadge(item: GitRef) {
+  if (!item.name.startsWith('refs/heads/')) return ''
+  const entry = syncEntries.value.get(refLabel(item.name))
+  if (!entry) return ''
+  const parts: string[] = []
+  if (entry.ahead) parts.push('↑' + entry.ahead)
+  if (entry.behind) parts.push('↓' + entry.behind)
+  if (!parts.length && entry.gone) parts.push('gone')
+  return parts.join(' ')
+}
+
 const picking = ref(false)
-const { dark, previewHeight, fileTree } = storeToRefs(usePreferences())
+const { dark, previewHeight, fileTree, density, resumeOnStart } = storeToRefs(preferences)
 const workspaceError = ref('')
 onErrorCaptured((error, _component, info) => {
   console.error('GitVela workspace error', info, error)
@@ -88,15 +310,98 @@ const previewError = ref('')
 const previewLoading = ref(false)
 type FileView = 'working' | 'unstaged' | 'staged'
 const view = ref<FileView | 'commit' | 'editor' | 'inspection' | 'conflict'>('working')
-const editor = shallowRef<TextFile>()
-const editorPath = ref('')
-const editorDraft = ref('')
+type EditorTab = { path: string; file: TextFile; draft: string; /** Pending line-ending conversion (E1); '' keeps the stored endings. */ lineEnding?: string }
+const editorTabs = ref<EditorTab[]>([])
+const activeEditorPath = ref('')
+/** Last caret position per open tab, reported by WorkspaceEditor; the status
+ *  bar shows the active tab's cursor like the IDEA editor status widget. */
+const editorCursors = reactive<Record<string, { line: number; col: number }>>({})
+const editorCursor = computed(() => editorCursors[activeEditorPath.value])
+const activeEditorTab = computed(() => editorTabs.value.find(tab => tab.path === activeEditorPath.value))
+const editor = computed(() => activeEditorTab.value?.file)
+const editorPath = computed(() => activeEditorPath.value)
 const editorError = ref('')
 const editorLoading = ref(false)
 const editorSaving = ref(false)
-const editorKey = ref(0)
 const editorRequest = new LatestRequest()
-const editorDirty = computed(() => !!editor.value && editorDraft.value !== editor.value.content)
+const editorDirty = computed(() => !!activeEditorTab.value && activeEditorTab.value.draft !== activeEditorTab.value.file.content)
+
+/* ---- Pinned per-file diff tabs (spec T03 / gap I03) ------------------ */
+
+/** Double-clicking a history file opens a dedicated diff tab in the editor
+ *  workspace; each tab keeps its own comparison payload and stays open while
+ *  the Git Log selection moves on, like IDEA's diff tabs. */
+type DiffTab = {
+  /** Stable identity: comparison range or commit+parent, plus change index. */
+  key: string
+  path: string
+  hash: string
+  parent: number
+  index: number
+  range?: { before: string; after: string; label: string }
+  expanded?: boolean
+  loading?: boolean
+  error?: string
+  comparison?: Comparison
+}
+
+const diffTabs = ref<DiffTab[]>([])
+const activeDiffKey = ref('')
+const activeDiffTab = computed(() => diffTabs.value.find(tab => tab.key === activeDiffKey.value))
+/** The commit diff area renders the active pinned tab when one is focused,
+ *  otherwise the selection-driven diff that follows the Git Log selection. */
+const commitDiff = computed(() => {
+  const tab = activeDiffTab.value
+  return tab
+    ? { comparison: tab.comparison, loading: !!tab.loading, error: tab.error, path: tab.path, pinned: true, expanded: !!tab.expanded }
+    : { comparison: store.comparison, loading: store.loadingDiff, error: store.diffError, path: store.file?.path ?? '', pinned: false, expanded: expandedDiff.value }
+})
+
+function editorTabFor(path: string) {
+  return editorTabs.value.find(tab => tab.path === path)
+}
+
+function isTabDirty(tab: EditorTab) {
+  return tab.draft !== tab.file.content
+}
+
+function fileName(path: string) {
+  return path.split(/[\\/]/).at(-1) || path
+}
+
+function activateEditorTab(path: string) {
+  if (!editorTabFor(path)) return
+  activeEditorPath.value = path
+  view.value = 'editor'
+}
+
+/** Closing keeps the unsaved-changes protection: a dirty tab goes through the
+ *  confirmation dialog before it is dropped. */
+function requestCloseEditorTab(path: string) {
+  const tab = editorTabFor(path)
+  if (!tab) return
+  if (!isTabDirty(tab)) {
+    closeEditorTab(path)
+    return
+  }
+  pendingEditorLabel.value = 'closing ' + fileName(path)
+  pendingEditorAction.value = () => closeEditorTab(path)
+}
+
+function closeEditorTab(path: string) {
+  const index = editorTabs.value.findIndex(tab => tab.path === path)
+  if (index < 0) return
+  editorTabs.value.splice(index, 1)
+  if (activeEditorPath.value !== path) return
+  const next = editorTabs.value[index] ?? editorTabs.value[index - 1]
+  if (next) {
+    activeEditorPath.value = next.path
+    if (view.value === 'editor') view.value = 'editor'
+  } else {
+    activeEditorPath.value = ''
+    if (view.value === 'editor' || view.value === 'conflict') view.value = 'working'
+  }
+}
 const pendingEditorAction = shallowRef<() => void>()
 const pendingEditorLabel = ref('')
 const showHunks = ref(false)
@@ -108,41 +413,62 @@ type AdvancedAction = 'cherry-pick' | 'revert' | 'reset' | 'merge' | 'rebase'
 const advancedLabels: Record<AdvancedAction, string> = {
   'cherry-pick': 'Cherry-pick', revert: 'Revert', reset: 'Reset', merge: 'Merge', rebase: 'Rebase',
 }
-const advanced = shallowRef<{ action: AdvancedAction; hash: string; label: string; head: HeadState }>()
-type RebaseAction = 'pick' | 'squash' | 'fixup' | 'drop'
-const rebasePlan = ref<{ commit: Commit; action: RebaseAction }[]>([])
+const advanced = shallowRef<{
+  action: AdvancedAction
+  hash: string
+  label: string
+  head: HeadState
+  /** Multi-commit cherry-pick targets in application order (oldest first). */
+  targets?: { hash: string; subject: string }[]
+}>()
+type RebaseAction = 'pick' | 'squash' | 'fixup' | 'drop' | 'reword' | 'edit'
+const rebasePlan = ref<{ commit: Commit; action: RebaseAction; message: string }[]>([])
+const rebasePreset = shallowRef<{ hash: string; action: RebaseAction }>()
+const mergeMode = ref<'' | 'squash'>('')
 const resetMode = ref<'soft' | 'mixed' | 'hard'>('mixed')
 const hardResetConfirmed = ref(false)
 const preparingOperation = ref(false)
 const operation = shallowRef<OperationState>()
 const operationError = ref('')
 const operationNotice = ref('')
-const confirmAbort = ref(false)
 const operationRequest = new LatestRequest()
 const headRequest = new LatestRequest()
 const inspectionPath = computed(() => view.value === 'editor' ? editorPath.value :
   (view.value === 'working' || view.value === 'staged' || view.value === 'unstaged') ? workingSelection.value?.path : undefined)
-const previewPath = computed(() => view.value === 'conflict' ? conflictFile.value : view.value === 'inspection' ? inspection.value?.file : view.value === 'editor' ? editorPath.value : view.value === 'commit' ? store.file?.path : workingSelection.value?.path)
+const previewPath = computed(() => view.value === 'conflict' ? conflictFile.value : view.value === 'inspection' ? inspection.value?.file : view.value === 'editor' ? editorPath.value : view.value === 'commit' ? commitDiff.value.path : workingSelection.value?.path)
 const workingView = computed(() => view.value === 'working' || view.value === 'staged' || view.value === 'unstaged' ? view.value : undefined)
 const diffExpanded = ref(false)
 const restoreDiff = useTemplateRef<HTMLButtonElement>('restore-diff')
 const commitMessage = ref('')
 const amendTarget = ref<AmendTarget>()
 let draftBeforeAmend = ''
-type DailyPanel = 'stash' | 'sync' | 'init' | 'remotes' | 'publish'
+type DailyPanel = 'sync' | 'init' | 'clone' | 'remotes' | 'publish'
 type SyncIntent = 'fetch' | 'pull' | 'push'
 const dailyPanel = ref<DailyPanel>()
 const syncIntent = ref<SyncIntent>('fetch')
 const projectPath = ref('')
 const projectError = ref('')
+const cloneUrl = ref('')
+const cloneParent = ref('')
+const cloneName = ref('')
+const cloneBranch = ref('')
+const cloneError = ref('')
 const hasLocalHead = computed(() => store.branchRefs.some(item => item.name === 'refs/heads/' + store.repository?.head))
 const commitNotice = ref('')
+/** Recent commit messages for the current repository (IDEA commit message
+ *  history); the commit form offers them from a History dropdown. */
+const commitHistory = ref<string[]>([])
+const patchTooLarge = computed(() => preview.value?.kind === 'text' && exceedsRenderLimit('', preview.value.content))
 const patchLines = computed(() => preview.value?.content.replace(/\n$/, '').split('\n') ?? [])
-const workingTabs: { id: FileView; title: string }[] = [
-  { id: 'working', title: 'Working file' },
-  { id: 'unstaged', title: 'Unstaged diff' },
-  { id: 'staged', title: 'Staged diff' },
-]
+/** IDEA-style per-file working tabs: one tab per working change opened from
+ *  the Commit tool window (spec §4.4). The tab carries the view mode — the
+ *  working file itself or its staged/unstaged diff — so no fixed mode
+ *  buttons are needed in the tab strip. */
+const workingTabs = ref<{ path: string; mode: FileView }[]>([])
+const activeWorkingTab = computed(() =>
+  workingView.value && workingSelection.value
+    ? workingTabs.value.find(tab => tab.path === workingSelection.value?.path && tab.mode === workingView.value)
+    : undefined)
 
 function patchClass(line: string) {
   if (line.startsWith('@@')) return 'patch-hunk'
@@ -159,19 +485,91 @@ let timer: ReturnType<typeof setInterval>
 watch(view, value => {
   if (value !== 'commit') diffExpanded.value = false
   showHunks.value = false
+  expandedPreview.value = false
 })
-watch(() => store.file?.path, () => { submoduleError.value = '' })
+watch(() => store.file?.path, () => { submoduleError.value = ''; expandedDiff.value = false })
+watch([() => store.selected?.hash, () => store.parent, () => store.comparisonRange], () => { expandedDiff.value = false })
+const imageSides = computed(() => [
+  { label: 'Before', src: commitDiff.value.comparison?.before ?? '' },
+  { label: 'After', src: commitDiff.value.comparison?.after ?? '' },
+])
+function isDataImage(src: string) {
+  return /^data:image\/(png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/=]+$/.test(src)
+}
+function loadFullDiff() {
+  const tab = activeDiffTab.value
+  if (tab) {
+    if (tab.loading) return
+    const repo = store.repository?.path
+    tab.expanded = true
+    if (repo) void loadDiffTab(tab, repo)
+    return
+  }
+  if (!store.file || store.loadingDiff) return
+  expandedDiff.value = true
+  void store.selectFile(store.file, true)
+}
+
+/** Re-fetch one pinned diff tab, guarded against repository switches. */
+async function loadDiffTab(tab: DiffTab, repo: string) {
+  tab.loading = true
+  tab.error = ''
+  const call = tab.range
+    ? tab.expanded
+      ? api.CompareDiffExpanded(repo, tab.range.before, tab.range.after, tab.index)
+      : api.CompareDiff(repo, tab.range.before, tab.range.after, tab.index)
+    : tab.expanded
+      ? api.DiffExpanded(repo, tab.hash, tab.parent, tab.index)
+      : api.Diff(repo, tab.hash, tab.parent, tab.index)
+  try {
+    const result = await call
+    if (store.repository?.path !== repo) return
+    tab.comparison = result
+  } catch (error) {
+    if (store.repository?.path === repo) tab.error = String(error)
+  } finally {
+    if (store.repository?.path === repo) tab.loading = false
+  }
+}
+
+function closeDiffTab(key: string) {
+  const at = diffTabs.value.findIndex(tab => tab.key === key)
+  if (at < 0) return
+  diffTabs.value.splice(at, 1)
+  if (activeDiffKey.value === key) {
+    const next = diffTabs.value[at] ?? diffTabs.value[at - 1]
+    activeDiffKey.value = next?.key ?? ''
+    if (next) activateDiffTab(next, false)
+  }
+}
+
+/** Activating a pinned tab loads its comparison on demand — restored session
+ *  tabs and tabs re-activated after repository switches load lazily. */
+function activateDiffTab(tab: DiffTab, switchView = true) {
+  activeDiffKey.value = tab.key
+  if (switchView) view.value = 'commit'
+  const repo = store.repository?.path
+  if (repo && !tab.comparison && !tab.loading && !tab.error) void loadDiffTab(tab, repo)
+}
+function loadFullWorkingPreview() {
+  const next = workingView.value
+  if (!next || previewLoading.value) return
+  expandedPreview.value = true
+  void selectView(next, false, true)
+}
 watch(editorDirty, dirty => { if (!dirty) pendingEditorAction.value = undefined })
 watch(() => store.repository?.path, repo => {
   if (repo) {
     path.value = repo
     watchRepository(repo)
   }
+  commitHistory.value = repo ? readCommitHistory(undefined, repo) : []
   navigation.value = ''
   branchError.value = ''
   branchNotice.value = ''
   branchName.value = ''
   branchFilter.value = ''
+  collapsedBranches.value.clear()
   branchForm.value = undefined
   managedBranch.value = ''
   branchBase.value = ''
@@ -188,7 +586,6 @@ watch(() => store.repository?.path, repo => {
   operation.value = undefined
   operationError.value = ''
   operationNotice.value = ''
-  confirmAbort.value = false
   headRequest.clear()
   preparingOperation.value = false
   operationRequest.clear()
@@ -204,8 +601,10 @@ watch(() => store.repository?.path, repo => {
   preview.value = undefined
   previewError.value = ''
   previewLoading.value = false
+  expandedPreview.value = false
+  expandedDiff.value = false
   view.value = 'working'
-  void loadWorking()
+  if (!restoringSession.value) void loadWorking()
 })
 
 
@@ -219,14 +618,31 @@ function watchRepository(repo: string) {
 }
 
 async function refreshExternalChanges() {
-  if (document.hidden || indexBusy.value) return
+  if (document.hidden || indexBusy.value || restoringSession.value) return
+  if (!store.available) return
+  const repo = store.repository?.path
+  if (repo) {
+    try {
+      const availability = await api.CheckRepositoryPath(repo)
+      if (repo !== store.repository?.path) return
+      if (!availability.available) {
+        // The folder was deleted or its drive unmounted: stop the five-second
+        // poll instead of repeating the same OS error from every Git call.
+        store.available = false
+        store.repoError = availability.reason || 'The repository folder is no longer available.'
+        clearInterval(timer)
+        return
+      }
+    } catch {
+      // Fall through: the normal refresh below reports a real Git failure.
+    }
+  }
   void store.checkForChanges()
   void loadOperationState()
   if (workingLoading.value) return
-  const repo = store.repository?.path
   await loadWorking()
   if (repo === store.repository?.path && workingSelection.value && workingView.value && !previewLoading.value) {
-    void selectView(workingView.value, true)
+    void selectView(workingView.value, true, expandedPreview.value)
   }
 }
 
@@ -250,16 +666,53 @@ async function loadWorking() {
   }
 }
 
-function selectWorking(file: WorkingFile) {
+function selectWorking(file: WorkingFile, next?: FileView) {
   workingSelection.value = file
   showHunks.value = false
   indexError.value = ''
-  void selectView('working')
+  expandedPreview.value = false
+  // Row clicks reuse the tab's existing mode; the context menu passes an
+  // explicit one to switch the working file / staged / unstaged view.
+  const tab = workingTabs.value.find(tab => tab.path === file.path)
+  const mode = next ?? tab?.mode ?? 'working'
+  if (tab) tab.mode = mode
+  else workingTabs.value.push({ path: file.path, mode })
+  void selectView(mode)
 }
 
-async function selectView(next: FileView | 'commit', background = false) {
+function closeWorkingTab(path: string) {
+  const at = workingTabs.value.findIndex(tab => tab.path === path)
+  if (at < 0) return
+  workingTabs.value.splice(at, 1)
+  if (workingSelection.value?.path !== path || !workingView.value) return
+  const next = workingTabs.value[at] ?? workingTabs.value[at - 1]
+  const file = next && workingFiles.value.find(item => item.path === next.path)
+  if (file) {
+    selectWorking(file)
+    return
+  }
+  workingSelection.value = undefined
+  preview.value = undefined
+  previewError.value = ''
+  previewLoading.value = false
+  expandedPreview.value = false
+  showHunks.value = false
+  view.value = store.selected || store.comparisonRange ? 'commit' : 'working'
+}
+
+/** Re-activate a working tab by path; no-op when the file left the working tree. */
+function activateWorkingTab(path: string, mode?: FileView) {
+  const file = workingFiles.value.find(item => item.path === path)
+  if (file) selectWorking(file, mode)
+}
+
+async function selectView(next: FileView | 'commit', background = false, expanded = false) {
   view.value = next
-  if (next === 'commit') return
+  if (next === 'commit') {
+    // The explicit "Commit diff" tab always follows the Git Log selection.
+    activeDiffKey.value = ''
+    return
+  }
   const repo = store.repository?.path
   const file = workingSelection.value
   if (!repo || !file) return
@@ -275,7 +728,9 @@ async function selectView(next: FileView | 'commit', background = false) {
     return
   }
   previewLoading.value = !background
-  const call = next === 'working' ? api.WorkingPreview(repo, file.path) : api.WorkingDiff(repo, file.path, next === 'staged')
+  const call = next === 'working'
+    ? expanded ? api.WorkingPreviewExpanded(repo, file.path) : api.WorkingPreview(repo, file.path)
+    : expanded ? api.WorkingDiffExpanded(repo, file.path, next === 'staged') : api.WorkingDiff(repo, file.path, next === 'staged')
   const current = previewRequest.replace(call)
   try {
     const result = await call
@@ -293,18 +748,22 @@ async function selectView(next: FileView | 'commit', background = false) {
 
 function clearEditor() {
   editorRequest.clear()
-  editor.value = undefined
-  editorDraft.value = ''
+  editorTabs.value = []
+  for (const key of Object.keys(editorCursors)) delete editorCursors[key]
+  activeEditorPath.value = ''
   editorError.value = ''
-  editorPath.value = ''
   editorLoading.value = false
   pendingEditorAction.value = undefined
-  if (view.value === 'editor') view.value = 'working'
+  diffTabs.value = []
+  activeDiffKey.value = ''
+  workingTabs.value = []
+  workingSelection.value = undefined
+  if (view.value === 'editor' || view.value === 'conflict' || workingView.value) view.value = 'working'
 }
 
 function withSavedEditor(label: string, action: () => void) {
   if (editorSaving.value) return
-  if (!editorDirty.value) {
+  if (!editorTabs.value.some(isTabDirty)) {
     action()
     return
   }
@@ -328,16 +787,18 @@ function openRepository(folder: string) {
 }
 
 function openEditorFile(file: string) {
-  if (!file || store.opening || editorSaving.value) return
-  if (editor.value && editorPath.value === file) {
-    view.value = 'editor'
+  if (!file || store.opening) return
+  if (editorTabFor(file)) {
+    activateEditorTab(file)
     return
   }
-  withSavedEditor('opening another file', () => { void loadEditor(file) })
+  // Switching files must not silently drop an unsaved draft (spec §2.4);
+  // IDEA shows the same confirmation before replacing a dirty editor.
+  withSavedEditor('opening ' + fileName(file), () => void loadEditor(file))
 }
 
 function reloadEditor() {
-  const file = editorPath.value
+  const file = activeEditorPath.value
   if (!file) return
   const target = view.value === 'conflict' ? 'conflict' : 'editor'
   withSavedEditor('reloading the file', () => { void loadEditor(file, target) })
@@ -354,10 +815,16 @@ async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'edi
   try {
     const text = await call
     if (!current()) return
-    editor.value = text
-    editorPath.value = file
-    editorDraft.value = text.content
-    editorKey.value++
+    const existing = editorTabFor(file)
+    if (existing) {
+      existing.file = text
+      existing.draft = text.content
+      // A reload reflects the disk state; a pending conversion is dropped.
+      existing.lineEnding = undefined
+    } else {
+      editorTabs.value.push({ path: file, file: text, draft: text.content })
+    }
+    activeEditorPath.value = file
   } catch (cause) {
     if (current()) editorError.value = String(cause)
   } finally {
@@ -366,25 +833,41 @@ async function loadEditor(file: string, targetView: 'editor' | 'conflict' = 'edi
   }
 }
 
-async function saveEditor() {
+async function saveEditor(path = activeEditorPath.value, options?: { convert?: boolean }) {
   const repo = store.repository?.path
-  const text = editor.value
-  if (!repo || !text || !editorDirty.value || editorLoading.value || indexBusy.value || store.opening) return
-  const file = editorPath.value
-  const content = editorDraft.value
+  const tab = editorTabFor(path)
+  // A clean draft is still saved when only the line-ending widget changed
+  // (E1): the conversion happens with the stored content.
+  const converting = !!options?.convert && !!tab?.lineEnding && tab.lineEnding !== tab.file.lineEnding
+  if (!repo || !tab || (!isTabDirty(tab) && !converting) || editorLoading.value || indexBusy.value || store.opening) return
+  const content = tab.draft
+  const text = tab.file
   editorSaving.value = true
   indexBusy.value = true
   editorError.value = ''
   try {
-    const revision = await api.SaveTextFile(repo, file, text.revision, content)
-    editor.value = { ...text, revision, content }
+    const revision = await api.SaveTextFile(repo, path, text.revision, content, tab.lineEnding ?? '')
+    if (repo !== store.repository?.path) return
+    tab.file = { ...text, revision, content, lineEnding: tab.lineEnding || text.lineEnding }
+    tab.draft = content
     await loadWorking()
   } catch (cause) {
-    editorError.value = String(cause)
+    if (repo === store.repository?.path) editorError.value = String(cause)
   } finally {
     editorSaving.value = false
     indexBusy.value = false
   }
+}
+
+/** IDEA-style line ending toggle for the editor tab or the status bar widget:
+ *  a clean file converts immediately, a dirty file keeps the ending pending
+ *  until the next save. */
+function switchLineEnding(path: string) {
+  const tab = editorTabFor(path)
+  if (!tab || editorLoading.value || indexBusy.value || store.opening) return
+  const current = tab.lineEnding ?? tab.file.lineEnding
+  tab.lineEnding = current === 'CRLF' ? 'LF' : 'CRLF'
+  if (!isTabDirty(tab)) void saveEditor(path, { convert: true })
 }
 
 function preventDiscard(event: BeforeUnloadEvent) {
@@ -392,29 +875,29 @@ function preventDiscard(event: BeforeUnloadEvent) {
 }
 
 function openConflict(file: string) {
-  const open = () => {
-    conflictFile.value = file
-    if (editor.value && editorPath.value === file) view.value = 'conflict'
-    else void loadEditor(file, 'conflict')
+  conflictFile.value = file
+  if (editorTabFor(file)) {
+    activeEditorPath.value = file
+    view.value = 'conflict'
+  } else {
+    void loadEditor(file, 'conflict')
   }
-  if (editorPath.value === file) open()
-  else withSavedEditor('opening a conflict resolution', open)
 }
 
 function closeConflict() {
-  view.value = editor.value && editorPath.value === conflictFile.value ? 'editor' : 'working'
+  view.value = editorTabs.value.length ? 'editor' : 'working'
 }
 
 async function openSubmodule() {
   const repo = store.repository?.path
-  const file = store.file?.path
+  const file = commitDiff.value.path
   if (!repo || !file || indexBusy.value) return
   submoduleError.value = ''
   try {
     const path = await api.SubmodulePath(repo, file)
-    if (repo === store.repository?.path && file === store.file?.path) openRepository(path)
+    if (repo === store.repository?.path && file === commitDiff.value.path) openRepository(path)
   } catch (cause) {
-    if (repo === store.repository?.path && file === store.file?.path) submoduleError.value = String(cause)
+    if (repo === store.repository?.path && file === commitDiff.value.path) submoduleError.value = String(cause)
   }
 }
 
@@ -463,6 +946,11 @@ function compareCommit(commit: Commit) {
     (base?.hash.slice(0, 8) ?? 'HEAD') + ' → ' + commit.hash.slice(0, 8))
 }
 
+/** Compare the two rows of a Ctrl/Shift multi-selection directly (T06). */
+function compareCommits(before: Commit, after: Commit) {
+  compareRevisions(before.hash, after.hash, before.hash.slice(0, 8) + ' → ' + after.hash.slice(0, 8))
+}
+
 async function loadOperationState() {
   const repo = store.repository?.path
   if (!repo) return
@@ -471,7 +959,6 @@ async function loadOperationState() {
   try {
     const state = await call
     if (!current()) return
-    if (operation.value?.kind !== state.kind) confirmAbort.value = false
     operation.value = state
   } catch (cause) {
     if (current()) operationError.value = String(cause)
@@ -480,7 +967,15 @@ async function loadOperationState() {
   }
 }
 
-async function prepareOperation(action: AdvancedAction, hash: string, label: string) {
+// A starting or failing history operation surfaces itself in the Git tool
+// window's Console tab, mirroring IDEA where the console tab activates.
+watch(() => [operation.value?.kind, operation.value?.conflicts?.length ?? 0, operationError.value], ([kind, conflicts, error]) => {
+  if (kind || conflicts || error) gitTab.value = 'console'
+})
+
+async function prepareOperation(action: AdvancedAction, hash: string, label: string,
+                               preset?: { hash: string; action: RebaseAction },
+                               targets?: { hash: string; subject: string }[]) {
   const repo = store.repository?.path
   if (!repo || indexBusy.value || store.opening || preparingOperation.value) return
   if (operation.value?.kind || operation.value?.conflicts?.length) {
@@ -489,7 +984,9 @@ async function prepareOperation(action: AdvancedAction, hash: string, label: str
   }
   advanced.value = undefined
   rebasePlan.value = []
+  rebasePreset.value = preset
   resetMode.value = 'mixed'
+  mergeMode.value = ''
   hardResetConfirmed.value = false
   operationError.value = ''
   operationNotice.value = ''
@@ -502,15 +999,76 @@ async function prepareOperation(action: AdvancedAction, hash: string, label: str
     if (action === 'rebase') {
       const commits = await api.RebasePlan(repo, hash, head)
       if (!current()) return
-      rebasePlan.value = (commits ?? []).map(commit => ({ commit, action: 'pick' }))
+      const preset = rebasePreset.value
+      rebasePlan.value = (commits ?? []).map(commit => ({
+        commit,
+        action: preset && commit.hash === preset.hash ? preset.action : 'pick',
+        message: '',
+      }))
+      if (preset?.action === 'squash') {
+        const index = rebasePlan.value.findIndex(step => step.commit.hash === preset.hash)
+        if (index > 0) {
+          rebasePlan.value[index].message =
+            rebasePlan.value[index - 1].commit.subject + '\n\n' + rebasePlan.value[index].commit.subject
+        }
+      }
+      rebasePreset.value = undefined
     }
-    advanced.value = { action, hash, label, head }
+    advanced.value = { action, hash, label, head, targets }
   } catch (cause) {
     if (current()) operationError.value = String(cause)
   } finally {
     if (current()) preparingOperation.value = false
     headRequest.finish(call)
   }
+}
+
+// Squash or fixup a commit into its parent: the rebase plan must start at the
+// grandparent so both the parent (picked) and the target (squashed) are
+// rewritten together.
+async function squashIntoParent(commit: Commit, action: Extract<RebaseAction, 'squash' | 'fixup'>) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || store.opening || preparingOperation.value) return
+  if ((commit.parents?.length ?? 0) !== 1) {
+    operationError.value = 'Squash needs a commit with exactly one parent.'
+    return
+  }
+  operationError.value = ''
+  try {
+    const parent = await api.FirstParent(repo, commit.hash)
+    const grandparent = await api.FirstParent(repo, parent)
+    await prepareOperation('rebase', grandparent, commit.subject, { hash: commit.hash, action })
+  } catch (cause) {
+    operationError.value = String(cause)
+  }
+}
+
+function setRebaseAction(step: { commit: Commit; action: RebaseAction; message: string }) {
+  if ((step.action === 'reword' || step.action === 'squash') && !step.message) {
+    step.message = step.commit.subject
+  }
+}
+
+/** Cherry-pick a multi-selection: the log supplies the targets oldest first so
+ *  the replay matches the order the commits entered history. */
+async function cherryPickCommits(commits: Commit[]) {
+  if (commits.length < 2) return
+  if (commits.some(commit => (commit.parents?.length ?? 0) > 1)) {
+    operationError.value = 'Cherry-pick accepts non-merge commits only.'
+    return
+  }
+  const targets = commits.map(commit => ({ hash: commit.hash, subject: commit.subject }))
+  await prepareOperation('cherry-pick', targets[0]!.hash, targets.length + ' commits', undefined, targets)
+}
+
+// A stash diff compares the commit the stash was created on (stash^1) with
+// the stash commit itself: exactly the changes the stash would apply.
+function viewStashDiff(entry: StashEntry) {
+  if (!entry.parent) {
+    operationError.value = 'This stash entry has no parent commit to compare against.'
+    return
+  }
+  void store.selectComparison(entry.parent, entry.hash, 'Stash ' + entry.selector + ': ' + entry.subject)
 }
 
 function moveRebaseStep(index: number, offset: number) {
@@ -525,17 +1083,26 @@ async function runAdvanced() {
   const request = advanced.value
   if (!repo || !request || indexBusy.value || store.opening ||
       (request.action === 'reset' && resetMode.value === 'hard' && !hardResetConfirmed.value)) return
-  const mode = resetMode.value
+  if (request.action === 'rebase' &&
+      rebasePlan.value.some(step => (step.action === 'reword' || step.action === 'squash') && !step.message.trim())) {
+    operationError.value = 'Enter a commit message for every reworded or squashed commit.'
+    return
+  }
+  const mode = request.action === 'merge' ? mergeMode.value : resetMode.value
   advanced.value = undefined
   indexBusy.value = true
   operationError.value = ''
   operationNotice.value = ''
   try {
     if (request.action === 'rebase') {
-      const steps = rebasePlan.value.map(step => ({ hash: step.commit.hash, action: step.action }))
+      const steps = rebasePlan.value.map(step => ({
+        hash: step.commit.hash, action: step.action,
+        message: step.action === 'reword' || step.action === 'squash' ? step.message.trim() : '',
+      }))
       await api.RunInteractiveRebase(repo, request.hash, request.head, steps)
     } else {
-      await api.ApplyHistoryOperation(repo, request.action, request.hash, request.head, mode)
+      await api.ApplyHistoryOperation(repo, request.action,
+        request.targets?.map(target => target.hash) ?? [request.hash], request.head, mode)
     }
     operationNotice.value = advancedLabels[request.action] + ' complete.'
   } catch (cause) {
@@ -543,7 +1110,10 @@ async function runAdvanced() {
   } finally {
     try {
       await Promise.all([refreshAfterDailyOperation(), loadOperationState()])
-      if (operation.value?.conflicts?.length) sidebar.value = 'changes'
+      if (operation.value?.conflicts?.length) {
+        sidebar.value = 'changes'
+        commitTab.value = 'commit'
+      }
     } finally {
       indexBusy.value = false
     }
@@ -554,7 +1124,6 @@ async function finishOperation(abort: boolean) {
   const repo = store.repository?.path
   const kind = operation.value?.kind
   if (!repo || !kind || indexBusy.value || store.opening) return
-  confirmAbort.value = false
   indexBusy.value = true
   operationError.value = ''
   operationNotice.value = ''
@@ -614,14 +1183,21 @@ async function applyHunk(file: string, staged: boolean, revision: string, index:
   }
 }
 
-async function updateIndex(staged: boolean) {
+function updateIndex(staged: boolean) {
+  if (currentWorkingFile.value) void updateIncludedFiles([currentWorkingFile.value.path], staged)
+}
+
+async function updateIncludedFiles(paths: string[], staged: boolean) {
   const repo = store.repository?.path
-  const file = currentWorkingFile.value
-  if (!repo || !file || indexBusy.value) return
+  if (!repo || indexBusy.value || store.opening || restoringSession.value) return
+  const selected = new Set(paths)
+  const files = workingFiles.value.filter(file => selected.has(file.path) &&
+    (staged ? file.canStage : file.canUnstage))
+  if (!files.length) return
   indexBusy.value = true
   indexError.value = ''
   try {
-    await api.SetStaged(repo, file.path, staged)
+    for (const file of files) await api.SetStaged(repo, file.path, staged)
   } catch (error) {
     if (repo === store.repository?.path) indexError.value = String(error)
   } finally {
@@ -700,8 +1276,49 @@ async function initializeProject() {
     const repo = await api.Initialize(projectPath.value.trim())
     await store.open(repo.path)
     sidebar.value = 'changes'
+    commitTab.value = 'commit'
   } catch (cause) {
     projectError.value = String(cause)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function pickCloneParent() {
+  if (picking.value || indexBusy.value) return
+  picking.value = true
+  try {
+    const folder = await api.ChooseDirectory()
+    if (folder) cloneParent.value = folder
+  } catch (cause) {
+    cloneError.value = String(cause)
+  } finally {
+    picking.value = false
+  }
+}
+
+function cloneTargetPath() {
+  const parent = cloneParent.value.trim().replace(/[\\/]+$/, '')
+  const name = cloneName.value.trim()
+  if (!parent || !name) return ''
+  return parent + (parent.match(/^[A-Za-z]:/) ? '\\' : '/') + name
+}
+
+async function cloneProject() {
+  if (indexBusy.value || picking.value) return
+  const address = cloneUrl.value.trim()
+  const dir = cloneTargetPath()
+  if (!address || !dir) return
+  indexBusy.value = true
+  cloneError.value = ''
+  try {
+    const repo = await api.Clone(address, dir, cloneBranch.value.trim())
+    dailyPanel.value = undefined
+    await store.open(repo.path)
+    sidebar.value = 'changes'
+    commitTab.value = 'commit'
+  } catch (cause) {
+    cloneError.value = String(cause)
   } finally {
     indexBusy.value = false
   }
@@ -726,7 +1343,31 @@ async function stageAll() {
   }
 }
 
-async function commitChanges() {
+/** IDEA's "Add to .gitignore" for untracked files: appends the path to the
+ *  repository-root .gitignore, then reloads the working status so the file
+ *  disappears from the list. */
+async function ignoreFile(path: string) {
+  const repo = store.repository?.path
+  if (!repo || indexBusy.value || store.opening) return
+  indexBusy.value = true
+  indexError.value = ''
+  commitNotice.value = ''
+  try {
+    const changed = await api.AddToGitignore(repo, path)
+    if (repo !== store.repository?.path) return
+    commitNotice.value = changed
+      ? 'Added ' + fileName(path) + ' to .gitignore'
+      : fileName(path) + ' is already ignored'
+    await loadWorking()
+    if (repo === store.repository?.path && workingView.value) await selectView(workingView.value, true)
+  } catch (cause) {
+    if (repo === store.repository?.path) indexError.value = String(cause)
+  } finally {
+    indexBusy.value = false
+  }
+}
+
+async function commitChanges(reviewPush = false) {
   const repo = store.repository?.path
   const message = commitMessage.value
   const target = amendTarget.value
@@ -742,9 +1383,14 @@ async function commitChanges() {
     if (target) cancelAmend()
     else commitMessage.value = ''
     commitNotice.value = target ? 'Commit amended' : 'Commit created'
+    commitHistory.value = rememberCommitMessage(undefined, repo, message, commitHistory.value)
     await Promise.all([store.open(repo), loadWorking()])
     if (repo === store.repository?.path && (view.value === 'staged' || view.value === 'unstaged')) {
       void selectView(view.value)
+    }
+    if (reviewPush && repo === store.repository?.path) {
+      syncIntent.value = 'push'
+      dailyPanel.value = 'sync'
     }
   } catch (error) {
     if (repo === store.repository?.path) indexError.value = String(error)
@@ -756,7 +1402,9 @@ async function commitChanges() {
 onMounted(() => {
   document.addEventListener('pointerdown', outsideMenus)
   window.addEventListener('beforeunload', preventDiscard)
+  window.addEventListener('keydown', onGlobalKeydown)
   void store.detectGit()
+  void restoreSession()
   unsubscribeChanges = Events.On(GitvelaRepositoryChanged, event => {
     if (event.data === store.repository?.path) void refreshExternalChanges()
   })
@@ -765,6 +1413,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('pointerdown', outsideMenus)
   window.removeEventListener('beforeunload', preventDiscard)
+  window.removeEventListener('keydown', onGlobalKeydown)
+  if (sessionTimer) clearTimeout(sessionTimer)
   editorRequest.clear()
   headRequest.clear()
   operationRequest.clear()
@@ -896,8 +1546,23 @@ function openSync(intent: SyncIntent) {
 function openSidebar(panel: Sidebar) {
   if (indexBusy.value) return
   closeBranchMenu()
-  sidebar.value = panel
+  closeTagMenu()
+  if (panel === 'branches') {
+    historyVisible.value = true
+    void nextTick(() => content.value?.querySelector<HTMLInputElement>('[aria-label="Filter branches or tags"]')?.focus())
+  } else {
+    sidebar.value = panel
+    if (panel === 'changes') commitTab.value = 'commit'
+  }
   diffExpanded.value = false
+}
+
+function openShelf() {
+  // Switching to the shelf is read-only, so a background refresh must not
+  // swallow the click; the panel's own controls stay disabled while busy.
+  if (indexBusy.value) return
+  openSidebar('changes')
+  commitTab.value = 'shelf'
 }
 
 function focusCommit() {
@@ -905,27 +1570,17 @@ function focusCommit() {
   void nextTick(() => document.getElementById('commit-message')?.focus())
 }
 
-function closeBranchMenu(restoreFocus = false) {
-  const trigger = branchMenu.value?.trigger
+function closeBranchMenu() {
   branchMenu.value = undefined
-  if (restoreFocus) trigger?.focus()
 }
 
 function openBranchActions(item: GitRef, event: MouseEvent | KeyboardEvent) {
-  const trigger = event.currentTarget
-  if (!(trigger instanceof HTMLElement)) return
-  const rect = trigger.getBoundingClientRect()
-  branchMenu.value = {
-    item, trigger, x: Math.max(8, Math.min(rect.right, window.innerWidth - 254)),
-    y: Math.max(8, Math.min(rect.top, window.innerHeight - 250)),
-  }
-  void nextTick(() => branchActions.value?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus())
+  branchMenu.value = { item, anchor: contextAnchor(event) }
 }
 
 function outsideMenus(event: PointerEvent) {
   if (!(event.target instanceof Node)) return
   if (!gitMenu.value?.contains(event.target)) closeGitMenu()
-  if (!branchActions.value?.contains(event.target) && !branchMenu.value?.trigger.contains(event.target)) closeBranchMenu()
 }
 
 function branchAction(action: 'history' | 'create' | 'switch' | 'rename' | 'delete' | 'compare' | 'merge' | 'rebase' | SyncIntent) {
@@ -956,29 +1611,444 @@ function resize(event: PointerEvent) {
 }
 
 function resizeWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
   if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
   event.preventDefault()
   previewHeight.value = Math.min(70, Math.max(28, previewHeight.value + (event.key === 'ArrowUp' ? -3 : 3)))
 }
+
+/* ---- Tool window splitters. Dragging persists through the preferences
+ *  store; arrow keys give the same control from the keyboard. ---- */
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function trackDrag(event: PointerEvent) {
+  if (!(event.currentTarget instanceof HTMLElement)) return undefined
+  event.currentTarget.setPointerCapture(event.pointerId)
+  return event.currentTarget
+}
+
+function dragging(event: PointerEvent) {
+  return event.currentTarget instanceof HTMLElement && event.currentTarget.hasPointerCapture(event.pointerId)
+}
+
+function resizeSidebar(event: PointerEvent) {
+  if (!content.value || !dragging(event)) return
+  const bounds = content.value.getBoundingClientRect()
+  preferences.sidebarWidth = Math.round(clamp(event.clientX - bounds.left - 38,
+    layoutBounds.sidebar.min, layoutBounds.sidebar.max))
+}
+
+function resizeSidebarWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  preferences.sidebarWidth = Math.round(clamp(preferences.sidebarWidth + (event.key === 'ArrowLeft' ? -24 : 24),
+    layoutBounds.sidebar.min, layoutBounds.sidebar.max))
+}
+
+function resizeBranches(event: PointerEvent) {
+  if (!content.value || !dragging(event)) return
+  const bounds = content.value.getBoundingClientRect()
+  preferences.branchesWidth = Math.round(clamp(event.clientX - bounds.left,
+    layoutBounds.branches.min, layoutBounds.branches.max))
+}
+
+function resizeBranchesWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  preferences.branchesWidth = Math.round(clamp(preferences.branchesWidth + (event.key === 'ArrowLeft' ? -24 : 24),
+    layoutBounds.branches.min, layoutBounds.branches.max))
+}
+
+function resizeFiles(event: PointerEvent) {
+  if (!content.value || !dragging(event)) return
+  const bounds = content.value.getBoundingClientRect()
+  preferences.filesWidth = Math.round(clamp(bounds.right - event.clientX,
+    layoutBounds.files.min, layoutBounds.files.max))
+}
+
+function resizeFilesWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+  event.preventDefault()
+  preferences.filesWidth = Math.round(clamp(preferences.filesWidth + (event.key === 'ArrowLeft' ? 24 : -24),
+    layoutBounds.files.min, layoutBounds.files.max))
+}
+
+function resizeDetails(event: PointerEvent) {
+  if (!content.value) return
+  const host = event.currentTarget instanceof HTMLElement ? event.currentTarget.parentElement : null
+  if (!host || !(event.currentTarget instanceof HTMLElement) ||
+      !event.currentTarget.hasPointerCapture(event.pointerId)) return
+  const bounds = host.getBoundingClientRect()
+  preferences.detailsHeight = Math.round(clamp((event.clientY - bounds.top) / bounds.height * 100,
+    layoutBounds.details.min, layoutBounds.details.max))
+}
+
+function resizeDetailsWithKey(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+  event.preventDefault()
+  preferences.detailsHeight = Math.round(clamp(preferences.detailsHeight + (event.key === 'ArrowUp' ? -3 : 3),
+    layoutBounds.details.min, layoutBounds.details.max))
+}
+
+/** A log selection updates the Changed Files and Commit Details panels and
+ *  reveals the commit diff tab — but never while the user is editing a file
+ *  or resolving a conflict, matching IDEA where an open editor is not stolen
+ *  by log selection. Editor tabs keep their content and can be switched back
+ *  to at any time. */
+function handleHistorySelect() {
+  if (view.value === 'editor' || view.value === 'conflict' || view.value === 'inspection') return
+  // A selection move in the Git Log activates the selection-driven diff tab;
+  // pinned per-file diff tabs stay open but hand over focus.
+  activeDiffKey.value = ''
+  view.value = 'commit'
+}
+
+/** Double-clicking a history file opens (or focuses) a pinned diff tab for
+ *  that file in the editor workspace instead of stealing the whole preview. */
+function openHistoryDiff(file: Change) {
+  const repo = store.repository?.path
+  if (!repo) return
+  const range = store.comparisonRange
+  const hash = store.selected?.hash ?? ''
+  const parent = store.parent
+  const key = (range ? range.before + '..' + range.after : hash + '~' + parent) + ':' + file.index
+  historyVisible.value = true
+  diffExpanded.value = false
+  view.value = 'commit'
+  let tab = diffTabs.value.find(item => item.key === key)
+  if (!tab) {
+    tab = { key, path: file.path, hash, parent, index: file.index, range: range ? { ...range } : undefined, loading: true }
+    diffTabs.value.push(tab)
+    void loadDiffTab(tab, repo)
+  }
+  activateDiffTab(tab)
+}
+
+/** The workspace geometry: activity bar + Commit tool window + editor on
+ *  top, the Git tool window across the full width below. */
+const contentStyle = computed(() => ({
+  gridTemplateColumns: diffExpanded.value
+    ? 'minmax(0, 1fr)'
+    : sidebarHidden.value
+      ? '38px minmax(0, 1fr)'
+      : '38px ' + preferences.sidebarWidth + 'px 6px minmax(0, 1fr)',
+  gridTemplateRows: historyMaximized.value
+    ? 'minmax(0, 0fr) auto minmax(0, 1fr)'
+    : historyVisible.value && !diffExpanded.value
+      ? 'minmax(0, ' + previewHeight.value + 'fr) auto minmax(0, ' + (100 - previewHeight.value) + 'fr)'
+      : 'minmax(0, 1fr)',
+}))
+
+/* ---- Keyboard commands, command palette, session restore ---- */
+
+function stepChange(direction: number) {
+  if (!store.repository || !store.files.length) return
+  historyVisible.value = true
+  diffExpanded.value = false
+  view.value = 'commit'
+  filesPanel.value?.step(direction)
+}
+
+async function toggleFullscreen() {
+  try {
+    await Window.ToggleFullscreen()
+    windowError.value = ''
+  } catch (error) {
+    windowError.value = 'Could not toggle fullscreen: ' + String(error)
+  }
+}
+
+function runShortcut(id: ShortcutId) {
+  switch (id) {
+    case 'palette': paletteOpen.value = !paletteOpen.value; break
+    case 'openRepository': void choose(); break
+    case 'refresh': refresh(); break
+    case 'searchHistory':
+      if (store.repository) {
+        historyVisible.value = true
+        void nextTick(() => log.value?.openSearch())
+      }
+      break
+    case 'commit': focusCommit(); break
+    case 'previousCommit': log.value?.step(-1); break
+    case 'nextCommit': log.value?.step(1); break
+    case 'previousChange': stepChange(-1); break
+    case 'nextChange': stepChange(1); break
+    case 'previousHunk': navigateDiff(-1); break
+    case 'nextHunk': navigateDiff(1); break
+    case 'toggleHistory': historyVisible.value = !historyVisible.value; diffExpanded.value = false; break
+    case 'maximizeDiff':
+      if (diffExpanded.value) restoreDiffLayout()
+      else if (view.value === 'commit' && store.file) maximizeDiff()
+      break
+    case 'toggleTheme': dark.value = !dark.value; break
+    case 'toggleDensity': preferences.toggleDensity(); break
+    case 'toggleFullscreen': void toggleFullscreen(); break
+  }
+}
+
+function isCodeEditor(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest('.cm-editor')
+}
+
+function isCommitField(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.id === 'commit-message'
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if (keymap.recording || paletteOpen.value || event.defaultPrevented || event.isComposing) return
+  const id = keymap.resolve(event)
+  if (!id) return
+  // CodeMirror panes own keys like Ctrl+F and Ctrl+Enter; the global
+  // dispatcher must not also run the workspace command for the same press.
+  if (editorScopeShortcuts.has(id) && isCodeEditor(event.target)) return
+  // Navigation keys belong to text fields, but modifier shortcuts still work.
+  const textEntry = isTextEntry(event.target)
+  if (navigationShortcuts.has(id) && textEntry) return
+  // In text fields, only a deliberate Ctrl/Meta chord can submit. AltGr
+  // also reports Ctrl on Windows, but is used to type ordinary characters.
+  if (id === 'commit' && (event.repeat || (textEntry &&
+      (!(event.ctrlKey || event.metaKey) || event.getModifierState('AltGraph'))))) return
+  event.preventDefault()
+  // Submitting happens only through the commit message field itself, so a
+  // rebound or duplicated dispatch can never fire Git a second time.
+  if (id === 'commit' && isCommitField(event.target)) changesPanel.value?.submit()
+  else runShortcut(id)
+}
+
+function closePalette() {
+  paletteOpen.value = false
+  void nextTick(() => paletteTrigger.value?.focus())
+}
+
+function openSettings() {
+  paletteOpen.value = false
+  settingsOpen.value = true
+}
+
+function runPalette(id: string) {
+  paletteOpen.value = false
+  const command = paletteCommands.value.find(item => item.id === id)
+  if (command && !command.disabled) command.run()
+}
+
+function forgetSession() {
+  clearSession()
+  sessionNotice.value = 'Saved session cleared.'
+}
+
+async function restoreSession() {
+  const saved = readSession()
+  if (!saved || !resumeOnStart.value) return
+  restoringSession.value = true
+  try {
+    await store.open(saved.path)
+    const repo = store.repository
+    if (!repo) {
+      clearSession()
+      store.repoError = ''
+      restoreNotice.value = 'The last repository is no longer available. Choose a repository to continue.'
+      return
+    }
+    sidebar.value = !saved.sidebar || saved.sidebar === 'branches' ? 'changes' : saved.sidebar
+    sidebarHidden.value = false
+    historyVisible.value = saved.sidebar === 'branches' || (saved.historyVisible ?? true)
+    historyMaximized.value = saved.historyMaximized ?? false
+    // Sessions written without a view used the revision to choose the preview.
+    const savedView = saved.view ?? (saved.hash || saved.range ? 'commit' : 'working')
+    const nextView = savedView === 'commit' || savedView === 'staged' || savedView === 'unstaged'
+      ? savedView : 'working'
+
+    if (saved.hash) {
+      let commit = store.commits.find(item => item.hash === saved.hash)
+      while (!commit && repo === store.repository && store.more && !store.loading && !store.logError) {
+        await store.loadPage()
+        commit = store.commits.find(item => item.hash === saved.hash)
+      }
+      if (repo !== store.repository) return
+      if (commit) await store.selectCommit(commit, saved.parent ?? 0, saved.range ? undefined : saved.file)
+    }
+    if (repo !== store.repository) return
+    if (saved.range) {
+      await store.selectComparison(saved.range.before, saved.range.after, saved.range.label, saved.file)
+    }
+    if (repo !== store.repository) return
+
+    await loadWorking()
+    if (repo !== store.repository) return
+    if (saved.workingFile) {
+      workingSelection.value = workingFiles.value.find(item => item.path === saved.workingFile)
+        ?? workingFiles.value.find(item => item.oldPath === saved.workingFile)
+    }
+    // Reopen the pinned diff tabs from the previous session (comparison
+    // payloads are not saved; the active tab re-requests from Git).
+    if (saved.diffTabs?.length) {
+      diffTabs.value = saved.diffTabs.map(tab => ({
+        key: tab.key, path: tab.path, hash: tab.hash, parent: tab.parent ?? 0,
+        index: tab.index, range: tab.range, expanded: tab.expanded, loading: false,
+      }))
+      const active = saved.diffActive
+        ? diffTabs.value.find(tab => tab.key === saved.diffActive)
+        : undefined
+      if (active) activateDiffTab(active, false)
+    }
+    // Reopen the working tabs from the previous session (preview state is not
+    // saved; activating a tab re-requests it from Git).
+    if (saved.workingTabs?.length) {
+      workingTabs.value = saved.workingTabs
+        .filter(tab => workingFiles.value.some(item => item.path === tab.path))
+        .map(tab => ({ path: tab.path, mode: tab.mode }))
+    } else if (workingSelection.value) {
+      workingTabs.value = [{ path: workingSelection.value.path, mode: 'working' }]
+    }
+    // Align the active tab's mode with the restored view; sessions saved
+    // before per-file working tabs carry only a view field.
+    if ((savedView === 'working' || savedView === 'unstaged' || savedView === 'staged') && workingSelection.value) {
+      const tab = workingTabs.value.find(item => item.path === workingSelection.value?.path)
+      if (tab) tab.mode = savedView
+      else workingTabs.value.push({ path: workingSelection.value.path, mode: savedView })
+    }
+    // Reopen the editor tabs from the previous session (drafts are not saved).
+    for (const file of saved.editorFiles ?? []) {
+      if (repo.path !== store.repository?.path) break
+      await loadEditor(file)
+    }
+    if (repo !== store.repository) return
+    if (saved.editorActive && editorTabFor(saved.editorActive)) activeEditorPath.value = saved.editorActive
+    await selectView(nextView)
+    if (savedView === 'editor' && activeEditorPath.value) view.value = 'editor'
+  } finally {
+    restoringSession.value = false
+    scheduleSessionSave()
+  }
+}
+
+let sessionTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleSessionSave(attempt = 0) {
+  if (sessionTimer) clearTimeout(sessionTimer)
+  if (restoringSession.value) return
+  sessionTimer = setTimeout(() => {
+    const repo = store.repository?.path
+    // Never persist the empty state produced while a refresh resets the store.
+    if (!repo || store.opening || store.loading) {
+      if (attempt < 5) scheduleSessionSave(attempt + 1)
+      return
+    }
+    saveSession({
+      path: repo,
+      hash: store.selected?.hash,
+      parent: store.parent,
+      file: store.file?.path,
+      workingFile: workingSelection.value?.path,
+      workingTabs: workingTabs.value.map(tab => ({ path: tab.path, mode: tab.mode })),
+      diffTabs: diffTabs.value.map(tab => ({
+        key: tab.key, path: tab.path, hash: tab.hash, parent: tab.parent,
+        index: tab.index, range: tab.range, expanded: tab.expanded,
+      })),
+      diffActive: activeDiffKey.value || undefined,
+      range: store.comparisonRange ? { ...store.comparisonRange } : undefined,
+      sidebar: sidebar.value,
+      view: view.value,
+      historyVisible: historyVisible.value,
+      historyMaximized: historyMaximized.value,
+      editorFiles: editorTabs.value.map(tab => tab.path),
+      editorActive: activeEditorPath.value || undefined,
+    })
+  }, 350)
+}
+watch([
+  () => store.repository?.path, () => store.selected?.hash, () => store.parent,
+  () => store.file?.path, () => workingSelection.value?.path, () => store.comparisonRange,
+  sidebar, view, historyVisible, historyMaximized, editorTabs.value.length, activeEditorPath,
+  workingTabs.value.length, diffTabs.value.length, activeDiffKey,
+], () => scheduleSessionSave())
+
+const paletteCommands = computed<PaletteCommand[]>(() => {
+  const items: PaletteCommand[] = []
+  const hint = (id: ShortcutId) => keymap.bindings[id] || undefined
+  const add = (id: string, label: string, group: string, run: () => void, options: Partial<PaletteCommand> = {}) => {
+    items.push({ id, label, group, run, ...options })
+  }
+  const busy = indexBusy.value || store.opening
+  add('open', 'Browse for a repository…', 'Repository', () => void choose(), { hint: hint('openRepository'), disabled: picking.value || busy })
+  add('clone', 'Clone from URL…', 'Repository', () => toggleDailyPanel('clone'), { disabled: busy })
+  add('init', 'Initialize Project…', 'Repository', () => toggleDailyPanel('init'), { disabled: busy })
+  for (const repo of store.recent) {
+    add('repo:' + repo, 'Open ' + (repo.split(/[\\/]/).at(-1) || repo), 'Recent repositories', () => openRepository(repo), { keywords: repo, disabled: busy })
+  }
+  if (store.repository) {
+    add('refresh', 'Refresh repository', 'Repository', refresh, { hint: hint('refresh'), disabled: busy })
+    add('search', 'Search Git history…', 'Repository', () => {
+      historyVisible.value = true
+      void nextTick(() => log.value?.openSearch())
+    }, { hint: hint('searchHistory') })
+    add('commit', 'Commit changes…', 'Git operations', focusCommit, { hint: hint('commit'), disabled: busy })
+    add('fetch', 'Fetch…', 'Git operations', () => openSync('fetch'), { disabled: busy })
+    add('pull', 'Pull…', 'Git operations', () => openSync('pull'), { disabled: busy })
+    add('push', 'Push…', 'Git operations', () => openSync('push'), { disabled: busy })
+    add('stash', 'Stash…', 'Git operations', openShelf, { disabled: busy })
+    add('remotes', 'Manage Remotes…', 'Git operations', () => toggleDailyPanel('remotes'), { disabled: busy })
+    add('publish', 'Publish to GitHub…', 'Git operations', () => toggleDailyPanel('publish'), { disabled: busy })
+    add('new-branch', 'New Branch…', 'Git operations', createBranchFromCommit, { disabled: busy || !store.selected })
+  }
+  for (const tab of sidebarTabs) {
+    add('sidebar:' + tab.id, 'Show ' + tab.label, 'Workspace views', () => openSidebar(tab.id), { disabled: busy })
+  }
+  if (store.repository) {
+    add('previousCommit', 'Previous commit', 'Navigation', () => log.value?.step(-1), { hint: hint('previousCommit') })
+    add('nextCommit', 'Next commit', 'Navigation', () => log.value?.step(1), { hint: hint('nextCommit') })
+    add('previousChange', 'Previous changed file', 'Navigation', () => stepChange(-1), { hint: hint('previousChange') })
+    add('nextChange', 'Next changed file', 'Navigation', () => stepChange(1), { hint: hint('nextChange') })
+    add('previousHunk', 'Previous diff hunk', 'Navigation', () => navigateDiff(-1), { hint: hint('previousHunk'), disabled: view.value !== 'commit' })
+    add('nextHunk', 'Next diff hunk', 'Navigation', () => navigateDiff(1), { hint: hint('nextHunk'), disabled: view.value !== 'commit' })
+  }
+  add('theme', 'Toggle dark theme', 'View', () => { dark.value = !dark.value }, { hint: hint('toggleTheme') })
+  add('density', density.value === 'compact' ? 'Use comfortable rows' : 'Use compact rows', 'View', () => preferences.toggleDensity(), { hint: hint('toggleDensity') })
+  add('fullscreen', 'Toggle fullscreen', 'View', () => void toggleFullscreen(), { hint: hint('toggleFullscreen') })
+  add('history', 'Show or hide history', 'View', () => { historyVisible.value = !historyVisible.value; diffExpanded.value = false }, { hint: hint('toggleHistory') })
+  add('diff', diffExpanded.value ? 'Restore diff layout' : 'Maximize diff', 'View', () => diffExpanded.value ? restoreDiffLayout() : maximizeDiff(), { hint: hint('maximizeDiff'), disabled: !diffExpanded.value && (view.value !== 'commit' || !store.file) })
+  add('file-tree', fileTree.value ? 'Show Changed Files flat' : 'Show Changed Files as a tree', 'View', () => { fileTree.value = !fileTree.value })
+  add('reset-size', 'Reset panel sizes', 'View', () => preferences.resetLayout())
+  add('shortcuts', 'Keyboard shortcuts…', 'Settings', openSettings)
+  add('forget-session', 'Forget saved session', 'Settings', forgetSession)
+  if (store.repository) {
+    for (const ref of store.branchRefs.slice(0, 30)) {
+      const name = refLabel(ref.name)
+      add('ref:' + ref.name, 'Jump to ' + name, 'Branches & tags', () => void jump(ref.hash), { keywords: ref.name })
+    }
+    for (const tag of store.tagRefs.slice(0, 15)) {
+      add('tag:' + tag.name, 'Jump to tag ' + refLabel(tag.name), 'Branches & tags', () => void jump(tag.hash), { keywords: tag.name })
+    }
+  }
+  return items
+})
 </script>
 
 <template>
-  <div class="shell" :data-theme="dark ? 'dark' : 'light'">
+  <div class="shell" :data-theme="dark ? 'dark' : 'light'" :data-density="density">
     <header class="topbar">
       <div class="brand">
         <span class="brand-icon">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.8 10.6 17.2 3l-4.4 14-3.1-5.3zM9.7 11.7 17.2 3" />
-          </svg>
+          <img :src="appIcon" alt="" />
         </span>
         <strong>GitVela</strong>
       </div>
+      <button v-if="store.repository" class="branch-chip" :disabled="indexBusy || store.opening"
+              :title="'Current branch: ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head)"
+              @click="openSidebar('branches')">
+        <AppIcon name="branches" />
+        <span class="ellipsis">{{ store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head }}</span>
+      </button>
       <details ref="git-menu" class="git-menu" @keydown.esc.stop="closeGitMenu(); gitMenu?.querySelector('summary')?.focus()">
         <summary>
-          <svg class="menu-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <circle cx="6" cy="4" r="1.7" /><circle cx="6" cy="15" r="1.7" /><circle cx="14" cy="5" r="1.7" />
-            <path d="M6 5.7v7.6m8-6.6a6 6 0 0 1-6 5.8H6" />
-          </svg>
+          <AppIcon class="menu-icon" name="branches" />
           Git
         </summary>
         <div class="command-menu" role="group" aria-label="Git operations">
@@ -989,7 +2059,7 @@ function resizeWithKey(event: KeyboardEvent) {
             <button :disabled="indexBusy" @click="gitAction(() => openSync('push'))">Push…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('pull'))">Pull…</button>
             <button :disabled="indexBusy" @click="gitAction(() => openSync('fetch'))">Fetch…</button>
-            <button :disabled="indexBusy" @click="gitAction(() => toggleDailyPanel('stash'))">Stash…</button>
+            <button :disabled="indexBusy" @click="gitAction(openShelf)">Stash…</button>
             <div class="command-divider"></div>
             <button :disabled="indexBusy" @click="gitAction(() => { openSidebar('branches'); refKind = 'branches' })">Branches</button>
             <button :disabled="indexBusy || !store.selected" @click="gitAction(createBranchFromCommit)">New Branch…</button>
@@ -1011,20 +2081,17 @@ function resizeWithKey(event: KeyboardEvent) {
         <option v-for="repo in store.recent" :key="repo" :value="repo">{{ repo.split(/[\\/]/).at(-1) || repo }}</option>
       </select>
       <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse…</button>
-      <details class="preferences">
-        <summary>Settings</summary>
-        <div class="preferences-panel">
-          <label><input v-model="dark" type="checkbox" /> Dark theme</label>
-          <label><input v-model="fileTree" type="checkbox" /> Show Changed Files as a tree</label>
-          <button @click="previewHeight = defaultPreviewHeight">Reset panel sizes</button>
-        </div>
-      </details>
+      <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('clone')">Clone…</button>
+      <button ref="paletteTrigger" :title="'Command palette (' + (keymap.bindings.palette || 'unbound') + ')'"
+              @click="paletteOpen = !paletteOpen">Commands…</button>
     </header>
     <div v-if="workspaceError" class="notice error top-error" role="alert">
       {{ workspaceError }}
       <button @click="workspaceError = ''; refresh()">Reload workspace</button>
     </div>
     <p v-if="store.repoError" class="notice error top-error" role="alert">{{ store.repoError }}</p>
+    <p v-if="windowError" class="notice error top-error" role="alert">{{ windowError }} <button @click="windowError = ''">Dismiss</button></p>
+    <p v-if="restoreNotice" class="notice top-error" role="status">{{ restoreNotice }} <button @click="restoreNotice = ''">Dismiss</button></p>
     <p v-if="watchError" class="notice top-error" role="status" :title="watchError">File notifications unavailable. Checking for Git changes every 5 seconds.</p>
     <section v-if="dailyPanel === 'init'" class="daily-panel" aria-label="Initialize project">
       <form class="daily-controls" @submit.prevent="withSavedEditor('initializing another project', () => { void initializeProject() })">
@@ -1037,23 +2104,46 @@ function resizeWithKey(event: KeyboardEvent) {
       <p v-if="projectError" class="notice error" role="alert">{{ projectError }}</p>
       <p v-else class="notice">{{ indexBusy ? 'Initializing…' : 'Create a Git repository in an existing project folder.' }}</p>
     </section>
-    <RemotesPanel v-if="(dailyPanel === 'remotes' || dailyPanel === 'publish') && store.repository"
-                  :key="store.repository.path + ':' + dailyPanel" :path="store.repository.path" :name="store.repository.name"
-                  :branch="store.repository.head" :has-head="hasLocalHead" :publish="dailyPanel === 'publish'"
-                  :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
-    <StashPanel v-if="dailyPanel === 'stash' && store.repository" :key="store.repository.path"
-                :path="store.repository.path" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+    <section v-if="dailyPanel === 'clone'" class="daily-panel" aria-label="Clone repository">
+      <form class="daily-controls" @submit.prevent="cloneProject()">
+        <h2>Clone repository</h2>
+        <label>Repository URL or path <input v-model="cloneUrl" aria-label="Repository URL or path" placeholder="https://… or a local path" spellcheck="false" :disabled="indexBusy" /></label>
+        <label>Parent folder <input v-model="cloneParent" aria-label="Clone parent folder" placeholder="Absolute existing folder" spellcheck="false" :disabled="indexBusy" /></label>
+        <button type="button" :disabled="indexBusy || picking" @click="pickCloneParent">Browse…</button>
+        <label>New folder name <input v-model="cloneName" aria-label="Clone folder name" placeholder="project-name" spellcheck="false" :disabled="indexBusy" /></label>
+        <label>Branch (optional) <input v-model="cloneBranch" aria-label="Clone branch" placeholder="default branch" spellcheck="false" :disabled="indexBusy" /></label>
+        <button type="submit" class="primary" :disabled="indexBusy || picking || !cloneUrl.trim() || !cloneParent.trim() || !cloneName.trim()">Clone</button>
+        <button type="button" :disabled="indexBusy || picking" @click="dailyPanel = undefined">Cancel</button>
+      </form>
+      <p v-if="cloneError" class="notice error" role="alert">{{ cloneError }}</p>
+      <p v-else class="notice">{{ indexBusy ? 'Cloning… this can take a while for large repositories.' : 'Copy a remote repository into a new folder and open it.' }}</p>
+    </section>
+    <SettingsDialog v-if="settingsOpen" :session-notice="sessionNotice" @close="settingsOpen = false"
+                    @forget-session="forgetSession" @toggle-fullscreen="toggleFullscreen" />
+    <ConfirmationDialog v-if="dailyPanel === 'remotes' && store.repository" title="Git Remotes" :busy="indexBusy"
+                        @cancel="dailyPanel = undefined">
+      <RemotesPanel :key="store.repository.path" :path="store.repository.path" :name="store.repository.name"
+                    :branch="store.repository.head" :has-head="hasLocalHead" :publish="false"
+                    :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
+      <template #actions>
+        <button data-cancel class="primary" :disabled="indexBusy" @click="dailyPanel = undefined">Done</button>
+      </template>
+    </ConfirmationDialog>
+    <RemotesPanel v-if="dailyPanel === 'publish' && store.repository" :key="store.repository.path"
+                  :path="store.repository.path" :name="store.repository.name" :branch="store.repository.head"
+                  :has-head="hasLocalHead" publish :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
     <SyncPanel v-if="dailyPanel === 'sync' && store.repository" :key="store.repository.path"
                :path="store.repository.path" :head="store.repository.head" :intent="syncIntent" :refresh="refreshAfterDailyOperation" v-model:busy="indexBusy" />
-    <div v-if="pendingEditorAction" class="daily-panel daily-confirm" role="group" aria-label="Unsaved file changes">
-      <span>Discard unsaved changes in <strong>{{ editorPath }}</strong> before {{ pendingEditorLabel }}?</span>
-      <button @click="pendingEditorAction = undefined">Keep editing</button>
-      <button class="danger-button" @click="discardEditorChanges">Discard changes</button>
-    </div>
-    <section v-if="advanced || preparingOperation || operation?.kind || operation?.conflicts?.length || operationError || operationNotice"
-             class="daily-panel advanced-panel" aria-label="Git history operation">
-      <p v-if="preparingOperation" class="notice" role="status">Checking current HEAD…</p>
-      <div v-if="advanced" class="daily-controls">
+    <ConfirmationDialog v-if="pendingEditorAction" title="Unsaved file changes" @cancel="pendingEditorAction = undefined">
+      <p>Discard unsaved changes in <strong>{{ editorPath }}</strong> before {{ pendingEditorLabel }}?</p>
+      <template #actions>
+        <button data-cancel @click="pendingEditorAction = undefined">Keep editing</button>
+        <button class="danger-button" @click="discardEditorChanges">Discard changes</button>
+      </template>
+    </ConfirmationDialog>
+    <ConfirmationDialog v-if="advanced" :title="'Confirm ' + advancedLabels[advanced.action]"
+                        :busy="indexBusy" @cancel="advanced = undefined">
+      <div class="daily-controls">
         <strong>{{ advancedLabels[advanced.action] }} {{ advanced.label }} ({{ advanced.hash.slice(0, 8) }})</strong>
         <span class="muted">Current {{ refLabel(advanced.head.ref) || 'detached HEAD' }} · {{ advanced.head.hash.slice(0, 8) }}</span>
         <label v-if="advanced.action === 'reset'">Mode
@@ -1063,21 +2153,35 @@ function resizeWithKey(event: KeyboardEvent) {
             <option value="hard">Hard — discard tracked changes</option>
           </select>
         </label>
+        <label v-if="advanced.action === 'merge'">Mode
+          <select v-model="mergeMode">
+            <option value="">Merge — create a merge commit</option>
+            <option value="squash">Squash — stage changes without committing</option>
+          </select>
+        </label>
         <label v-if="advanced.action === 'reset' && resetMode === 'hard'">
           <input v-model="hardResetConfirmed" type="checkbox" /> Discard tracked changes
         </label>
         <span v-if="advanced.action === 'rebase'" class="notice">Rewrites the current branch's commits.</span>
-        <button :disabled="indexBusy" @click="advanced = undefined">Cancel</button>
-        <button :class="advanced.action === 'reset' && resetMode === 'hard' ? 'danger-button' : 'primary'"
-                :disabled="indexBusy || store.opening || (advanced.action === 'reset' && resetMode === 'hard' && !hardResetConfirmed)"
-                @click="withSavedEditor('changing Git history', () => { void runAdvanced() })">Confirm {{ advancedLabels[advanced.action] }}</button>
       </div>
+      <template v-if="advanced.targets && advanced.targets.length > 1">
+        <ol class="cherry-targets" aria-label="Commits to cherry-pick">
+          <li v-for="target in advanced.targets" :key="target.hash">
+            <code>{{ target.hash.slice(0, 8) }}</code>
+            <span class="ellipsis" :title="target.subject">{{ target.subject }}</span>
+          </li>
+        </ol>
+        <p class="notice">Applied in the order shown, oldest first. A conflict stops the sequence;
+          resolve the files, then continue or abort from the console.</p>
+      </template>
       <div v-if="advanced?.action === 'rebase'" class="rebase-plan" aria-label="Interactive rebase plan">
         <div v-for="(step, index) in rebasePlan" :key="step.commit.hash" class="rebase-step">
           <code>{{ step.commit.hash.slice(0, 8) }}</code>
           <span class="ellipsis" :title="step.commit.subject">{{ step.commit.subject }}</span>
-          <select v-model="step.action" :aria-label="'Action for ' + step.commit.hash.slice(0, 8)">
+          <select v-model="step.action" :aria-label="'Action for ' + step.commit.hash.slice(0, 8)" @change="setRebaseAction(step)">
             <option value="pick">Pick</option>
+            <option value="reword">Reword</option>
+            <option value="edit">Edit</option>
             <option value="squash">Squash</option>
             <option value="fixup">Fixup</option>
             <option value="drop">Drop</option>
@@ -1085,98 +2189,92 @@ function resizeWithKey(event: KeyboardEvent) {
           <button :disabled="index === 0" :aria-label="'Move ' + step.commit.subject + ' earlier'" @click="moveRebaseStep(index, -1)">↑</button>
           <button :disabled="index === rebasePlan.length - 1" :aria-label="'Move ' + step.commit.subject + ' later'" @click="moveRebaseStep(index, 1)">↓</button>
         </div>
+        <label v-for="step in rebasePlan" v-show="step.action === 'reword' || step.action === 'squash'"
+               :key="'msg-' + step.commit.hash" class="rebase-message">
+          Message for {{ step.commit.hash.slice(0, 8) }}
+          <textarea v-model="step.message" rows="3" spellcheck="false"
+                    :aria-label="'Commit message for ' + step.commit.hash.slice(0, 8)"
+                    :placeholder="step.commit.subject"></textarea>
+        </label>
       </div>
-      <div v-if="operation?.kind || operation?.conflicts?.length" class="daily-controls">
-        <strong>{{ operation.kind ? operation.kind + ' in progress' : 'Unmerged files' }}</strong>
-        <span class="muted">{{ operation.conflicts?.length ?? 0 }} unmerged</span>
-        <button :disabled="indexBusy" @click="openSidebar('changes')">Show Changes</button>
-        <button v-if="operation.kind" :disabled="indexBusy || !!operation.conflicts?.length"
-                @click="withSavedEditor('continuing the Git operation', () => { void finishOperation(false) })">Continue</button>
-        <button v-if="operation.kind && !confirmAbort" :disabled="indexBusy" @click="confirmAbort = true">Abort…</button>
-        <template v-if="confirmAbort">
-          <span>Discard the in-progress operation and its resolutions?</span>
-          <button @click="confirmAbort = false">Keep operation</button>
-          <button class="danger-button" :disabled="indexBusy"
-                  @click="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })">Confirm abort</button>
-        </template>
-      </div>
-      <p v-if="operationError" class="notice error" role="alert">{{ operationError }} <button @click="operationError = ''">Dismiss</button></p>
-      <p v-if="operationNotice" class="notice" role="status">{{ operationNotice }} <button @click="operationNotice = ''">Dismiss</button></p>
-    </section>
+      <template #actions>
+        <button data-cancel :disabled="indexBusy" @click="advanced = undefined">Cancel</button>
+        <button :class="advanced.action === 'reset' && resetMode === 'hard' ? 'danger-button' : 'primary'"
+                :disabled="indexBusy || store.opening || (advanced.action === 'reset' && resetMode === 'hard' && !hardResetConfirmed)"
+                @click="withSavedEditor('changing Git history', () => { void runAdvanced() })">Confirm {{ advancedLabels[advanced.action] }}</button>
+      </template>
+    </ConfirmationDialog>
     <div class="workspace">
-      <main v-if="store.repository" class="content" :class="{ 'preview-only': diffExpanded }">
-        <aside v-show="!diffExpanded" class="panel workspace-sidebar" aria-label="Repository workspace">
+      <main v-if="store.repository" ref="content" class="content" :class="{ 'preview-only': diffExpanded }"
+            :style="contentStyle">
+        <ActivityBar v-show="!diffExpanded" :active="activityActive" :history-visible="historyVisible" :busy="indexBusy"
+                     @select="onActivitySelect" @settings="openSettings" />
+        <aside v-show="!diffExpanded && !sidebarHidden" class="panel workspace-sidebar" aria-label="Repository workspace">
+          <div class="tool-title">
+            <strong>{{ sidebar === 'changes' ? 'Commit' : sidebar === 'files' ? 'Files' : 'Worktrees' }}</strong>
+            <button class="tool-hide" :disabled="indexBusy" title="Hide tool window" aria-label="Hide tool window"
+                    @click="sidebarHidden = true">
+              <AppIcon name="close" />
+            </button>
+          </div>
           <div class="sidebar-project">
             <span class="eyebrow">Repository</span>
             <strong class="ellipsis" :title="store.repository.path">{{ store.repository.name }}</strong>
           </div>
-          <nav class="sidebar-segments" aria-label="Workspace views">
-            <button v-for="tab in sidebarTabs" :key="tab.id" :aria-pressed="sidebar === tab.id"
-                    :disabled="indexBusy" @click="openSidebar(tab.id)">{{ tab.label }}</button>
+          <nav v-show="sidebar === 'changes'" class="commit-tabs" aria-label="Commit workspace">
+            <button :aria-pressed="commitTab === 'commit'" :disabled="indexBusy" @click="commitTab = 'commit'">Commit</button>
+            <button :aria-pressed="commitTab === 'shelf'" :disabled="indexBusy" @click="openShelf">Shelf</button>
           </nav>
           <RepositoryFiles v-show="sidebar === 'files'" :key="store.repository.path" :path="store.repository.path"
                            :active="sidebar === 'files' && !diffExpanded" :selected="editorPath" @open="openEditorFile" />
-          <WorkingChanges v-show="sidebar === 'changes'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
+          <WorkingChanges ref="changes-panel" v-show="sidebar === 'changes' && commitTab === 'commit'" v-model:message="commitMessage" :files="workingFiles" :active="workingView ? workingSelection?.path : undefined"
                           :error="indexError || workingError" :loading="workingLoading"
                           :can-stage="!!workingView && currentWorkingFile?.canStage" :can-unstage="!!workingView && currentWorkingFile?.canUnstage"
-                          :index-busy="indexBusy" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
-                          @select="selectWorking" @update-index="updateIndex" @commit="commitChanges"
+                          :index-busy="indexBusy || store.opening || restoringSession" :notice="commitNotice" :amend-hash="amendTarget?.hash" :can-amend="!!store.commits.length && !store.opening"
+                          :history="commitHistory"
+                          @select="selectWorking" @edit="openEditorFile" @update-index="updateIndex" @include="updateIncludedFiles" @commit="commitChanges" @commit-and-push="commitChanges(true)"
                           @start-amend="startAmend" @cancel-amend="cancelAmend" @stage-all="stageAll"
-                          :can-resolve="!!selectedConflict" @resolve="markResolved()" />
+                          :can-resolve="!!selectedConflict" @resolve="markResolved()" @ignore="ignoreFile" />
+          <StashPanel v-if="sidebar === 'changes' && commitTab === 'shelf'" :key="store.repository.path"
+                      class="shelf-panel" :path="store.repository.path" :refresh="refreshAfterDailyOperation"
+                      v-model:busy="indexBusy" @view-diff="viewStashDiff" />
           <WorktreePanel v-if="sidebar === 'worktrees'" :key="store.repository.path" :path="store.repository.path" v-model:busy="indexBusy" @open="openRepository" />
-          <aside v-show="sidebar === 'branches'" class="panel branch-panel" aria-label="Branches and tags">
-            <header class="panel-header">
-              <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
-              <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
-                      @click="openBranchForm(branchForm === 'create' ? undefined : 'create')">New…</button>
-            </header>
-            <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
-                  @submit.prevent="updateBranch(branchForm, branchName.trim())">
-              <input v-model="branchName" aria-label="New branch name" placeholder="Branch name" spellcheck="false" />
-              <small v-if="branchForm === 'create' && createBase" class="muted">From {{ createBase.slice(0, 8) }}</small>
-              <small v-if="branchForm === 'rename'" class="muted ellipsis" :title="managedBranch">Rename {{ managedBranch }}</small>
-              <button type="button" :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-              <button type="submit" :disabled="!branchName.trim() || indexBusy || (branchForm === 'create' && !createBase)">
-                {{ branchForm === 'create' ? 'Create' : 'Rename' }}
-              </button>
-            </form>
-            <div v-else-if="branchForm === 'delete'" class="new-branch" aria-label="Confirm branch deletion">
-              <p class="branch-action-label">Delete <strong>{{ managedBranch }}</strong> if it is merged into the current HEAD?</p>
-              <button :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
-              <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
-            </div>
-            <div v-else class="ref-filter">
-              <select v-model="refKind" aria-label="Reference type" @change="branchFilter = ''; navigation = ''">
-                <option value="branches">Branches</option>
-                <option value="tags">Tags</option>
-              </select>
-              <input v-model="branchFilter" aria-label="Filter branches or tags" placeholder="Filter" />
-            </div>
-            <div class="branch-scroll" @scroll.passive="closeBranchMenu()">
-              <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
-              <p v-if="branchNotice" class="notice" role="status">{{ branchNotice }}</p>
-              <p v-if="navigation" class="notice" role="status">{{ navigation }}</p>
-              <p v-if="!visibleRefs.length" class="notice">{{ branchFilter ? 'No matching references' : 'No ' + refKind + ' yet' }}</p>
-              <div v-for="item in visibleRefs" :key="item.name" class="branch-row">
-                <button class="side-item ellipsis"
-                        :class="{ active: item.name === 'refs/heads/' + store.repository.head }"
-                        :title="item.name" :aria-expanded="refKind === 'branches' ? branchMenu?.item.name === item.name : undefined"
-                        @click="refKind === 'branches' ? openBranchActions(item, $event) : jump(item.hash)"
-                        @contextmenu.prevent="refKind === 'branches' && openBranchActions(item, $event)"
-                        @keydown.shift.f10.prevent="refKind === 'branches' && openBranchActions(item, $event)">{{ refLabel(item.name) }}</button>
-              </div>
-            </div>
-          </aside>
         </aside>
-        <div ref="content" class="editor-workspace">
-          <div class="upper" :class="{ 'diff-expanded': diffExpanded }"
-               :style="{ flexBasis: diffExpanded || !historyVisible ? '100%' : previewHeight + '%' }">
+          <div v-show="!diffExpanded && !sidebarHidden" class="splitter vsplitter" role="separator" aria-orientation="vertical"
+               aria-label="Resize Commit tool window" tabindex="0"
+               @pointerdown="trackDrag" @pointermove="resizeSidebar" @keydown="resizeSidebarWithKey"></div>
+          <div v-show="!historyMaximized" class="upper" :class="{ 'diff-expanded': diffExpanded }">
             <section class="panel preview-panel" aria-label="File Preview" @keydown.esc="diffExpanded && restoreDiffLayout()">
               <header class="preview-tabs">
-                <button v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.id" :aria-pressed="view === tab.id" @click="selectView(tab.id)">{{ tab.title }}</button>
-                <button v-show="!diffExpanded" :aria-pressed="view === 'commit'" @click="selectView('commit')">Commit diff</button>
-                <button v-if="!diffExpanded && (editor || editorLoading || editorError)" :aria-pressed="view === 'editor'"
-                        @click="view = 'editor'">Editor{{ editorDirty ? ' •' : '' }}</button>
+                <div v-for="tab in editorTabs" v-show="!diffExpanded" :key="tab.path" class="editor-tab" role="tab"
+                     :class="{ active: view === 'editor' && activeEditorPath === tab.path }"
+                     :aria-selected="view === 'editor' && activeEditorPath === tab.path" tabindex="0"
+                     :title="tab.path" @click="activateEditorTab(tab.path)"
+                     @keydown.enter.prevent="activateEditorTab(tab.path)">
+                  <span class="ellipsis">{{ fileName(tab.path) }}</span>
+                  <span v-if="isTabDirty(tab)" class="editor-dirty" aria-label="Unsaved changes">•</span>
+                  <button class="editor-close" :aria-label="'Close ' + fileName(tab.path)"
+                          @click.stop="requestCloseEditorTab(tab.path)">×</button>
+                </div>
+                <div v-for="tab in workingTabs" v-show="!diffExpanded" :key="tab.path" class="editor-tab" role="tab"
+                     :class="{ active: workingView === tab.mode && workingSelection?.path === tab.path }"
+                     :aria-selected="workingView === tab.mode && workingSelection?.path === tab.path" tabindex="0"
+                     :title="tab.path" @click="activateWorkingTab(tab.path)" @keydown.enter.prevent="activateWorkingTab(tab.path)">
+                  <span class="ellipsis">{{ fileName(tab.path) }}</span>
+                  <span v-if="tab.mode !== 'working'" class="tab-mode">{{ tab.mode }}</span>
+                  <button class="editor-close" :aria-label="'Close ' + fileName(tab.path)"
+                          @click.stop="closeWorkingTab(tab.path)">×</button>
+                </div>
+                <button v-show="!diffExpanded" :aria-pressed="view === 'commit' && !activeDiffTab" @click="selectView('commit')">Commit diff</button>
+                <div v-for="tab in diffTabs" v-show="!diffExpanded" :key="tab.key" class="editor-tab" role="tab"
+                     :class="{ active: view === 'commit' && activeDiffKey === tab.key }"
+                     :aria-selected="view === 'commit' && activeDiffKey === tab.key" tabindex="0"
+                     :title="tab.path" @click="activateDiffTab(tab)"
+                     @keydown.enter.prevent="activateDiffTab(tab)">
+                  <span class="ellipsis">{{ fileName(tab.path) }}</span>
+                  <button class="editor-close" :aria-label="'Close diff ' + fileName(tab.path)"
+                          @click.stop="closeDiffTab(tab.key)">×</button>
+                </div>
                 <span class="ellipsis muted" :title="previewPath">{{ previewPath }}</span>
                 <button v-if="view === 'working' && workingSelection && preview?.kind === 'text'"
                         @click="openEditorFile(workingSelection.path)">Edit file</button>
@@ -1189,19 +2287,25 @@ function resizeWithKey(event: KeyboardEvent) {
                 <button v-if="!diffExpanded" class="history-toggle" aria-controls="history-dock" :aria-pressed="historyVisible"
                         @click="historyVisible = !historyVisible">History</button>
                 <button v-if="diffExpanded" ref="restore-diff" class="diff-size" @click="restoreDiffLayout">Restore layout</button>
-                <button v-else-if="view === 'commit' && store.file" class="diff-size" @click="maximizeDiff">Maximize diff</button>
+                <button v-else-if="view === 'commit' && (store.file || activeDiffTab)" class="diff-size" @click="maximizeDiff">Maximize diff</button>
               </header>
               <p v-if="(view === 'editor' || view === 'conflict') && editorError" class="notice error" role="alert">{{ editorError }}</p>
               <p v-if="(view === 'editor' || view === 'conflict') && editorLoading" class="notice" role="status">Opening text file…</p>
               <ConflictPanel v-if="view === 'conflict'" :path="store.repository.path" :file="conflictFile"
                              :unmerged="!!operation?.conflicts?.includes(conflictFile)" :busy="indexBusy"
                              @resolve="markResolved(conflictFile)" @close="closeConflict" />
-              <WorkspaceEditor v-if="editor" v-show="(view === 'editor' || (view === 'conflict' && editorPath === conflictFile)) && !editorLoading" :key="editorKey" :path="editorPath"
-                               :initial-content="editor.content" :dark="dark" :line-ending="editor.lineEnding" :bom="editor.bom"
-                               :dirty="editorDirty" :saving="editorSaving" :loading="editorLoading" :blocked="indexBusy || store.opening"
-                               @change="editorDraft = $event" @save="saveEditor" @reload="reloadEditor"
-                               @close="withSavedEditor('closing the editor', clearEditor)" />
-              <button v-else-if="view === 'editor' && !editorLoading" class="close-empty-editor" @click="clearEditor">Close editor</button>
+              <template v-for="tab in editorTabs" :key="tab.path">
+                <WorkspaceEditor v-show="(view === 'editor' && activeEditorPath === tab.path || view === 'conflict' && tab.path === conflictFile) && !editorLoading"
+                                 :path="tab.path" :initial-content="tab.file.content" :dark="dark"
+                                 :line-ending="tab.lineEnding ?? tab.file.lineEnding" :bom="tab.file.bom"
+                                 :dirty="isTabDirty(tab)" :saving="editorSaving"
+                                 :loading="editorLoading && activeEditorPath === tab.path" :blocked="indexBusy || store.opening"
+                                 @change="tab.draft = $event" @save="saveEditor(tab.path)" @reload="reloadEditor"
+                                 @cursor="(line, col) => editorCursors[tab.path] = { line, col }"
+                                 @line-ending="switchLineEnding(tab.path)"
+                                 @close="requestCloseEditorTab(tab.path)" />
+              </template>
+              <p v-if="view === 'editor' && !editorTabs.length && !editorLoading" class="notice">No open editor tabs. Open a file from the Changes tree or the Files panel.</p>
               <FileInspection v-if="view === 'inspection' && inspection" :path="store.repository.path" :file="inspection.file"
                               :mode="inspection.mode" @mode="inspection = { ...inspection, mode: $event }"
                               @close="closeInspection" @commit="openHistoricalCommit" />
@@ -1212,93 +2316,266 @@ function resizeWithKey(event: KeyboardEvent) {
                 <p v-if="previewLoading" class="notice" role="status">Loading file preview…</p>
                 <p v-else-if="previewError" class="notice error" role="alert">{{ previewError }}</p>
                 <pre v-else-if="preview?.kind === 'text' && view === 'working'" class="working-preview" tabindex="0"><code>{{ preview.content }}</code></pre>
+                <p v-else-if="patchTooLarge" class="notice" role="status">
+                  This diff is too large to render line by line. Open Working file to view the current contents.
+                </p>
                 <pre v-else-if="preview?.kind === 'text' && preview.content" class="working-preview patch" tabindex="0"><code><span v-for="(line, index) in patchLines" :key="index" :class="patchClass(line)">{{ line + '\n' }}</span></code></pre>
                 <p v-else-if="preview?.kind === 'text'" class="notice">{{ view === 'staged' ? 'No staged diff for this file.' : 'No tracked unstaged diff for this file. Use Working file to read untracked files.' }}</p>
                 <p v-else-if="preview?.kind === 'missing'" class="notice">This file is absent from the working tree.</p>
-                <p v-else-if="preview?.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines).</p>
-                <p v-else-if="preview?.kind === 'binary'" class="notice">Binary or non-UTF-8 file.</p>
+                <p v-else-if="preview?.kind === 'large'" class="notice">
+                  Preview limit reached (512 KiB or 12,000 lines).
+                  <button v-if="!expandedPreview" :disabled="previewLoading" @click="loadFullWorkingPreview">Load full preview (up to 8 MiB)</button>
+                  <span v-else>This file exceeds the expanded preview limit (8 MiB or 120,000 lines).</span>
+                </p>
+                <div v-else-if="preview?.kind === 'image' && isDataImage(preview.content)" class="image-preview">
+                  <img :src="preview.content" :alt="'Working copy of ' + (workingSelection?.path ?? 'file')" />
+                </div>
+                <p v-else-if="preview?.kind === 'binary' || preview?.kind === 'image'" class="notice">Binary or non-UTF-8 file.</p>
                 <p v-else-if="preview?.kind === 'special'" class="notice">This path is not a regular file.</p>
                 <p v-else class="notice">Select a working change to preview its current contents.</p>
               </template>
               <template v-else-if="view === 'commit'">
-                <p v-if="store.loadingDiff" class="notice" role="status">Loading file comparison…</p>
-                <p v-else-if="store.diffError" class="notice error" role="alert">{{ store.diffError }}</p>
-                <p v-else-if="!store.comparison" class="notice">Select a file from the commit changes below.</p>
-                <template v-else-if="store.comparison.kind === 'text' || store.comparison.kind === 'lfs'">
-                  <div v-if="store.comparison.kind === 'lfs'" class="lfs-details notice">
+                <p v-if="commitDiff.loading" class="notice" role="status">Loading file comparison…</p>
+                <p v-else-if="commitDiff.error" class="notice error" role="alert">{{ commitDiff.error }}</p>
+                <p v-else-if="!commitDiff.comparison" class="notice">{{ commitDiff.pinned ? 'This diff is no longer available.' : 'Select a file from the commit changes below.' }}</p>
+                <template v-else-if="commitDiff.comparison.kind === 'text' || commitDiff.comparison.kind === 'lfs'">
+                  <div v-if="commitDiff.comparison.kind === 'lfs'" class="lfs-details notice">
                     <strong>Git LFS pointer</strong>
                     <div v-for="side in (['before', 'after'] as const)" :key="side">
-                      <template v-if="lfsPointer(store.comparison[side])">
+                      <template v-if="lfsPointer(commitDiff.comparison[side])">
                         {{ side === 'before' ? 'Before' : 'After' }}
-                        <code>{{ lfsPointer(store.comparison[side])?.oid }}</code>
-                        · {{ lfsPointer(store.comparison[side])?.size }} bytes
+                        <code>{{ lfsPointer(commitDiff.comparison[side])?.oid }}</code>
+                        · {{ lfsPointer(commitDiff.comparison[side])?.size }} bytes
                       </template>
                     </div>
                   </div>
-                  <TextDiff :comparison="store.comparison" :path="store.file?.path ?? ''" :dark="dark" />
+                  <TextDiff :comparison="commitDiff.comparison" :path="commitDiff.path ?? ''" :dark="dark" />
                 </template>
-                <p v-else-if="store.comparison.kind === 'large'" class="notice">Preview limit reached (512 KiB or 12,000 lines per side).</p>
-                <p v-else-if="store.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
-                <div v-else-if="store.comparison.kind === 'submodule'" class="notice submodule">
+                <div v-else-if="commitDiff.comparison.kind === 'image'" class="image-diff">
+                  <figure v-for="side in imageSides" :key="side.label">
+                    <figcaption>{{ side.label }}</figcaption>
+                    <div class="image-frame">
+                      <img v-if="isDataImage(side.src)" :src="side.src" :alt="side.label + ' version of ' + (commitDiff.path ?? 'file')" />
+                      <p v-else class="notice">{{ side.src ? 'Unsupported image format.' : 'No image on this side.' }}</p>
+                    </div>
+                  </figure>
+                </div>
+                <p v-else-if="commitDiff.comparison.kind === 'large'" class="notice">
+                  Preview limit reached (512 KiB or 12,000 lines per side).
+                  <button v-if="!commitDiff.expanded" :disabled="commitDiff.loading" @click="loadFullDiff">Load full preview (up to 8 MiB)</button>
+                  <span v-else>This file exceeds the expanded preview limit (8 MiB or 120,000 lines per side).</span>
+                </p>
+                <p v-else-if="commitDiff.comparison.kind === 'binary'" class="notice">Binary or non-UTF-8 content has no text preview.</p>
+                <div v-else-if="commitDiff.comparison.kind === 'submodule'" class="notice submodule">
                   <strong>Submodule update</strong>
                   <button :disabled="indexBusy" @click="openSubmodule">Open submodule</button>
                   <p v-if="submoduleError" class="error" role="alert">{{ submoduleError }}</p>
-                  <div>Before <code>{{ store.comparison.before || '—' }}</code></div>
-                  <div>After <code>{{ store.comparison.after || '—' }}</code></div>
+                  <div>Before <code>{{ commitDiff.comparison.before || '—' }}</code></div>
+                  <div>After <code>{{ commitDiff.comparison.after || '—' }}</code></div>
                 </div>
               </template>
             </section>
           </div>
-          <div v-show="historyVisible && !diffExpanded" class="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
+          <div v-show="historyVisible && !diffExpanded && !historyMaximized" class="splitter row-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize preview and Git history"
                :aria-valuemin="28" :aria-valuemax="70" :aria-valuenow="previewHeight" tabindex="0"
                @pointerdown="split" @pointermove="resize" @keydown="resizeWithKey"></div>
-          <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower">
-            <CommitLog ref="log" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
-                       @select="view = 'commit'" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
-                       @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)" />
-            <ChangedFiles @select="view = 'commit'" @maximize="maximizeDiff" />
+          <div v-show="historyVisible && !diffExpanded" id="history-dock" class="lower panel">
+            <header class="tool-window-header">
+              <div class="tool-tabs" role="tablist" aria-label="Git tool window views">
+                <button role="tab" :aria-selected="gitTab === 'log'" @click="gitTab = 'log'">Log</button>
+                <button role="tab" :aria-selected="gitTab === 'console'" @click="gitTab = 'console'">Console</button>
+              </div>
+              <div class="tool-window-actions">
+                <button :disabled="indexBusy" :title="historyMaximized ? 'Restore tool window size' : 'Maximize tool window'"
+                        :aria-pressed="historyMaximized" @click="historyMaximized = !historyMaximized">
+                  <AppIcon :name="historyMaximized ? 'restore' : 'maximize'" />
+                </button>
+                <button :disabled="indexBusy" title="Hide Git tool window" aria-label="Hide Git tool window"
+                        @click="historyVisible = false; historyMaximized = false">
+                  <AppIcon name="close" />
+                </button>
+              </div>
+            </header>
+            <div v-show="gitTab === 'log'" class="lower-body">
+            <aside class="panel branch-panel" aria-label="Branches and tags" :style="{ width: preferences.branchesWidth + 'px' }">
+              <header class="panel-header">
+                <h2>{{ refKind === 'branches' ? 'Branches' : 'Tags' }}</h2>
+                <button v-if="refKind === 'branches'" :disabled="!store.selected || indexBusy" :aria-expanded="branchForm === 'create'"
+                        @click="openBranchForm(branchForm === 'create' ? undefined : 'create')">New…</button>
+                <button v-else :disabled="!store.selected || indexBusy" :aria-expanded="tagForm === 'create'"
+                        @click="openTagForm(tagForm === 'create' ? undefined : 'create')">New…</button>
+              </header>
+              <form v-if="branchForm === 'create' || branchForm === 'rename'" class="new-branch"
+                    @submit.prevent="updateBranch(branchForm, branchName.trim())">
+                <input v-model="branchName" aria-label="New branch name" placeholder="Branch name" spellcheck="false" />
+                <small v-if="branchForm === 'create' && createBase" class="muted">From {{ createBase.slice(0, 8) }}</small>
+                <small v-if="branchForm === 'rename'" class="muted ellipsis" :title="managedBranch">Rename {{ managedBranch }}</small>
+                <button type="button" :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
+                <button type="submit" :disabled="!branchName.trim() || indexBusy || (branchForm === 'create' && !createBase)">
+                  {{ branchForm === 'create' ? 'Create' : 'Rename' }}
+                </button>
+              </form>
+              <ConfirmationDialog v-else-if="branchForm === 'delete'" title="Confirm branch deletion"
+                                  :busy="indexBusy" @cancel="openBranchForm()">
+                <p>Delete <strong>{{ managedBranch }}</strong> if it is merged into the current HEAD?</p>
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <template #actions>
+                  <button data-cancel :disabled="indexBusy" @click="openBranchForm()">Cancel</button>
+                  <button class="danger-button" :disabled="indexBusy" @click="updateBranch('delete', managedBranch)">Delete branch</button>
+                </template>
+              </ConfirmationDialog>
+              <form v-if="tagForm === 'create'" class="new-branch" @submit.prevent="createTag()">
+                <input v-model="tagName" aria-label="New tag name" placeholder="Tag name" spellcheck="false" />
+                <input v-model="tagMessage" aria-label="Optional tag message" placeholder="Optional message (annotated)" spellcheck="false" />
+                <small v-if="tagBase" class="muted">From {{ tagBase.slice(0, 8) }}</small>
+                <button type="button" :disabled="indexBusy" @click="openTagForm()">Cancel</button>
+                <button type="submit" :disabled="!tagName.trim() || indexBusy || !tagBase">Create</button>
+              </form>
+              <ConfirmationDialog v-else-if="tagForm === 'delete'" title="Confirm tag deletion"
+                                  :busy="indexBusy" @cancel="openTagForm()">
+                <p>Delete tag <strong>{{ tagName }}</strong>? Only the local tag is removed; remote copies keep pointing at the same commit.</p>
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <template #actions>
+                  <button data-cancel :disabled="indexBusy" @click="openTagForm()">Cancel</button>
+                  <button class="danger-button" :disabled="indexBusy" @click="deleteTag(tagName)">Delete tag</button>
+                </template>
+              </ConfirmationDialog>
+              <ConfirmationDialog v-else-if="tagForm === 'push'" title="Push tag"
+                                  :busy="indexBusy" @cancel="openTagForm()">
+                <p>Push tag <strong>{{ tagName }}</strong> to the selected remote without force?</p>
+                <label>Remote
+                  <select v-model="tagRemote" :disabled="indexBusy || !tagRemotes.length">
+                    <option v-for="remote in tagRemotes" :key="remote">{{ remote }}</option>
+                  </select>
+                </label>
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <template #actions>
+                  <button data-cancel :disabled="indexBusy" @click="openTagForm()">Cancel</button>
+                  <button class="primary" :disabled="indexBusy || !tagRemote" @click="pushTag(tagName)">Push tag</button>
+                </template>
+              </ConfirmationDialog>
+              <div v-else-if="!branchForm" class="ref-filter">
+                <select v-model="refKind" aria-label="Reference type" @change="branchFilter = ''; navigation = ''">
+                  <option value="branches">Branches</option>
+                  <option value="tags">Tags</option>
+                </select>
+                <input v-model="branchFilter" aria-label="Filter branches or tags" placeholder="Filter" />
+              </div>
+              <div class="branch-scroll" @scroll.passive="closeBranchMenu(), closeTagMenu()">
+                <p v-if="branchError" class="notice error" role="alert">{{ branchError }}</p>
+                <p v-if="branchNotice" class="notice" role="status">{{ branchNotice }}</p>
+                <p v-if="navigation" class="notice" role="status">{{ navigation }}</p>
+                <p v-if="!visibleRefs.length" class="notice">{{ branchFilter ? 'No matching references' : 'No ' + refKind + ' yet' }}</p>
+                <template v-if="refKind === 'branches'">
+                  <div v-if="store.headHash && !branchFilter.trim()" class="branch-row">
+                    <button class="side-item ellipsis" @click="jump(store.headHash)">HEAD (Current Branch)</button>
+                  </div>
+                  <div v-for="row in branchRows" :key="(row.file ? 'ref:' : 'folder:') + row.path" class="branch-row"
+                       :style="{ paddingInlineStart: row.depth * 12 + 'px' }">
+                    <button v-if="row.file" class="side-item ellipsis"
+                            :class="{ active: row.file.item.name === 'refs/heads/' + store.repository.head }"
+                            :title="row.file.item.name" :aria-expanded="branchMenu?.item.name === row.file.item.name"
+                            @click="jump(row.file.item.hash)"
+                            @contextmenu.prevent="openBranchActions(row.file.item, $event)"
+                            @keydown.shift.f10.prevent="openBranchActions(row.file.item, $event)">
+                      <span v-if="row.file.item.name === 'refs/heads/' + store.repository.head" class="current-ref-marker" aria-hidden="true">●</span>{{ row.name }}<span
+                        v-if="syncBadge(row.file.item)" class="sync-badge" aria-label="Branch sync state">{{ syncBadge(row.file.item) }}</span>
+                    </button>
+                    <button v-else class="side-item ellipsis branch-folder" :disabled="!!branchFilter.trim()"
+                            :aria-expanded="!!branchFilter.trim() || !collapsedBranches.has(row.path)"
+                            @click="toggleBranchFolder(row.path)">
+                      <span aria-hidden="true">{{ !branchFilter.trim() && collapsedBranches.has(row.path) ? '▸' : '▾' }}</span> {{ row.name }}
+                    </button>
+                  </div>
+                </template>
+                <div v-else v-for="item in visibleRefs" :key="item.name" class="branch-row">
+                  <button class="side-item ellipsis" :title="item.name" :aria-expanded="tagMenu?.item.name === item.name"
+                          @click="jump(item.hash)"
+                          @contextmenu.prevent="openTagActions(item, $event)"
+                          @keydown.shift.f10.prevent="openTagActions(item, $event)">{{ refLabel(item.name) }}</button>
+                </div>
+              </div>
+            </aside>
+            <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Branches panel" tabindex="0"
+                 @pointerdown="trackDrag" @pointermove="resizeBranches" @keydown="resizeBranchesWithKey"></div>
+            <CommitLog ref="log" @refresh="refresh" :restoring="restoringSession" :pinned="pinnedCommit?.hash" :busy="indexBusy || store.opening || preparingOperation"
+                       @select="handleHistorySelect" @create-branch="createBranchFromCommit" @pin="pinCommit" @compare="compareCommit"
+                       @compare-commits="compareCommits"
+                       @operation="(action, commit) => prepareOperation(action, commit.hash, commit.subject)"
+                       @cherry-pick-many="(commits) => void cherryPickCommits(commits)"
+                       @squash-into="(commit, action) => void squashIntoParent(commit, action)" />
+            <div class="splitter vsplitter" role="separator" aria-orientation="vertical" aria-label="Resize Changed Files panel" tabindex="0"
+                 @pointerdown="trackDrag" @pointermove="resizeFiles" @keydown="resizeFilesWithKey"></div>
+            <div class="log-right" :style="{ width: preferences.filesWidth + 'px' }">
+              <ChangedFiles ref="filesPanel" @edit="openEditorFile" @select="handleHistorySelect" @open-diff="openHistoryDiff" @maximize="maximizeDiff" />
+              <div class="splitter details-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize Commit Details panel" tabindex="0"
+                   @pointerdown="trackDrag" @pointermove="resizeDetails" @keydown="resizeDetailsWithKey"></div>
+              <CommitDetails :style="{ height: preferences.detailsHeight + '%' }" />
+            </div>
+            </div>
+            <GitConsole v-show="gitTab === 'console'" class="lower-console" :preparing="preparingOperation" :operation="operation"
+                        :error="operationError" :notice="operationNotice" :busy="indexBusy || store.opening"
+                        @continue="withSavedEditor('continuing the Git operation', () => { void finishOperation(false) })"
+                        @abort="withSavedEditor('aborting the Git operation', () => { void finishOperation(true) })"
+                        @dismiss-error="operationError = ''" @dismiss-notice="operationNotice = ''" @show-changes="openSidebar('changes')" />
           </div>
-        </div>
       </main>
       <main v-else class="empty">
         <div class="brand-icon empty-icon">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.8 10.6 17.2 3l-4.4 14-3.1-5.3zM9.7 11.7 17.2 3" />
-          </svg>
+          <img :src="appIcon" alt="" />
         </div>
         <span class="eyebrow">LOCAL GIT WORKSPACE</span>
         <h1>Open a Git repository</h1>
         <p>Browse commits, inspect changed files, and compare versions side by side.</p>
         <div class="empty-actions">
           <button class="primary" :disabled="picking || store.opening || indexBusy" @click="choose">Browse for a repository</button>
+          <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('clone')">Clone from URL…</button>
           <button :disabled="store.opening || indexBusy" @click="toggleDailyPanel('init')">Initialize a project…</button>
         </div>
       </main>
     </div>
-    <div v-if="branchMenu && store.repository" ref="branch-actions" class="command-menu branch-commands"
-         :style="{ left: branchMenu.x + 'px', top: branchMenu.y + 'px' }" role="group" aria-label="Branch actions"
-         @keydown.esc.stop="closeBranchMenu(true)">
+    <ContextActions v-if="branchMenu && store.repository" :anchor="branchMenu.anchor" label="Branch actions" @close="closeBranchMenu">
       <strong class="ellipsis">{{ refLabel(branchMenu.item.name) }}</strong>
+      <button v-if="branchMenu.item.name.startsWith('refs/heads/') && branchMenu.item.name !== 'refs/heads/' + store.repository.head"
+              :disabled="indexBusy" @click="branchAction('switch')">Checkout</button>
       <button @click="branchAction('history')">Show in Git Log</button>
       <button :disabled="indexBusy" @click="branchAction('create')">New Branch from Here…</button>
+      <hr />
       <button :disabled="store.opening || !store.headHash" @click="branchAction('compare')">Compare with HEAD</button>
       <template v-if="branchMenu.item.hash !== store.headHash">
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('merge')">Merge into current branch…</button>
         <button :disabled="indexBusy || store.opening || preparingOperation" @click="branchAction('rebase')">Interactive rebase onto this…</button>
       </template>
       <template v-if="branchMenu.item.name.startsWith('refs/heads/')">
+        <hr />
         <template v-if="branchMenu.item.name === 'refs/heads/' + store.repository.head">
           <button :disabled="indexBusy" @click="branchAction('pull')">Pull…</button>
           <button :disabled="indexBusy" @click="branchAction('push')">Push…</button>
         </template>
-        <button v-else :disabled="indexBusy" @click="branchAction('switch')">Checkout</button>
         <button :disabled="indexBusy" @click="branchAction('rename')">Rename…</button>
         <button :disabled="indexBusy || branchMenu.item.name === 'refs/heads/' + store.repository.head"
                 @click="branchAction('delete')">Delete…</button>
       </template>
-    </div>
+    </ContextActions>
+    <ContextActions v-if="tagMenu && store.repository" :anchor="tagMenu.anchor" label="Tag actions" @close="closeTagMenu">
+      <strong class="ellipsis">{{ refLabel(tagMenu.item.name) }}</strong>
+      <button @click="tagAction('history')">Show in Git Log</button>
+      <button :disabled="indexBusy" @click="tagAction('checkout')">Checkout (detached HEAD)</button>
+      <button :disabled="store.opening || indexBusy" @click="tagAction('push')">Push Tag…</button>
+      <hr />
+      <button :disabled="indexBusy" @click="tagAction('delete')">Delete…</button>
+    </ContextActions>
+    <CommandPalette v-if="paletteOpen" :commands="paletteCommands" @run="runPalette" @close="closePalette" />
     <footer class="statusbar">
       <span class="ellipsis" :title="store.repository?.path">{{ store.repository ? store.repository.path + ' · ' + (store.repository.head === 'HEAD' ? 'detached HEAD' : store.repository.head) : 'No repository open' }}</span>
+      <span v-if="editorCursor" class="editor-cursor">Ln {{ editorCursor.line }}, Col {{ editorCursor.col }}</span>
+      <span v-if="activeEditorTab" class="editor-meta">
+        UTF-8{{ activeEditorTab.file.bom ? ' BOM' : '' }} ·
+        <!-- Same line-ending widget as the editor toolbar (E1). -->
+        <button class="line-ending-widget" :disabled="indexBusy || store.opening"
+                :title="'Convert line endings to ' + ((activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding) === 'CRLF' ? 'LF' : 'CRLF')"
+                @click="switchLineEnding(activeEditorPath)">{{ activeEditorTab.lineEnding ?? activeEditorTab.file.lineEnding }}</button>
+      </span>
       <span><i class="status-dot" :class="{ busy: store.opening || indexBusy }" aria-hidden="true"></i>{{ store.opening ? 'Opening…' : indexBusy ? 'Running Git…' : 'Ready' }}<template v-if="store.gitVersion"> · {{ store.gitVersion }}</template></span>
     </footer>
   </div>

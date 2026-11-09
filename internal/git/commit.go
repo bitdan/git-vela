@@ -72,3 +72,20 @@ func ReadCommitMessage(ctx context.Context, dir, hash string) (string, error) {
 		"--no-show-signature", "--encoding=UTF-8", "--format=format:%B", hash+"^{commit}", "--")
 	return string(data), err
 }
+
+// FirstParent resolves the first parent of a commit. Squash-into-parent needs
+// the grandparent as the rebase base, so the frontend resolves two levels.
+func FirstParent(ctx context.Context, dir, hash string) (string, error) {
+	if !objectID(hash) {
+		return "", errors.New("invalid commit hash")
+	}
+	data, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", hash+"^")
+	if err != nil {
+		return "", errors.New("this commit has no parent")
+	}
+	parent := strings.TrimSpace(string(data))
+	if !objectID(parent) {
+		return "", errors.New("this commit has no parent")
+	}
+	return parent, nil
+}

@@ -2,6 +2,9 @@ package git
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -70,7 +73,7 @@ func TestCherryPickConflictCanResolveContinueAndRevert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", side, head, ""); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{side}, head, ""); err == nil {
 		t.Fatal("expected cherry-pick conflict")
 	}
 	state, err := ReadOperationState(ctx, dir)
@@ -96,10 +99,10 @@ func TestCherryPickConflictCanResolveContinueAndRevert(t *testing.T) {
 	if err != nil || head.Hash == newHead.Hash {
 		t.Fatalf("cherry-pick HEAD: %+v, %v", newHead, err)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "revert", newHead.Hash, head, ""); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "revert", []string{newHead.Hash}, head, ""); err == nil {
 		t.Fatal("accepted a stale confirmation")
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "revert", newHead.Hash, newHead, ""); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "revert", []string{newHead.Hash}, newHead, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := command(t, dir, "show", "HEAD:file.txt"); got != "main\n" {
@@ -116,18 +119,18 @@ func TestResetModesProtectIgnoredFiles(t *testing.T) {
 	write(t, dir, "local.txt", "tracked at tip")
 	commit(t, dir, "tip")
 	tip, _ := ReadHead(ctx, dir)
-	if err := ApplyHistoryOperation(ctx, dir, "reset", base.Hash, tip, "soft"); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{base.Hash}, tip, "soft"); err != nil {
 		t.Fatal(err)
 	}
 	if got := command(t, dir, "diff", "--cached", "--name-only"); strings.TrimSpace(got) != "local.txt" {
 		t.Fatalf("soft reset lost staged content: %q", got)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "reset", base.Hash, base, "mixed"); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{base.Hash}, base, "mixed"); err != nil {
 		t.Fatal(err)
 	}
 	write(t, dir, ".git/info/exclude", "local.txt\n")
 	write(t, dir, "local.txt", "ignored data")
-	if err := ApplyHistoryOperation(ctx, dir, "reset", tip.Hash, base, "hard"); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{tip.Hash}, base, "hard"); err == nil {
 		t.Fatal("hard reset overwrote ignored data")
 	}
 	file, err := WorkingPreview(dir, "local.txt")
@@ -240,6 +243,145 @@ func TestInteractiveRebaseReordersCommits(t *testing.T) {
 	}
 }
 
+func TestInteractiveRebaseRewordsAndSquashes(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "root.txt", "base")
+	commit(t, dir, "base")
+	base, _ := ReadHead(ctx, dir)
+	write(t, dir, "one.txt", "one")
+	commit(t, dir, "first")
+	write(t, dir, "two.txt", "two")
+	commit(t, dir, "second")
+	write(t, dir, "three.txt", "three")
+	commit(t, dir, "third")
+	head, _ := ReadHead(ctx, dir)
+	plan, err := ReadRebasePlan(ctx, dir, base.Hash, head)
+	if err != nil || len(plan) != 3 {
+		t.Fatalf("rebase plan: %+v, %v", plan, err)
+	}
+	steps := []RebaseStep{
+		{Hash: plan[0].Hash, Action: "reword", Message: "renamed first\n\nlonger body"},
+		{Hash: plan[1].Hash, Action: "squash", Message: "first and second combined"},
+		{Hash: plan[2].Hash, Action: "pick"},
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, steps); err != nil {
+		t.Fatal(err)
+	}
+	// Squashing folds "renamed first" and "second" into one commit, so only
+	// two commits remain between base and HEAD.
+	if got := command(t, dir, "log", "-2", "--format=%s"); got != "third\nfirst and second combined\n" {
+		t.Fatalf("reword/squash subjects: %q", got)
+	}
+	if got := command(t, dir, "log", "-1", "--skip=1", "--format=%B"); got != "first and second combined\n\n" {
+		t.Fatalf("squash body: %q", got)
+	}
+	entries := strings.Split(strings.TrimSpace(command(t, dir, "ls-files", "--")), "\n")
+	sort.Strings(entries)
+	if strings.Join(entries, "\n") != "one.txt\nroot.txt\nthree.txt\ntwo.txt" {
+		t.Fatalf("squashed files: %v", entries)
+	}
+	// The reworded commit keeps its original author.
+	author := strings.TrimSpace(command(t, dir, "log", "-3", "--format=%an"))
+	if strings.Count(author, "\n") != 2 {
+		t.Fatalf("unexpected author list: %q", author)
+	}
+}
+
+func TestInteractiveRebaseEditStopsForAmend(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "root.txt", "base")
+	commit(t, dir, "base")
+	base, _ := ReadHead(ctx, dir)
+	write(t, dir, "one.txt", "one")
+	commit(t, dir, "first")
+	write(t, dir, "two.txt", "two")
+	commit(t, dir, "second")
+	head, _ := ReadHead(ctx, dir)
+	plan, err := ReadRebasePlan(ctx, dir, base.Hash, head)
+	if err != nil || len(plan) != 2 {
+		t.Fatalf("rebase plan: %+v, %v", plan, err)
+	}
+	steps := []RebaseStep{
+		{Hash: plan[0].Hash, Action: "pick"},
+		{Hash: plan[1].Hash, Action: "edit"},
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, steps); err != nil {
+		t.Fatal(err)
+	}
+	state, err := ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != "rebase" {
+		t.Fatalf("edit did not stop the rebase: %+v, %v", state, err)
+	}
+	// Amend the stopped commit, then continue the rebase.
+	write(t, dir, "two.txt", "two amended")
+	command(t, dir, "add", "--", "two.txt")
+	command(t, dir, "commit", "--amend", "--no-edit")
+	if err := FinishHistoryOperation(ctx, dir, "rebase", false); err != nil {
+		t.Fatal(err)
+	}
+	state, err = ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != "" {
+		t.Fatalf("rebase did not finish: %+v, %v", state, err)
+	}
+	if got := command(t, dir, "show", "HEAD:two.txt"); got != "two amended" {
+		t.Fatalf("amended content lost: %q", got)
+	}
+	if got := command(t, dir, "log", "-2", "--format=%s"); got != "second\nfirst\n" {
+		t.Fatalf("subjects after edit: %q", got)
+	}
+}
+
+func TestInteractiveRebaseRejectsLeadingSquash(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "root.txt", "base")
+	commit(t, dir, "base")
+	base, _ := ReadHead(ctx, dir)
+	write(t, dir, "one.txt", "one")
+	commit(t, dir, "first")
+	head, _ := ReadHead(ctx, dir)
+	plan, err := ReadRebasePlan(ctx, dir, base.Hash, head)
+	if err != nil || len(plan) != 1 {
+		t.Fatalf("rebase plan: %+v, %v", plan, err)
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, []RebaseStep{{Hash: plan[0].Hash, Action: "squash"}}); err == nil {
+		t.Fatal("squashed the only commit")
+	}
+	if err := RunInteractiveRebase(ctx, dir, base.Hash, head, []RebaseStep{{Hash: plan[0].Hash, Action: "reword"}}); err == nil {
+		t.Fatal("reword without a message must be rejected")
+	}
+}
+
+func TestCloneLocalRepository(t *testing.T) {
+	ctx := context.Background()
+	source := repository(t)
+	write(t, source, "file.txt", "content")
+	commit(t, source, "initial")
+	target := filepath.Join(t.TempDir(), "clone-target")
+	if err := Clone(ctx, source, target, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, target, "log", "-1", "--format=%s")); got != "initial" {
+		t.Fatalf("clone is missing commits: %q", got)
+	}
+	// The target is now occupied.
+	if err := Clone(ctx, source, target, ""); err == nil {
+		t.Fatal("cloned over an existing clone")
+	}
+	if err := Clone(ctx, "-evil", filepath.Join(t.TempDir(), "x"), ""); err == nil {
+		t.Fatal("accepted an option-like URL")
+	}
+	if err := Clone(ctx, source, filepath.Join(t.TempDir(), "b"), "bad..branch"); err == nil {
+		t.Fatal("accepted an invalid branch name")
+	}
+	// Cloning a branch that does not exist fails cleanly.
+	if err := Clone(ctx, source, filepath.Join(t.TempDir(), "c"), "missing"); err == nil {
+		t.Fatal("cloned a missing branch")
+	}
+}
+
 func TestOpenInitializedSubmodule(t *testing.T) {
 	ctx := context.Background()
 	child := repository(t)
@@ -286,7 +428,7 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ApplyHistoryOperation(ctx, dir, "merge", side.Hash, main, ""); err == nil {
+	if err := ApplyHistoryOperation(ctx, dir, "merge", []string{side.Hash}, main, ""); err == nil {
 		t.Fatal("expected a merge conflict")
 	}
 	state, err := ReadOperationState(ctx, dir)
@@ -301,7 +443,7 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	}
 	write(t, dir, "file.txt", "discard this\n")
 	write(t, dir, "untracked.txt", "preserve this")
-	if err := ApplyHistoryOperation(ctx, dir, "reset", base.Hash, main, "hard"); err != nil {
+	if err := ApplyHistoryOperation(ctx, dir, "reset", []string{base.Hash}, main, "hard"); err != nil {
 		t.Fatal(err)
 	}
 	preview, err := WorkingPreview(dir, "file.txt")
@@ -311,5 +453,123 @@ func TestMergeAbortAndHardReset(t *testing.T) {
 	preview, err = WorkingPreview(dir, "untracked.txt")
 	if err != nil || preview.Content != "preserve this" {
 		t.Fatalf("hard reset touched unrelated untracked data: %+v, %v", preview, err)
+	}
+}
+
+func TestCherryPickMultipleCommitsInHistoryOrder(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "base.txt", "base\n")
+	commit(t, dir, "base")
+	command(t, dir, "switch", "-c", "side")
+	for _, name := range []string{"first", "second", "third"} {
+		write(t, dir, name+".txt", name+"\n")
+		commit(t, dir, name)
+	}
+	third := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD"))
+	second := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD~1"))
+	first := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD~2"))
+	command(t, dir, "switch", "main")
+
+	head, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, first}, head, ""); err == nil {
+		t.Fatal("accepted a duplicated target")
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "revert", []string{first, second}, head, ""); err == nil {
+		t.Fatal("accepted multiple revert targets")
+	}
+	// Targets arrive oldest first; the replay keeps that order.
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, second, third}, head, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(command(t, dir, "log", "--format=%s", "-3")); got != "third\nsecond\nfirst" {
+		t.Fatalf("cherry-pick order: %q", got)
+	}
+	for _, name := range []string{"first", "second", "third"} {
+		if _, err := WorkingPreview(dir, name+".txt"); err != nil {
+			t.Fatalf("missing replayed file %s: %v", name+".txt", err)
+		}
+	}
+
+	// Replaying the same commits produces empty changes, which must not leave
+	// the sequencer stopped with no way forward.
+	picked, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, second, third}, picked, ""); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ReadHead(ctx, dir)
+	if err != nil || again.Hash != picked.Hash {
+		t.Fatalf("empty cherry-pick moved HEAD: %+v, %v", again, err)
+	}
+
+	// Merge commits need a mainline choice and stay out of the selection.
+	command(t, dir, "switch", "-c", "merged", first)
+	write(t, dir, "merged.txt", "merged\n")
+	commit(t, dir, "merged work")
+	command(t, dir, "switch", "main")
+	write(t, dir, "main.txt", "main\n")
+	commit(t, dir, "main work")
+	command(t, dir, "merge", "--no-edit", "merged")
+	mergeHash := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD"))
+	mergeHead, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{mergeHash}, mergeHead, ""); err == nil {
+		t.Fatal("accepted a merge commit")
+	}
+}
+
+func TestCherryPickMultipleContinuesAfterAConflict(t *testing.T) {
+	ctx := context.Background()
+	dir := repository(t)
+	write(t, dir, "file.txt", "base\n")
+	commit(t, dir, "base")
+	command(t, dir, "switch", "-c", "side")
+	write(t, dir, "file.txt", "side\n")
+	commit(t, dir, "side one")
+	write(t, dir, "other.txt", "other\n")
+	commit(t, dir, "side two")
+	second := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD"))
+	first := strings.TrimSpace(command(t, dir, "rev-parse", "HEAD~1"))
+	command(t, dir, "switch", "main")
+	write(t, dir, "file.txt", "main\n")
+	commit(t, dir, "main")
+
+	head, err := ReadHead(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyHistoryOperation(ctx, dir, "cherry-pick", []string{first, second}, head, ""); err == nil {
+		t.Fatal("expected the first pick to conflict")
+	}
+	state, err := ReadOperationState(ctx, dir)
+	if err != nil || state.Kind != "cherry-pick" || len(state.Conflicts) != 1 {
+		t.Fatalf("operation state after a conflicted pick: %+v, %v", state, err)
+	}
+	write(t, dir, "file.txt", "resolved\n")
+	if err := ResolveConflict(ctx, dir, "file.txt"); err != nil {
+		t.Fatal(err)
+	}
+	// Continuing must replay the remaining commit of the sequence, not just
+	// finish the conflicted one.
+	if err := FinishHistoryOperation(ctx, dir, "cherry-pick", false); err != nil {
+		t.Fatal(err)
+	}
+	subject := strings.TrimSpace(command(t, dir, "log", "-1", "--format=%s"))
+	if subject != "side two" {
+		t.Fatalf("sequence stopped after the conflict: %q", subject)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "other.txt")); err != nil {
+		t.Fatalf("the second commit was not applied: %v", err)
+	}
+	if state, err := ReadOperationState(ctx, dir); err != nil || state.Kind != "" {
+		t.Fatalf("sequencer left running: %+v, %v", state, err)
 	}
 }

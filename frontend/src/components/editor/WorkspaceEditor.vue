@@ -11,7 +11,7 @@ const props = defineProps<{
   path: string; initialContent: string; dark: boolean; lineEnding: string; bom: boolean
   dirty: boolean; saving: boolean; loading: boolean; blocked: boolean
 }>()
-const emit = defineEmits<{ change: [content: string]; save: []; reload: []; close: [] }>()
+const emit = defineEmits<{ change: [content: string]; save: []; reload: []; close: []; cursor: [line: number, col: number]; lineEnding: [ending: string] }>()
 const host = useTemplateRef<HTMLElement>('host')
 const theme = new Compartment()
 let editor: EditorView | undefined
@@ -34,6 +34,11 @@ onMounted(() => {
         ]),
         EditorView.updateListener.of(update => {
           if (update.docChanged) emit('change', update.state.doc.toString())
+          if (update.docChanged || update.selectionSet) {
+            const head = update.state.selection.main.head
+            const line = update.state.doc.lineAt(head)
+            emit('cursor', line.number, head - line.from + 1)
+          }
         }),
       ],
     }),
@@ -51,7 +56,11 @@ function find() {
 <template>
   <div class="workspace-editor">
     <div class="editor-tools">
-      <span class="muted" role="status">{{ dirty ? 'Unsaved changes' : 'Saved' }} · UTF-8{{ bom ? ' BOM' : '' }} · {{ lineEnding }}</span>
+      <span class="muted" role="status">{{ dirty ? 'Unsaved changes' : 'Saved' }} · UTF-8{{ bom ? ' BOM' : '' }} ·
+        <!-- IDEA-style line ending widget: clicking converts the file on save. -->
+        <button class="line-ending-widget" :disabled="blocked || loading"
+                :title="'Convert line endings to ' + (lineEnding === 'CRLF' ? 'LF' : 'CRLF')"
+                @click="emit('lineEnding', lineEnding === 'CRLF' ? 'LF' : 'CRLF')">{{ lineEnding }}</button></span>
       <div>
         <button @click="find">Find / Replace</button>
         <button :disabled="blocked || loading" @click="emit('reload')">Reload</button>

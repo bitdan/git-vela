@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  APP_NAME: "gitvela"
+  APP_NAME: '{{if eq (.GOOS | default OS) "windows"}}git-vela{{else}}gitvela{{end}}'
   BIN_DIR: "bin"
   PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'

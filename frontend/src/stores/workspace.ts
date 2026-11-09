@@ -1,10 +1,10 @@
 import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import { RepositoryService as api } from '../../bindings/gitvela/internal/app'
-import type { Change, Commit, Comparison, Cursor, Ref, Repository } from '../../bindings/gitvela/internal/git'
+import type { BranchSync, Change, Commit, Comparison, Cursor, Ref, Repository } from '../../bindings/gitvela/internal/git'
 import { LatestRequest } from './latestRequest'
 
-type ComparisonRange = { before: string; after: string; label: string }
+export type ComparisonRange = { before: string; after: string; label: string }
 
 const initialCursor: Cursor = { offset: 0, snapshot: '', lanes: null }
 
@@ -37,12 +37,17 @@ export const useWorkspace = defineStore('workspace', () => {
   const logError = ref('')
   const filesError = ref('')
   const diffError = ref('')
+  /** False once the open repository folder disappears; polling then stops
+   *  instead of running Git against a missing path every five seconds. */
+  const available = ref(true)
   const opening = ref(false)
   const loading = ref(false)
   const loadingFiles = ref(false)
   const loadingDiff = ref(false)
   const branchRefs = computed(() => refs.value.filter(item => /^refs\/(heads|remotes)\//.test(item.name)))
   const tagRefs = computed(() => refs.value.filter(item => item.name.startsWith('refs/tags/')))
+  const branchSync = shallowRef<BranchSync[]>([])
+  const syncRequest = new LatestRequest()
   const openRequest = new LatestRequest()
   const historyRequest = new LatestRequest()
   const filesRequest = new LatestRequest()
@@ -75,6 +80,7 @@ export const useWorkspace = defineStore('workspace', () => {
       filesRequest.clear()
       diffRequest.clear()
       repository.value = repo
+      available.value = true
       commits.value = []
       graphWidth.value = 1
       refs.value = []
@@ -92,6 +98,7 @@ export const useWorkspace = defineStore('workspace', () => {
       diffError.value = ''
       recent.value = [repo.path, ...recent.value.filter(item => item !== repo.path)].slice(0, 8)
       try { localStorage.setItem('gitvela.recent', JSON.stringify(recent.value)) } catch { /* storage unavailable */ }
+      void loadSync(repo.path)
       await loadPage(true, previous, previousRange)
     } catch (error) {
       if (current()) repoError.value = String(error)
@@ -107,6 +114,19 @@ export const useWorkspace = defineStore('workspace', () => {
       if (path) await openSelected(path)
     } catch (error) {
       repoError.value = String(error)
+    }
+  }
+
+  // Ahead/behind markers come from remote-tracking refs; they refresh with
+  // every repository reload (fetch/pull/push go through store.open).
+  async function loadSync(path: string) {
+    const call = api.BranchSync(path)
+    const current = syncRequest.replace(call)
+    try {
+      const entries = await call
+      if (current()) branchSync.value = entries ?? []
+    } catch {
+      if (current()) branchSync.value = []
     }
   }
 
@@ -178,16 +198,21 @@ export const useWorkspace = defineStore('workspace', () => {
     }
   }
 
-  async function selectFile(change: Change) {
+  async function selectFile(change: Change, expanded = false) {
     if (!repository.value || (!selected.value && !comparisonRange.value)) return
     file.value = change
     comparison.value = undefined
     diffError.value = ''
     loadingDiff.value = true
     const range = comparisonRange.value
+    const repo = repository.value.path
     const call = range
-      ? api.CompareDiff(repository.value.path, range.before, range.after, change.index)
-      : api.Diff(repository.value.path, selected.value!.hash, parent.value, change.index)
+      ? expanded
+        ? api.CompareDiffExpanded(repo, range.before, range.after, change.index)
+        : api.CompareDiff(repo, range.before, range.after, change.index)
+      : expanded
+        ? api.DiffExpanded(repo, selected.value!.hash, parent.value, change.index)
+        : api.Diff(repo, selected.value!.hash, parent.value, change.index)
     const current = diffRequest.replace(call)
     try {
       const result = await call
@@ -203,7 +228,7 @@ export const useWorkspace = defineStore('workspace', () => {
   async function checkForChanges() {
     const repo = repository.value
     const snapshot = cursor.value.snapshot
-    if (!repo || !snapshot || checking || opening.value || loading.value) return
+    if (!available.value || !repo || !snapshot || checking || opening.value || loading.value) return
     checking = true
     try {
       const current = await api.Snapshot(repo.path)
@@ -218,8 +243,8 @@ export const useWorkspace = defineStore('workspace', () => {
   }
 
   return {
-    repository, commits, branchRefs, tagRefs, graphWidth, more, selected, parent, files, file, comparison, comparisonRange, headHash,
-    recent, gitVersion, repoError, logError, filesError, diffError, opening, loading, loadingFiles, loadingDiff,
+    repository, commits, branchRefs, tagRefs, branchSync, graphWidth, more, selected, parent, files, file, comparison, comparisonRange, headHash,
+    recent, gitVersion, repoError, logError, filesError, diffError, available, opening, loading, loadingFiles, loadingDiff,
     detectGit, open, choose, loadPage, selectCommit, selectComparison, selectFile, checkForChanges,
   }
 })

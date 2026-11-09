@@ -5,6 +5,42 @@
 > **文档版本**：v1.0 · 2026-11-06  
 > **首发平台**：Windows 10/11（AMD64），预留 macOS / Linux 支持
 
+## 0. 实现状态核对（2026-11-06）
+
+> 本节记录当前仓库与 v1.0 方案的差异；路线图勾选状态见 §10。文档其余章节保留原始设计意图。
+
+**已完成**：M0、M1、M2 全部；M3 的 File History / Blame、Cherry-pick / Revert / Reset、分支与提交对比、交互式 Rebase 计划、冲突检测与 Base/Ours/Theirs 解决面板、Hunk / 行级 Stage；M4 的命令面板、可配置快捷键、会话恢复、全屏与紧凑行高、10,000 Commit 基准。
+
+**本轮新增（IDEA 对齐批次 1 / 批次 2，2026-11-08）**：
+
+- **批次 1**（`8edd0ea`）：Add to .gitignore 右键动作、状态栏/编辑器编码与换行符显示及 CRLF/LF 切换、提交消息历史下拉、Issue Navigation 链接（Commit Details 级）、Diff 标签会话持久化。
+- **批次 2**：Tag 管理（lightweight/annotated 创建、删除确认、无 force 推送、detached 检出，`internal/git/tags.go`）；Pull 策略（Fast-forward only / Merge / Rebase + Autostash，`PullOptions`）；Push 选项（annotated tags `--follow-tags`、显式 re-point upstream、force-with-lease 受保护流程——确认对话框 + 后端强制本地 remote-tracking ref）；分支面板 ↑ahead/↓behind 同步徽标（`BranchSyncCounts`）。
+- **测试**：`internal/git/tags_test.go`（tag 生命周期与 push 保护、pull 三策略与 autostash、push upstream/force-with-lease 场景、同步计数）、Vitest 51 项、`tests/batch2-smoke.mjs` 与 desktop-smoke（基础+M2+Worktree+MVP+M4，M2 段已适配 Pull 按钮并加固 amend 点击竞态）。
+
+**本轮新增（IDEA 对齐批次 3，2026-11-09）**：
+
+- **G4 交互式 rebase 补全**：计划对话框支持 Pick / Reword / Edit / Squash / Fixup / Drop；reword 与带消息的 squash 走 `pick|fixup` + `exec git commit --amend -F <临时文件>`（不打开编辑器，消息按序落盘、rebase 结束即删）；`edit` 停在提交上，由 Console 的 Continue / Abort 收尾。
+- **G8 squash**：提交右键 Squash / Fixup into parent…（以祖父提交为 rebase 基，默认消息为两条 subject 拼接，可改）；Merge 对话框新增 Squash 模式（只暂存合并结果，不创建合并提交）。
+- **G9 clone**：顶栏 `Clone…`、欢迎页与命令面板入口；校验目标目录为空、父目录存在、地址与分支名合法，10 分钟超时，成功后直接打开新仓库（`internal/git/clone.go`）。
+- **G11 stash diff**：`StashEntry.Parent`（`stash^1`）+ Shelf 面板 View Diff，按 `stash^1 → stash` 打开比较，标题 `Stash stash@{n}: <subject>`。
+- **测试**：`internal/git/advanced_test.go` 新增 reword+squash、edit 停止后 continue、首个提交禁止 squash、clone 校验；`tests/batch3-smoke.mjs` 覆盖 squash→reword→edit+continue→clone→stash diff；desktop-smoke 加固虚拟列表滚动与多选菜单重试。
+
+**本轮新增（IDEA 对齐批次 4，2026-11-09）**：
+
+- **G7 多选 cherry-pick**：`ApplyHistoryOperation` 改为接收 `[]string` 目标列表；Log 多选菜单显示 `Cherry-pick N selected…`，按历史顺序（旧→新）重放，确认对话框逐条列出提交；拒绝重复目标、合并提交（无 mainline 选择）、超过 100 条；`--empty=drop` 让已应用的提交自动跳过；中途冲突由 sequencer 保留，Console 的 Continue / Abort 可继续剩余提交（`TestCherryPickMultipleContinuesAfterAConflict`）。
+- **G10 Fetch 选项**：`FetchOptions{Prune, Tags}`；Tags 三档（指向已取对象的 tag / 全部 `--tags` / 不取 `--no-tags`），Prune 删除远端已删除分支的 remote-tracking ref（不勾选时保留 `fetch.prune` 配置语义）。Sync 面板新增 Fetch options 区域，Remotes 面板走默认值。
+- **仓库目录消失的刷新韧性**：`CheckRepositoryPath` 检测路径与 `.git` 是否仍存在；App 的 5 秒轮询在目录被删除/清空后停止，并给出一条 “The repository folder is no longer available / no longer contains a Git repository” 提示，不再每 5 秒对旧路径执行 Git 并刷告警；Worktree 面板轮询同样以 `store.available` 闸门。
+- **界面图标**：活动栏、Git 菜单、分支徽标、关闭/最大化按钮改用 Ant Design 官方线性图标（MIT，iconfont.cn 的「Ant Design 官方图标库」），路径内联在 `frontend/src/components/layout/icons.ts`，由 `AppIcon.vue` 渲染，离线可用、无图标字体依赖。
+
+**与方案的偏差（事实记录）**：
+
+- §2：未引入 Tailwind CSS 4 与 Reka UI；样式为手写 CSS + CSS Variables，菜单使用原生 `<details>` 与自研控件。
+- §2 / §9：设置与最近仓库保存在 WebView `localStorage`，未建立 `internal/settings` 的 JSON 文件层。
+- §1.3 / §14：后续迭代已实现工作区文本编辑器、GitHub 发布和交互式 Rebase 计划，超出「首版不做」清单；「不要提前实现 Push / Rebase」的阶段性约束已被后续需求取代。
+- §10 M4：多仓库同时管理、Windows 安装包 / 签名 / 自动更新、macOS / Linux 发布，以及冷启动、内存、60 FPS、10 万提交实测仍未完成；`build/config.yml` 仍是 Wails 模板占位信息。
+
+**验证（Windows 10 / Go 1.27.3 / Wails 3.1.0 / Node 24）**：`go test ./internal/...`（含 rebase/clone/多选 cherry-pick/fetch 选项/仓库可用性用例）、`go vet ./internal/... .`、`npm --prefix frontend run typecheck`、`npm --prefix frontend test`（55 项）、`wails3 generate bindings -ts -i`、`node tests/batch3-smoke.mjs`、`node tests/batch4-smoke.mjs`、`node tests/desktop-smoke.mjs`（基础 / `GITVELA_SMOKE_MVP=1` / `GITVELA_SMOKE_M4=1` / `GITVELA_SMOKE_M2_REMOTE`）均通过。注意：`go test ./...` 不要与前端测试并行运行；`GITVELA_SMOKE_M2_REMOTE` 与 `GITVELA_SMOKE_WORKTREE` 必须传**未使用**的绝对路径（脚本自建 bare/worktree，预创建会导致 peer 克隆 HEAD 悬空与 `-b` 分支冲突）；冒烟脚本不要用 `git status` 轮询 rebase 停点，`git status` 会刷新并重写 index，其瞬时 `index.lock` 会让应用的 rebase 报 "another Git process seems to be running"；`batch4-smoke` 删除打开中的仓库时会重试（Windows 上 Git 进程可能短暂占用目录）。
+
 ## 1. 项目概述
 
 ### 1.1 产品定位
@@ -51,6 +87,8 @@ GitVela 不构建工程索引，不提供语言服务器，不尝试替代 IDE�
 | 测试 | Go testing + Vitest + 端到端测试 | Git 核心、界面交互、真实仓库回归 |
 
 **技术决策**：首版不引入 `go-git`、`libgit2` 或数据库。先把 Git CLI 解析、调度和错误处理做好；在性能数据证明必要后，才替换热点读取路径。
+
+**落地偏差（2026-11-06）**：Tailwind CSS 4 与 Reka UI 未引入，实际使用手写 CSS + CSS Variables、原生 `<details>` 与少量自研控件；配置未走 JSON 文件，而是 WebView `localStorage`。其余选型（Wails 3.1.0、Go、Pinia、TanStack Virtual、CodeMirror 6 Merge、fsnotify、Canvas 图谱、系统 Git CLI）与方案一致。
 
 ## 3. 界面与交互
 
@@ -315,42 +353,43 @@ gitvela/
 
 ### M0 — 工程底座
 
-- [ ] 使用 Wails 3 Vue + TypeScript 模板初始化。
-- [ ] 配置 Pinia、主题、日志、错误边界与设置管理。
-- [ ] 实现 GitRunner，校验 `git --version`，提供仓库打开对话框。
-- [ ] 定义 Wails Service 与稳定 DTO，生成前端绑定。
-- [ ] 添加 Go 单元测试、前端类型检查与构建检查。
+- [x] 使用 Wails 3 Vue + TypeScript 模板初始化。
+- [x] 配置 Pinia、主题、日志、错误边界与设置管理（设置改为 `localStorage`）。
+- [x] 实现 GitRunner，校验 `git --version`，提供仓库打开对话框。
+- [x] 定义 Wails Service 与稳定 DTO，生成前端绑定。
+- [x] 添加 Go 单元测试、前端类型检查与构建检查。
 
 ### M1 — IDEA 风格的只读 Git MVP（第一交付目标）
 
-- [ ] 选择本地仓库，展示仓库和分支信息。
-- [ ] Git Log 列表虚拟化、增量加载、搜索。
-- [ ] 提交 DAG Lane 算法与 Canvas 绘制。
-- [ ] 选择提交查看 Changed Files（包含 Merge/根提交）。
-- [ ] CodeMirror 双栏 Diff + 文件变更导航。
-- [ ] 窗口分隔条、主题、键盘导航、布局持久化。
-- [ ] 外部操作更新后刷新状态，过期请求不会覆盖当前视图。
+- [x] 选择本地仓库，展示仓库和分支信息。
+- [x] Git Log 列表虚拟化、增量加载、搜索。
+- [x] 提交 DAG Lane 算法与 Canvas 绘制。
+- [x] 选择提交查看 Changed Files（包含 Merge/根提交）。
+- [x] CodeMirror 双栏 Diff + 文件变更导航（`Alt+Up/Down`、hunk 导航）。
+- [x] 窗口分隔条、主题、键盘导航、布局持久化。
+- [x] 外部操作更新后刷新状态，过期请求不会覆盖当前视图。
 
 ### M2 — 日常操作
 
-- [ ] Local Changes、Stage / Unstage（先整文件）。
-- [ ] Commit、Amend、Stash。
-- [ ] Create / Checkout / Delete Branch。
-- [ ] Fetch、Pull、Push（包含认证、错误反馈）。
-- [ ] Worktree 列表、创建、打开、删除。
+- [x] Local Changes、Stage / Unstage（先整文件）。
+- [x] Commit、Amend、Stash。
+- [x] Create / Checkout / Rename / Delete Branch。
+- [x] Fetch、Pull、Push（包含认证、错误反馈）。
+- [x] Worktree 列表、创建、打开、删除。
 
 ### M3 — 高级 Git
 
-- [ ] 文件历史和 Blame。
-- [ ] Cherry-pick、Revert、Reset。
-- [ ] 分支和提交对比、多提交选择。
-- [ ] 交互式 Rebase、Merge 冲突检测及三方编辑。
-- [ ] Hunk/行级 Stage、子模块和 LFS 增强支持。
+- [x] 文件历史和 Blame。
+- [x] Cherry-pick、Revert、Reset。
+- [x] 分支和提交对比；多提交选择尚未实现。
+- [x] 交互式 Rebase 计划、Merge 冲突检测与 Base/Ours/Theirs 解决面板（非完整三方 Merge 编辑器）。
+- [x] Hunk/行级 Stage、子模块跳转与 LFS 指针展示（未实现真实 LFS smudge）。
 
 ### M4 — 产品化
 
-- [ ] 大仓库性能基准、内存与冷启动分析。
-- [ ] 多仓库管理、会话恢复、命令面板与可配置快捷键。
+- [ ] 大仓库性能基准（已有 10,000 Commit 基准）、内存与冷启动分析（缺冷启动、内存、60 FPS、10 万提交实测）。
+- [x] 会话恢复、命令面板与可配置快捷键；多仓库同时管理尚未实现。
+- [x] 紧凑行高、窗口全屏（§3.3 补充项）。
 - [ ] Windows 安装/便携包、代码签名、自动更新评估。
 - [ ] macOS/Linux 兼容测试与正式发布。
 

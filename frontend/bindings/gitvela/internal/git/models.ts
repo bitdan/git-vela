@@ -16,6 +16,14 @@ export interface BlameLine {
     "uncommitted": boolean;
 }
 
+export interface BranchSync {
+    "branch": string;
+    "upstream": string;
+    "ahead": number;
+    "behind": number;
+    "gone": boolean;
+}
+
 export interface Change {
     "index": number;
     "path": string;
@@ -57,6 +65,11 @@ export interface Edge {
     "color": number;
 }
 
+export interface FetchOptions {
+    "prune": boolean;
+    "tags": string;
+}
+
 export interface FileHistoryPage {
     "commits": Commit[] | null;
     "more": boolean;
@@ -88,6 +101,12 @@ export interface HistoryFilter {
     "from": string;
     "through": string;
     "hash": string;
+    "path"?: string;
+    "regex"?: boolean;
+    "matchCase"?: boolean;
+    "sort"?: string;
+    "firstParent"?: boolean;
+    "noMerges"?: boolean;
 }
 
 export interface HunkPatch {
@@ -127,9 +146,21 @@ export interface PublishResult {
     "failure": string;
 }
 
+export interface PullOptions {
+    "mode": string;
+    "autostash": boolean;
+}
+
+export interface PushOptions {
+    "pushTags": boolean;
+    "setUpstream": boolean;
+    "forceWithLease": boolean;
+}
+
 export interface RebaseStep {
     "hash": string;
     "action": string;
+    "message"?: string;
 }
 
 export interface Ref {
@@ -149,10 +180,21 @@ export interface Repository {
     "head": string;
 }
 
+export interface RepositoryAvailability {
+    "available": boolean;
+    "reason": string;
+}
+
 export interface StashEntry {
     "selector": string;
     "hash": string;
     "subject": string;
+
+    /**
+     * Parent is the commit the stash was created on (stash^1), the "before"
+     * side of a stash diff view.
+     */
+    "parent": string;
 }
 
 export interface SyncState {

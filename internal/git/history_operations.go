@@ -73,9 +73,29 @@ func ReadOperationState(ctx context.Context, dir string) (OperationState, error)
 	return state, nil
 }
 
-func ApplyHistoryOperation(ctx context.Context, dir, action, target string, expected HeadState, mode string) error {
-	if !objectID(target) {
-		return errors.New("select a valid target commit")
+// maxCherryPickTargets bounds a multi-commit cherry-pick so the Git command
+// line stays well below the Windows limit (each hash is 40 characters).
+const maxCherryPickTargets = 100
+
+func ApplyHistoryOperation(ctx context.Context, dir, action string, targets []string, expected HeadState, mode string) error {
+	if len(targets) == 0 {
+		return errors.New("select a commit")
+	}
+	if action != "cherry-pick" && len(targets) != 1 {
+		return errors.New("this operation needs exactly one commit")
+	}
+	if len(targets) > maxCherryPickTargets {
+		return fmt.Errorf("select at most %d commits", maxCherryPickTargets)
+	}
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		if !objectID(target) {
+			return errors.New("select a valid target commit")
+		}
+		if seen[target] {
+			return errors.New("select each commit only once")
+		}
+		seen[target] = true
 	}
 	if err := checkOperationState(ctx, dir); err != nil {
 		return err
@@ -90,8 +110,10 @@ func ApplyHistoryOperation(ctx context.Context, dir, action, target string, expe
 	if head.Ref == "" {
 		return errors.New("check out a local branch before applying a history operation")
 	}
-	if _, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", target+"^{commit}"); err != nil {
-		return err
+	for _, target := range targets {
+		if _, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", target+"^{commit}"); err != nil {
+			return err
+		}
 	}
 
 	var args []string
@@ -108,33 +130,56 @@ func ApplyHistoryOperation(ctx context.Context, dir, action, target string, expe
 			return errors.New("resolve the unmerged files before resetting")
 		}
 		if mode == "hard" {
-			if err := checkUntrackedCollisions(ctx, dir, target); err != nil {
+			if err := checkUntrackedCollisions(ctx, dir, targets[0]); err != nil {
 				return err
 			}
 		}
-		args = []string{"reset", "--" + mode, "--no-recurse-submodules", target, "--"}
+		args = []string{"reset", "--" + mode, "--no-recurse-submodules", targets[0], "--"}
 	case "cherry-pick", "revert", "merge":
 		if err := requireCleanWorktree(ctx, dir); err != nil {
 			return err
 		}
 		switch action {
-		case "cherry-pick", "revert":
+		case "cherry-pick":
+			// Replay the reviewed selection in the order the caller supplied
+			// (oldest first). --empty=drop skips commits that are already
+			// applied instead of stopping the sequence with no way forward.
+			args = []string{"cherry-pick", "--no-edit", "--empty=drop"}
+			for _, target := range targets {
+				// A merge needs a mainline choice, which the UI does not offer.
+				if _, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", target+"^2"); err == nil {
+					return errors.New("this operation requires non-merge commits")
+				}
+				if err := checkUntrackedCollisions(ctx, dir, target); err != nil {
+					return err
+				}
+			}
+			args = append(args, targets...)
+		case "revert":
+			target := targets[0]
 			// The current UI handles a single parent without choosing a mainline.
 			if _, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", target+"^2"); err == nil {
 				return errors.New("this operation requires a non-merge commit")
 			}
 			collisionTree := target
-			if action == "revert" {
-				if _, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", target+"^"); err == nil {
-					collisionTree = target + "^"
-				}
+			if _, err := run(ctx, dir, nil, 4096, "rev-parse", "--verify", "--quiet", target+"^"); err == nil {
+				collisionTree = target + "^"
 			}
 			if err := checkUntrackedCollisions(ctx, dir, collisionTree); err != nil {
 				return err
 			}
 			args = []string{action, "--no-edit", target}
 		case "merge":
-			args = []string{"-c", "submodule.recurse=false", "merge", "--no-edit", "--no-autostash", "--no-overwrite-ignore", "--", target}
+			if mode != "" && mode != "squash" {
+				return errors.New("select a valid merge mode")
+			}
+			args = []string{"-c", "submodule.recurse=false", "merge", "--no-edit", "--no-autostash", "--no-overwrite-ignore"}
+			if mode == "squash" {
+				// Squash merge stages the combined change without committing;
+				// no merge commit is created and MERGE_HEAD is not written.
+				args = append(args, "--squash")
+			}
+			args = append(args, "--", targets[0])
 		}
 	default:
 		return errors.New("invalid history operation")

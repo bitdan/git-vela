@@ -12,10 +12,13 @@ type StashEntry struct {
 	Selector string `json:"selector"`
 	Hash     string `json:"hash"`
 	Subject  string `json:"subject"`
+	// Parent is the commit the stash was created on (stash^1), the "before"
+	// side of a stash diff view.
+	Parent string `json:"parent"`
 }
 
 func Stashes(ctx context.Context, dir string) ([]StashEntry, error) {
-	data, err := run(ctx, dir, nil, 4<<20, "stash", "list", "--no-color", "-z", "--format=%gd%x00%H%x00%gs")
+	data, err := run(ctx, dir, nil, 4<<20, "stash", "list", "--no-color", "-z", "--format=%gd%x00%H%x00%gs%x00%P")
 	if err != nil {
 		return nil, err
 	}
@@ -24,11 +27,16 @@ func Stashes(ctx context.Context, dir string) ([]StashEntry, error) {
 		return entries, nil
 	}
 	fields := strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
-	if len(fields)%3 != 0 {
+	if len(fields)%4 != 0 {
 		return nil, errors.New("invalid Git stash record")
 	}
-	for i := 0; i < len(fields); i += 3 {
-		entries = append(entries, StashEntry{Selector: fields[i], Hash: fields[i+1], Subject: fields[i+2]})
+	for i := 0; i < len(fields); i += 4 {
+		parent := strings.Fields(fields[i+3])
+		entry := StashEntry{Selector: fields[i], Hash: fields[i+1], Subject: fields[i+2]}
+		if len(parent) != 0 {
+			entry.Parent = parent[0]
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }

@@ -3,10 +3,12 @@ import { computed, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'v
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
 import type { BlameLine, FileHistoryPage, Commit } from '../../../bindings/gitvela/internal/git'
+import { usePreferences } from '../../stores/preferences'
 import { LatestRequest } from '../../stores/latestRequest'
 
 const props = defineProps<{ path: string; file: string; mode: 'history' | 'blame' }>()
 const emit = defineEmits<{ close: []; mode: [mode: 'history' | 'blame']; commit: [commit: Commit] }>()
+const preferences = usePreferences()
 const history = shallowRef<FileHistoryPage>()
 const blame = shallowRef<BlameLine[]>([])
 const loading = ref(false)
@@ -16,7 +18,9 @@ const scroll = useTemplateRef<HTMLElement>('scroll')
 const virtual = useVirtualizer(computed(() => ({
   count: props.mode === 'blame' ? blame.value.length : 0,
   getScrollElement: () => scroll.value,
-  estimateSize: () => 27,
+  // Keep the estimate identical to the .blame-row CSS height
+  // (--working-row-height) or the virtual scroll drifts out of view.
+  estimateSize: () => preferences.workingRowHeight,
   overscan: 12,
 })))
 const blameRows = computed(() => virtual.value.getVirtualItems().flatMap(item => {

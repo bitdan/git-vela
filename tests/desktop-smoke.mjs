@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -10,6 +10,7 @@ const repo = process.argv[2] ?? process.cwd()
 const screenshot = process.argv[3]
 const workingFile = process.argv[4]
 const testMvp = process.env.GITVELA_SMOKE_MVP === '1'
+const testM4 = process.env.GITVELA_SMOKE_M4 === '1'
 const dailyRemote = process.env.GITVELA_SMOKE_M2_REMOTE
 const worktreeTarget = process.env.GITVELA_SMOKE_WORKTREE
 const testIndex = process.argv[5] === '--index'
@@ -68,6 +69,10 @@ function cdp(method, params) {
   })
 }
 
+// Editor typing relies on the WebView having keyboard focus; a freshly
+// launched window may start unfocused, which silently swallows Input events.
+await cdp('Page.bringToFront', {})
+
 async function evaluate(expression) {
   const result = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)
@@ -81,6 +86,20 @@ const clickButton = (scope, label) => until(() => evaluate(`(() => {
   button.click()
   return true
 })()`), 'enabled button ' + label)
+
+/** Show a working change's staged/unstaged diff through the row context menu;
+ *  the fixed Working file / Unstaged / Staged buttons became per-file tabs. */
+const showWorkingDiff = async (mode, title) => {
+  await until(() => evaluate(`(() => {
+    const row = ${title
+      ? `document.querySelector('.working-row[title="' + ${JSON.stringify(title)} + '"]')`
+      : `document.querySelector('.working-row.active') ?? [...document.querySelectorAll('.working-row')].find(item => !item.classList.contains('folder-row'))`}
+    if (!row) return false
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    return true
+  })()`), 'working row for ' + (title ?? 'the selected change'))
+  await clickButton('[aria-label="Working file actions"]', mode === 'staged' ? 'Show Staged Diff' : 'Show Unstaged Diff')
+}
 
 async function gitMenuAction(label) {
   await evaluate("if (!document.querySelector('.git-menu').open) document.querySelector('.git-menu summary').click()")
@@ -105,7 +124,17 @@ const inputValue = (selector, value) => evaluate(`(() => {
   field.dispatchEvent(new Event('change', { bubbles: true }))
 })()`)
 
+let shortcutRepo
 try {
+  // Previous runs persist their selection, tool-window state and compare
+  // ranges in localStorage; the session restore then races this script's
+  // first clicks and can re-select a stale commit (seen 2026-11-08). Always
+  // start from a clean slate and navigate before touching the UI. Navigation
+  // goes through Page.navigate because calling location.reload() inside a
+  // Runtime.evaluate can deadlock the WebView2 renderer.
+  await evaluate("localStorage.clear()")
+  await cdp('Page.navigate', { url: 'http://wails.localhost:9245/' })
+  await until(() => evaluate("!!document.querySelector('.statusbar')"), 'the app to reload')
   await until(() => evaluate("document.querySelector('.statusbar')?.innerText.includes('git version')"), 'the Go Git version binding')
   await evaluate(`(() => {
     window.smokeRejections = []
@@ -123,12 +152,13 @@ try {
     const working = rect('.working-panel')
     const preview = rect('.preview-panel')
     const sidebar = rect('.workspace-sidebar')
+    const branches = rect('.branch-panel')
     const history = rect('.log-panel')
     const changes = rect('.files-panel')
     return working.left >= sidebar.left && working.right <= sidebar.right &&
       sidebar.right < preview.x && sidebar.y === preview.y &&
-      preview.bottom < history.y && history.x === preview.x && history.y === changes.y &&
-      history.right < changes.x && sidebar.bottom === history.bottom
+      preview.bottom < history.y && branches.y === history.y && history.y === changes.y &&
+      branches.right < history.x && history.right < changes.x && sidebar.bottom === preview.bottom
   })()`), true)
   assert.equal(await evaluate("document.querySelector('.shell').dataset.theme"), 'light')
   if (workingFile) {
@@ -148,9 +178,9 @@ try {
     await until(() => evaluate(buttons + ".some(button => button.innerText === 'Stage' && !button.disabled)"), 'the selected file unstaged')
   }
   if (testCommit) {
-    for (const [tab, line] of [['Staged diff', '+staged version'], ['Unstaged diff', '+working version']]) {
-      await evaluate(`[...document.querySelectorAll('.preview-tabs button')].find(button => button.innerText === ${JSON.stringify(tab)}).click()`)
-      await until(() => evaluate(`document.querySelector('.patch')?.textContent.includes(${JSON.stringify(line)})`), tab)
+    for (const [mode, line] of [['staged', '+staged version'], ['unstaged', '+working version']]) {
+      await showWorkingDiff(mode)
+      await until(() => evaluate(`document.querySelector('.patch')?.textContent.includes(${JSON.stringify(line)})`), mode + ' diff')
     }
     await evaluate(`(() => {
       const input = document.querySelector('#commit-message')
@@ -162,7 +192,7 @@ try {
     await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('Commit from desktop'))"), 'new commit in history')
   }
   if (testBranch) {
-    await clickButton('.sidebar-segments', 'Branches')
+    await gitMenuAction('Branches')
     await evaluate("document.querySelector('.branch-panel .panel-header button').click()")
     await evaluate(`(() => {
       const input = document.querySelector('[aria-label="New branch name"]')
@@ -171,15 +201,15 @@ try {
       input.form.requestSubmit()
     })()`)
     await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/feature/desktop\"]')"), 'new local branch')
-    assert.equal(await evaluate("document.querySelector('.branch-panel .active')?.textContent.trim()"), 'main')
+    assert.equal(await evaluate("document.querySelector('.branch-panel .active')?.title"), 'refs/heads/main')
     await branchMenuAction('feature/desktop', 'Checkout')
-    await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'feature/desktop'"), 'new active branch')
+    await until(() => evaluate("document.querySelector('.branch-panel .active')?.title === 'refs/heads/feature/desktop'"), 'new active branch')
   }
   if (testBranch) {
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
-    const action = (label) => evaluate(`[...document.querySelectorAll('.branch-panel .new-branch button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
+    const action = (label) => evaluate(`[...document.querySelectorAll('[aria-label="Confirm branch deletion"] button')].find(button => button.innerText === ${JSON.stringify(label)}).click()`)
     await branchMenuAction('main', 'Checkout')
-    await until(() => evaluate("document.querySelector('.branch-panel .active')?.textContent.trim() === 'main'"), 'main active again')
+    await until(() => evaluate("document.querySelector('.branch-panel .active')?.title === 'refs/heads/main'"), 'main active again')
     await branchMenuAction('feature/desktop', 'Rename…')
     await evaluate(`(() => {
       const input = document.querySelector('[aria-label="New branch name"]')
@@ -204,14 +234,13 @@ try {
     await until(() => evaluate("document.querySelector('.commit-row.active')?.innerText.includes('Initialize GitVela')"), 'tag commit selected')
   }
   if (worktreeTarget) {
-    await gitMenuAction('Branches')
     const click = (selector) => until(() => evaluate(`(() => {
       const button = document.querySelector(${JSON.stringify(selector)})
       if (!button || button.disabled) return false
       button.click()
       return true
     })()`), 'enabled worktree control ' + selector)
-    await clickButton('.sidebar-segments', 'Worktrees')
+    await gitMenuAction('Worktrees')
     await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'main worktree listed')
     await click('[aria-label="Worktrees"] .panel-header button[aria-expanded="false"]')
     await evaluate(`(() => {
@@ -232,7 +261,7 @@ try {
     await until(() => evaluate("document.querySelector('.statusbar').innerText.includes(' · main')"), 'main worktree opened again')
     await until(() => evaluate("!!document.querySelector('.worktree-row .switch-branch')"), 'remove action available')
     await click('.worktree-row .switch-branch')
-    await click('.worktree-form .danger-button')
+    await click('[aria-label="Confirm worktree removal"] .danger-button')
     await until(() => evaluate("document.querySelectorAll('.worktree-row').length === 1"), 'confirmed removal')
   }
   const alerts = await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)")
@@ -240,15 +269,20 @@ try {
 
   await until(() => evaluate(`(() => {
     const row = [...document.querySelectorAll('.commit-row')].find(row => row.innerText.includes('Initialize GitVela'))
-    if (!row) return false
-    row.click()
-    return true
+    if (row) { row.click(); return true }
+    // The log is virtualized: the first commit scrolls out of the rendered
+    // window once the repository grows past a viewport of history.
+    const scroll = document.querySelector('.log-scroll')
+    if (scroll) scroll.scrollTop = scroll.scrollHeight
+    return false
   })()`), 'the initial commit')
   await until(() => evaluate(`(() => {
-    const files = [...document.querySelectorAll('.file-row')]
-    const file = files.find(row => row.title === 'GitVela.md')
-    if (!file) return false
-    files.slice(0, 3).forEach(row => row.click())
+    const list = document.querySelector('.files-panel .file-scroll')
+    const file = list?.querySelector('.file-row[title="GitVela.md"]')
+    if (!file) {
+      if (list) list.scrollTop += list.clientHeight
+      return false
+    }
     file.click()
     return true
   })()`), 'GitVela.md in Changed Files')
@@ -258,6 +292,57 @@ try {
       editors[1].textContent.includes('GitVela') && editors[1].getAttribute('contenteditable') !== 'true'
   })()`), 'read-only side-by-side Diff with the real root blob')
 
+  // Pinned per-file diff tabs (T03/I03): double-clicking a history file opens
+  // a dedicated diff tab instead of stealing the shared preview.
+  await evaluate(`(() => {
+    const row = document.querySelector('.files-panel .file-row[title="GitVela.md"]')
+    row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))
+  })()`)
+  await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'GitVela.md' && tab.classList.contains('active'))"), 'pinned diff tab opens and activates')
+  await evaluate("[...document.querySelectorAll('.preview-tabs button')].find(button => button.innerText === 'Commit diff').click()")
+  await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].every(tab => !tab.classList.contains('active'))"), 'selection-driven tab takes over')
+  await evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].find(tab => tab.title === 'GitVela.md').click()")
+  await until(() => evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].some(tab => tab.title === 'GitVela.md' && tab.classList.contains('active'))"), 'pinned diff tab refocuses')
+  await evaluate("[...document.querySelectorAll('.preview-tabs .editor-tab')].find(tab => tab.title === 'GitVela.md').querySelector('.editor-close').click()")
+  await until(() => evaluate("document.querySelectorAll('.preview-tabs .editor-tab').length === 0"), 'pinned diff tab closes')
+
+  // Ctrl/Shift multi-selection (T06/I04): compare selected, write ops guarded.
+  await evaluate("document.querySelectorAll('.commit-row')[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))")
+  await until(() => evaluate("document.querySelectorAll('.commit-row.active').length === 1"), 'plain click resets selection')
+  await evaluate("document.querySelectorAll('.commit-row')[1].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))")
+  await until(() => evaluate("document.querySelectorAll('.commit-row.active').length === 2"), 'ctrl-click extends selection')
+  // A background reload (watcher snapshot change, five-second poll) collapses
+  // the multi-selection back to the single restored commit and closes the
+  // menu. Rebuild the selection and the menu inside the polled action so a
+  // reload in the middle of the step cannot strand it.
+  const guard = await until(() => evaluate(`(() => {
+    const buttons = [...document.querySelectorAll('[aria-label="Commit actions"] button')]
+    const compare = buttons.find(button => button.innerText.startsWith('Compare selected'))
+    if (compare && !compare.disabled) {
+      // Cherry-pick follows a multi-selection; the other rewrites must not.
+      const guarded = buttons.find(button => button.innerText === 'Revert…')?.disabled === true &&
+        buttons.find(button => button.innerText === 'Reset to here…')?.disabled === true &&
+        buttons.some(button => button.innerText.startsWith('Cherry-pick ' + document.querySelectorAll('.commit-row.active').length + ' selected'))
+      compare.click()
+      return guarded ? 'guarded' : 'unguarded'
+    }
+    // Rebuild a collapsed selection, but never re-click while two rows are
+    // still selected: a row click closes the menu, so clicking on every poll
+    // would keep it from ever rendering.
+    if (document.querySelectorAll('.commit-row.active').length !== 2) {
+      const rows = document.querySelectorAll('.commit-row')
+      if (rows.length < 2) return false
+      rows[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      rows[1].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+      return false
+    }
+    document.querySelectorAll('.commit-row.active')[1]
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    return false
+  })()`), 'compare selected available')
+  assert.equal(guard, 'guarded', 'write ops disabled on multi-selection')
+  await until(() => evaluate("document.querySelector('.files-panel .eyebrow')?.innerText === 'COMPARE REVISIONS'"), 'comparison opens from multi-selection')
+
   if (testMvp) {
     if (worktreeTarget) {
       await gitMenuAction('Branches')
@@ -265,30 +350,42 @@ try {
       await until(() => evaluate("!!document.querySelector('[title=\"refs/heads/smoke/external-metadata\"]')"), 'external branch refresh')
     }
     const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
-    await click('.log-tools button[aria-expanded="false"]')
-    await evaluate(`(() => {
-      const form = document.querySelector('.history-search')
-      const message = [...form.querySelectorAll('label')].find(label => label.textContent.trim() === 'Message').querySelector('input')
-      message.value = 'Initialize GitVela'
-      message.dispatchEvent(new Event('input', { bubbles: true }))
-      form.requestSubmit()
-    })()`)
+    const logSearch = '[aria-label="Text or hash"]'
+    await inputValue(logSearch, 'Initialize GitVela')
+    await evaluate(`document.querySelector(${JSON.stringify(logSearch)}).form.requestSubmit()`)
     await until(() => evaluate("document.querySelector('.search-results .commit-row')?.innerText.includes('Initialize GitVela')"), 'history search result')
     await evaluate("document.querySelector('.search-results .commit-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
     await until(() => evaluate("document.querySelector('[aria-label=\"Commit actions\"]')?.innerText.includes('Copy message')"), 'commit context actions')
     await evaluate("[...document.querySelectorAll('[aria-label=\"Commit actions\"] button')].find(button => button.innerText === 'Copy hash').click()")
     await until(() => evaluate("document.querySelector('.log-panel [role=status]')?.innerText === 'Hash copied.'"), 'copy hash')
-    await click('.log-tools button[aria-expanded="true"]')
+    await click('[aria-label="Clear filters"]')
+    await click('[aria-label="Sort and history options"]')
+    await clickButton('[aria-label="sort options"]', 'By Commit Date')
+    await until(() => evaluate(`!!document.querySelector('.commit-row canvas') && !!document.querySelector('[aria-label="Clear filters"]')`), 'ordered graph')
+    await click('[aria-label="Clear filters"]')
+    await clickButton('.log-toolbar', 'Paths ⌄')
+    await inputValue('[aria-label="paths options"] input', 'GitVela.md')
+    await clickButton('[aria-label="paths options"]', 'Apply')
+    await until(() => evaluate("!!document.querySelector('.search-results .commit-row')"), 'repository path filter')
+    await click('[aria-label="Clear filters"]')
+    await click('[aria-label="History display options"]')
+    await clickButton('[aria-label="view options"]', 'Hash')
+    assert.equal(await evaluate("document.querySelector('.log-heading').innerText.includes('Hash')"), false)
+    await clickButton('[aria-label="view options"]', 'Hash')
+    await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!!document.querySelector('.commit-row canvas')"), 'return to history graph')
-    await click('.preferences summary')
-    await click('.preferences-panel label:first-child input')
+    // Settings opens as a modal dialog; toggles apply live.
+    await click('.activity-bar button[aria-label="Settings"]')
+    await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog opens')
+    await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Dark theme')).querySelector('input').click()")
     await until(() => evaluate("document.querySelector('.shell').dataset.theme === 'dark'"), 'dark theme from Settings')
-    await click('.preferences-panel label:first-child input')
-    const treeWasOn = await evaluate("document.querySelector('.preferences-panel label:nth-child(2) input').checked")
-    if (!treeWasOn) await click('.preferences-panel label:nth-child(2) input')
+    await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Dark theme')).querySelector('input').click()")
+    const treeWasOn = await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('as a tree')).querySelector('input').checked")
+    if (!treeWasOn) await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('as a tree')).querySelector('input').click()")
     await until(() => evaluate("!!document.querySelector('.files-panel .folder-row')"), 'file tree from Settings')
-    if (!treeWasOn) await click('.preferences-panel label:nth-child(2) input')
-    await click('.preferences summary')
+    if (!treeWasOn) await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('as a tree')).querySelector('input').click()")
+    await click('.settings-dialog .dialog-actions button')
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed')
     await until(() => evaluate("!!document.querySelector('.diff-host .cm-editor')"), 'commit diff available')
     await click('.preview-tabs .history-toggle')
     await until(() => evaluate("getComputedStyle(document.querySelector('#history-dock')).display === 'none' && getComputedStyle(document.querySelector('.workspace-sidebar')).display !== 'none'"), 'history hidden with sidebar open')
@@ -299,9 +396,9 @@ try {
     await evaluate("document.querySelector('.preview-tabs .diff-size').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => evaluate("!document.querySelector('.upper').classList.contains('diff-expanded')"), 'restored workspace')
   }
-  await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Unified').click()")
+  await clickButton('.diff-actions', 'Unified')
   await until(() => evaluate("document.querySelectorAll('.diff-host .cm-editor').length === 1"), 'unified Diff')
-  await evaluate("Array.from(document.querySelectorAll('.diff-actions button')).find(button => button.innerText === 'Side by side').click()")
+  await clickButton('.diff-actions', 'Side by side')
   await until(() => evaluate("document.querySelectorAll('.cm-mergeView .cm-editor').length === 2"), 'side-by-side Diff restored')
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   if (dailyRemote) {
@@ -331,9 +428,16 @@ try {
     config(repo)
     git(repo, 'switch', '-c', dailyBranch)
     await text('.statusbar', dailyBranch)
-    await clickButton('.sidebar-segments', 'Changes')
-    await click('.commit-form', 'Amend…')
-    await text('.amend-warning', 'Rewrites HEAD')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
+    // Amend is an IDEA-style checkbox above the message field now. The 5s
+    // external-change poll can re-render the commit form right after the
+    // branch switch, so retry until the checkbox click sticks (2026-11-08).
+    await until(() => evaluate(`(() => {
+      const box = document.querySelector('.amend-row input')
+      if (!box || box.disabled) return false
+      if (!box.checked) box.click()
+      return !!document.querySelector('.amend-warning')
+    })()`), 'amend armed with warning')
     assert.ok(await evaluate("document.querySelector('#commit-message').value.trim().length"))
     await set('#commit-message', 'Amended through GitVela')
     await click('.commit-form', 'Amend commit')
@@ -348,13 +452,9 @@ try {
     await click('[aria-label=Stashes]', 'Save stash')
     await text('[aria-label=Stashes] [role=status]', 'Stash saved.')
     assert.equal(git(repo, 'status', '--porcelain'), '')
-    await until(() => evaluate("document.querySelector('[aria-label=Stashes] select')?.options.length === 2"), 'saved stash visible')
-    await evaluate(`(() => {
-      const select = document.querySelector('[aria-label=Stashes] select')
-      select.selectedIndex = 1
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })()`)
-    await click('[aria-label=Stashes]', 'Pop')
+    await until(() => evaluate("!!document.querySelector('.shelf-entries button')"), 'saved stash visible')
+    await evaluate("document.querySelector('.shelf-entries button').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))")
+    await click('[aria-label="Shelf actions"]', 'Pop')
     await text('[aria-label=Stashes] [role=status]', 'Stash applied and removed.')
     assert.match(git(repo, 'status', '--porcelain'), /gitvela-smoke-untracked/)
     assert.equal(git(repo, 'stash', 'list'), '')
@@ -362,11 +462,24 @@ try {
 
     git(repo, 'init', '--bare', '-b', dailyBranch, dailyRemote)
     git(repo, 'remote', 'add', 'm2-smoke', dailyRemote)
-    await gitMenuAction('Push…')
+    await writeFile(join(repo, 'commit-and-push-smoke.txt'), 'local commit before push review')
+    git(repo, 'add', '--', 'commit-and-push-smoke.txt')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
+    await set('#commit-message', 'Commit and push review')
+    await click('.commit-form', 'Commit and Push…')
+    await until(() => git(repo, 'log', '-1', '--format=%s') === 'Commit and push review', 'local commit created')
+    assert.equal(git(dailyRemote, 'for-each-ref', '--format=%(refname)', 'refs/heads'), '')
     await until(() => evaluate("[...document.querySelectorAll('[aria-label=\"Remote synchronization\"] select option')].some(option => option.value === 'm2-smoke')"), 'local test remote listed')
     await set('[aria-label="Remote synchronization"] select', 'm2-smoke')
     await click('[aria-label="Remote synchronization"]', 'Push…')
     await text('[aria-label="Confirm push"]', 'm2-smoke/' + dailyBranch)
+    await until(() => evaluate(`document.querySelector('dialog[aria-label="Confirm push"]:modal')?.contains(document.activeElement) &&
+      document.activeElement.textContent === 'Cancel'`), 'modal push review focuses Cancel')
+    await cdp('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await until(() => evaluate(`!document.querySelector('dialog[aria-label="Confirm push"]')`), 'Escape cancels the modal')
+    assert.equal(git(dailyRemote, 'for-each-ref', '--format=%(refname)', 'refs/heads'), '')
+    await click('[aria-label="Remote synchronization"]', 'Push…')
     await click('[aria-label="Confirm push"]', 'Confirm push')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Push complete')
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'm2-smoke/' + dailyBranch)
@@ -381,9 +494,10 @@ try {
     await gitMenuAction('Fetch…')
     await click('[aria-label="Remote synchronization"]', 'Fetch')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Fetched m2-smoke.')
-    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Amended through GitVela')
+    assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit and push review')
     await gitMenuAction('Pull…')
-    await click('[aria-label="Remote synchronization"]', 'Pull (fast-forward)')
+    // G3 added pull strategies; the default stays fast-forward-only.
+    await click('[aria-label="Remote synchronization"]', 'Pull')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Pull complete')
     assert.equal(git(repo, 'log', '-1', '--format=%s'), 'Commit from smoke peer')
   }
@@ -398,8 +512,16 @@ try {
         await cdp('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode, modifiers })
       }
     }
-    const editorStatus = (text) =>
-      until(() => evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText.includes(${JSON.stringify(text)})`), text)
+    const editorStatus = (text) => {
+      // Report the last observed status so a hang shows whether the editor
+      // stayed in another state or the whole page went unresponsive.
+      let last = 'unavailable'
+      return until(async () => {
+        last = await evaluate(`document.querySelector('.editor-tools [role=status]')?.innerText ?? 'missing'`)
+        return typeof last === 'string' && last.includes(text)
+      }, 'editor status ' + JSON.stringify(text))
+        .catch(error => { throw new Error(error.message + ' (last observed: ' + last + ')') })
+    }
     const enterText = async (text) => {
       await evaluate("document.querySelector('.editor-host .cm-content').focus()")
       await keyboard('a', 'KeyA', 65, 2)
@@ -410,7 +532,7 @@ try {
       await clickButton('.repository-files .file-scroll', path)
     }
 
-    await clickButton('.sidebar-segments', 'Files')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile(file)
     await editorStatus('Saved')
     await clickButton('.editor-tools', 'Find / Replace')
@@ -427,19 +549,26 @@ try {
     assert.equal(await readFile(target, 'utf8'), savedContent)
     assert.equal(git('diff', '--cached', '--name-only', '--', file), '')
 
-    await clickButton('.sidebar-segments', 'Changes')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
     await until(() => evaluate(`(() => {
       const row = document.querySelector('.working-row[title="greetservice.go"]')
       if (!row) return false
       row.click()
       return true
     })()`), 'edited file in Working Changes')
-    await clickButton('.preview-tabs', 'Unstaged diff')
+    await showWorkingDiff('unstaged', 'greetservice.go')
     await until(() => evaluate("document.querySelector('.patch')?.textContent.includes('Edited in GitVela')"), 'saved edit in Git diff')
     await clickButton('.index-actions', 'Stage')
     await until(() => git('diff', '--cached', '--name-only', '--', file) === file, 'edited file staged')
 
-    await clickButton('.preview-tabs', 'Editor')
+    // Re-activate the open editor tab and verify unsaved-draft protection.
+    await until(() => evaluate(`(() => {
+      const tab = [...document.querySelectorAll('.preview-tabs .editor-tab')]
+        .find(item => item.title.endsWith('greetservice.go'))
+      if (!tab) return false
+      tab.click()
+      return true
+    })()`), 'the open editor tab')
     await enterText('unsaved draft')
     await editorStatus('Unsaved changes')
     await writeFile(target, 'external update')
@@ -447,7 +576,7 @@ try {
     await until(() => evaluate("document.querySelector('.preview-panel [role=alert]')?.innerText.includes('changed on disk')"), 'external change blocked save')
     assert.equal(await readFile(target, 'utf8'), 'external update')
 
-    await clickButton('.sidebar-segments', 'Files')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await selectFile('README.md')
     await clickButton('[aria-label="Unsaved file changes"]', 'Keep editing')
     assert.equal(await evaluate("document.querySelector('.editor-host .cm-content')?.textContent"), 'unsaved draft')
@@ -465,6 +594,7 @@ try {
     git('config', 'user.name', 'GitVela Smoke')
     git('config', 'user.email', 'smoke@example.invalid')
     git('config', 'commit.gpgsign', 'false')
+    git('config', 'core.autocrlf', 'false')
     git('switch', '-c', 'smoke-m3')
     await writeFile(target, 'base\n')
     git('add', 'm3.txt')
@@ -477,11 +607,11 @@ try {
     git('add', 'm3-two.txt')
     git('commit', '-m', 'M3 second')
     await text('.statusbar', ' · smoke-m3')
-    await clickButton('.sidebar-segments', 'Branches')
+    await gitMenuAction('Branches')
     await branchMenuAction('smoke-m3-base', 'Interactive rebase onto this…')
     await text('.rebase-plan', 'M3 second')
     await evaluate("document.querySelector('[aria-label=\"Move M3 second earlier\"]').click()")
-    await clickButton('.advanced-panel', 'Confirm Rebase')
+    await clickButton('[aria-label="Confirm Rebase"]', 'Confirm Rebase')
     await text('.advanced-panel [role=status]', 'Rebase complete.')
     assert.equal(git('log', '-2', '--format=%s'), 'M3 first\nM3 second')
 
@@ -493,7 +623,14 @@ try {
     await writeFile(target, 'main\n')
     git('add', 'm3.txt')
     git('commit', '-m', 'M3 main')
-    await until(() => evaluate("[...document.querySelectorAll('.commit-row')].some(row => row.innerText.includes('M3 side'))"), 'side commit visible')
+    const sideHash = git('rev-parse', 'smoke-m3-side')
+    const mainHash = git('rev-parse', 'HEAD')
+    await until(() => evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.commit-row')]
+      const hasRef = (hash, ref) => rows.some(row => row.querySelector('code')?.title === hash &&
+        [...row.querySelectorAll('.chip')].some(chip => chip.title === ref))
+      return hasRef(${JSON.stringify(mainHash)}, 'HEAD') && hasRef(${JSON.stringify(sideHash)}, 'refs/heads/smoke-m3-side')
+    })()`), 'both comparison refs reflect the final fixture commits')
     await branchMenuAction('smoke-m3-side', 'Compare with HEAD')
     await text('.files-panel .commit-summary', 'HEAD → smoke-m3-side')
     await until(() => evaluate(`(() => {
@@ -512,7 +649,7 @@ try {
       .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`)
     await clickButton('[aria-label="Commit actions"]', 'Cherry-pick…')
     try {
-      await clickButton('.advanced-panel', 'Confirm Cherry-pick')
+      await clickButton('[aria-label="Confirm Cherry-pick"]', 'Confirm Cherry-pick')
     } catch (error) {
       console.error(await evaluate("document.querySelector('.advanced-panel')?.innerText || document.querySelector('.statusbar')?.innerText"))
       throw error
@@ -537,7 +674,7 @@ try {
     assert.equal(git('show', 'HEAD:m3.txt'), 'resolved')
 
     await writeFile(target, 'pending change\n')
-    await clickButton('.sidebar-segments', 'Files')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Files]').click()")
     await until(() => evaluate("!!document.querySelector('.repository-files .folder-row[aria-expanded]')"), 'default repository tree')
     await inputValue('[aria-label="Filter repository files"]', 'm3.txt')
     await clickButton('.repository-files .file-scroll', 'm3.txt')
@@ -547,19 +684,19 @@ try {
     await text('.blame-row', 'Uncommitted')
     await clickButton('.file-inspection', 'Close')
 
-    await clickButton('.sidebar-segments', 'Changes')
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
     await until(() => evaluate(`(() => {
       const row = document.querySelector('.working-row[title="m3.txt"]')
       if (!row) return false
       row.click()
       return true
     })()`), 'edited file in Changes')
-    await clickButton('.preview-tabs', 'Unstaged diff')
+    await showWorkingDiff('unstaged', 'm3.txt')
     await clickButton('.preview-tabs', 'Hunks')
     await clickButton('.hunk-panel', 'Stage hunk')
     await text('.hunk-panel [role=status]', 'Selection staged.')
     assert.equal(git('show', ':m3.txt'), 'pending change')
-    await clickButton('.preview-tabs', 'Staged diff')
+    await showWorkingDiff('staged', 'm3.txt')
     await clickButton('.preview-tabs', 'Hunks')
     await clickButton('.hunk-panel', 'Unstage hunk')
     await text('.hunk-panel [role=status]', 'Index selection unstaged.')
@@ -578,6 +715,7 @@ try {
     git('config', 'user.name', 'GitVela Smoke')
     git('config', 'user.email', 'smoke@example.invalid')
     git('config', 'commit.gpgsign', 'false')
+    git('config', 'core.autocrlf', 'false')
     await clickButton('.index-actions', 'Stage all')
     await inputValue('#commit-message', 'Initial project commit')
     await gitMenuAction('Commit…')
@@ -598,6 +736,7 @@ try {
     await clickButton('[aria-label="Confirm remote removal"]', 'Remove remote')
     await until(() => evaluate("document.querySelector('[aria-label=\"Manage remotes\"]').innerText.includes('No configured remotes.')"), 'remote removed')
     assert.equal(git('remote'), '')
+    await clickButton('[aria-label="Git Remotes"]', 'Done')
 
     await gitMenuAction('Publish to GitHub…')
     assert.equal(await evaluate("document.querySelector('[aria-label=\"Publish to GitHub\"] select').selectedIndex"), 0)
@@ -610,7 +749,233 @@ try {
     }
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
   }
-  assert.deepEqual(await evaluate("window.smokeRejections"), [])
+  if (testM4) {
+    const openContext = async (selector, label) => {
+      await until(() => evaluate(`(() => {
+        const trigger = document.querySelector(${JSON.stringify(selector)})
+        if (!trigger) return false
+        trigger.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, clientX: innerWidth - 2, clientY: innerHeight - 2,
+        }))
+        return true
+      })()`), label + ' trigger')
+      const menu = '[aria-label="' + label + '"]'
+      await until(() => evaluate(`(() => {
+        const popup = document.querySelector(${JSON.stringify(menu)})
+        if (!popup?.classList.contains('context-actions')) return false
+        const rect = popup.getBoundingClientRect()
+        return rect.right <= innerWidth && rect.bottom <= innerHeight && popup.contains(document.activeElement)
+      })()`), label + ' popup inside the viewport')
+      return menu
+    }
+    const dismissContext = async menu => {
+      await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+      await until(() => evaluate(`!document.querySelector(${JSON.stringify(menu)})`), 'context menu dismissed by Escape')
+    }
+    await dismissContext(await openContext('.commit-row.active', 'Commit actions'))
+    const changedMenu = await openContext('.files-panel .file-row:not(.folder-row)', 'Changed file actions')
+    await clickButton(changedMenu, 'Show Diff')
+    await gitMenuAction('Branches')
+    await dismissContext(await openContext('.branch-row .side-item.active', 'Branch actions'))
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Commit]').click()")
+
+    await clickButton('.commit-tabs', 'Shelf')
+    await until(() => evaluate("document.querySelector('.workspace-sidebar [aria-label=Stashes]')?.innerText.includes('Save stash')"), 'Shelf in the Commit workspace')
+    await clickButton('.commit-tabs', 'Commit')
+
+    // The configured Ctrl+K shortcut opens the command palette.
+    await evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }))")
+    await until(() => evaluate("!!document.querySelector('.palette')"), 'command palette')
+    await inputValue('[aria-label="Search commands"]', 'compact')
+    await until(() => evaluate("document.querySelector('.palette-item.active')?.innerText.includes('compact')"), 'ranked compact-row command')
+    await evaluate("document.querySelector('.palette').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))")
+    await until(() => evaluate("document.querySelector('.shell').dataset.density === 'compact'"), 'compact row density')
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.commit-row')).height"), '27px')
+
+    // Restore the comfortable layout, then rebind a shortcut through Settings.
+    await evaluate("document.querySelector('.activity-bar button[aria-label=\"Settings\"]').click()")
+    await evaluate("[...document.querySelectorAll('.settings-dialog label')].find(label => label.innerText.includes('Compact rows')).querySelector('input').click()")
+    await until(() => evaluate("document.querySelector('.shell').dataset.density === 'comfortable'"), 'comfortable row density')
+    await until(() => evaluate("document.querySelectorAll('.shortcut-group button').length >= 16"), 'editable shortcut list')
+    await evaluate(`(() => {
+      const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
+      button.click()
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true, bubbles: true }))
+    })()`)
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+Shift+P'"), 'persisted custom shortcut')
+    await clickButton('.shortcut-settings', 'Reset to defaults')
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
+
+    // Tab on a shortcut button moves focus instead of binding the Tab key.
+    await evaluate(`(() => {
+      const button = document.querySelector('[aria-label="Change shortcut for Command palette"]')
+      button.focus()
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+    })()`)
+    await until(() => evaluate("(() => { const map = JSON.parse(localStorage.getItem('gitvela.keymap') || '{}'); return !Object.values(map).includes('Tab') && !document.querySelector('.shortcut-settings .recording') })()"), 'Tab moves focus without becoming a shortcut')
+    await clickButton('.settings-dialog .dialog-actions', 'Close')
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed for repository interactions')
+
+    // Use a fresh repository with a genuinely committable index and message.
+    const tempRoot = resolve(tmpdir())
+    shortcutRepo = await mkdtemp(join(tempRoot, 'gitvela-shortcuts-'))
+    const git = (...args) => execFileSync('git', ['-C', shortcutRepo, ...args], { encoding: 'utf8' }).trim()
+    git('init', '-b', 'main')
+    git('config', 'user.name', 'GitVela Smoke')
+    git('config', 'user.email', 'smoke@example.invalid')
+    git('config', 'commit.gpgsign', 'false')
+    git('config', 'core.autocrlf', 'false')
+    git('config', 'core.hooksPath', join(shortcutRepo, '.git', 'no-hooks'))
+    const file = 'shortcut-test.txt'
+    await writeFile(join(shortcutRepo, file), 'original\n')
+    git('add', file)
+    git('commit', '-m', 'Shortcut fixture base')
+    const base = git('rev-parse', 'HEAD')
+    await writeFile(join(shortcutRepo, 'history.txt'), 'history fixture\n')
+    git('add', 'history.txt')
+    git('commit', '-m', 'Shortcut fixture latest')
+    const head = git('rev-parse', 'HEAD')
+    await writeFile(join(shortcutRepo, file), 'staged shortcut fixture\n')
+    git('add', file)
+    await writeFile(join(shortcutRepo, file), 'large working change\n'.repeat(22000))
+    assert.equal(git('diff', '--cached', '--name-only'), file)
+    await inputValue('[aria-label="Repository path"]', shortcutRepo)
+    await evaluate(`document.querySelector('[aria-label="Repository path"]').form.requestSubmit()`)
+    await until(() => evaluate(`document.querySelector('.working-row[title="shortcut-test.txt"]')`), 'temporary staged file')
+    const workingMenu = await openContext('.working-row[title="shortcut-test.txt"]', 'Working file actions')
+    await clickButton(workingMenu, 'Show Staged Diff')
+    await until(() => evaluate("document.querySelector('.patch')?.textContent.includes('+staged shortcut fixture')"), 'staged diff from working file context menu')
+    await mkdir(join(shortcutRepo, 'unchecked'))
+    await writeFile(join(shortcutRepo, 'unchecked', 'keep.txt'), 'leave this out\n')
+    const toggleCheck = async (label, checked) => {
+      await until(() => evaluate(`(() => {
+        const box = document.querySelector(${JSON.stringify('input[aria-label="' + label + '"]')})
+        if (!box || box.disabled || box.checked === ${checked}) return false
+        box.click()
+        return true
+      })()`), label + ' checkbox')
+    }
+    await toggleCheck('Include folder unchecked in commit', true)
+    await until(() => git('diff', '--cached', '--name-only').includes('unchecked/keep.txt'), 'folder contents staged')
+    await toggleCheck('Include unchecked/keep.txt in commit', false)
+    await until(() => git('diff', '--cached', '--name-only') === file, 'unchecked file removed from index')
+    await until(() => evaluate(`document.querySelector('input[aria-label="Include all changes in commit"]').indeterminate`), 'mixed root checkbox')
+    await toggleCheck('Include all changes in commit', true)
+    await until(() => git('diff', '--cached', '--name-only').includes('unchecked/keep.txt'), 'remaining file staged by root checkbox')
+    assert.equal(git('show', ':' + file), 'staged shortcut fixture', 'root selection preserves partial staging')
+    await toggleCheck('Include unchecked/keep.txt in commit', false)
+    await until(() => git('diff', '--cached', '--name-only') === file, 'only checked file left staged')
+    const bindCommit = async (binding, key, modifiers = {}) => {
+      await evaluate(`(() => {
+        const button = document.querySelector('[aria-label="Change shortcut for Focus commit message"]')
+        button.click()
+        button.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key, ...modifiers, bubbles: true })}))
+      })()`)
+      await until(() => evaluate(`JSON.parse(localStorage.getItem('gitvela.keymap')).commit === ${JSON.stringify(binding)}`), 'commit binding ' + binding)
+    }
+    const pressCommitField = (key, modifiers = {}) => evaluate(`(() => {
+      const field = document.getElementById('commit-message')
+      field.focus()
+      return field.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key, ...modifiers, bubbles: true, cancelable: true })}))
+    })()`)
+    // Bind every chord in one settings session, then close the dialog: the
+    // modal traps focus, so the commit field interactions below need it gone.
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened for shortcuts')
+    await bindCommit('A', 'a')
+    await bindCommit('Enter', 'Enter')
+    await bindCommit('Shift+A', 'A', { shiftKey: true })
+    await bindCommit('Ctrl+Shift+S', 's', { ctrlKey: true, shiftKey: true })
+    await clickButton('.settings-dialog .dialog-actions', 'Close')
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed for page interactions')
+    const message = 'Shortcut integration commit'
+    await inputValue('#commit-message', message)
+    await until(() => evaluate("!!document.querySelector('#commit-message')?.form.querySelector('button[type=submit]:enabled')"), 'enabled commit')
+    for (const [binding, key, code, typed, modifiers] of [
+      ['A', 'a', 'KeyA', 'a', 0],
+      ['Enter', 'Enter', 'Enter', '\n', 0],
+      ['Shift+A', 'A', 'KeyA', 'A', 8],
+    ]) {
+      assert.equal(await pressCommitField(key, { shiftKey: modifiers === 8 }), true, binding + ' must keep normal text input behavior')
+      await evaluate("document.getElementById('commit-message').setSelectionRange(1000, 1000)")
+      await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key, code, text: key === 'Enter' ? '\r' : typed, modifiers })
+      await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers })
+      await until(() => evaluate(`document.getElementById('commit-message').value === ${JSON.stringify(message + typed)}`), binding + ' inserts text')
+      assert.equal(git('rev-parse', 'HEAD'), head)
+      assert.equal(git('diff', '--cached', '--name-only'), file)
+      await inputValue('#commit-message', message)
+    }
+    assert.equal(await pressCommitField('Enter', { ctrlKey: true }), true, 'old binding must not submit')
+    assert.equal(git('rev-parse', 'HEAD'), head)
+    assert.equal(await pressCommitField('s', { ctrlKey: true, shiftKey: true }), false, 'configured chord must dispatch')
+    await until(() => git('rev-parse', 'HEAD') !== head, 'real commit from configured chord')
+    assert.equal(git('log', '-1', '--format=%s'), 'Shortcut integration commit')
+    assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), file)
+    assert.equal(git('diff', '--cached', '--name-only'), '')
+    // Reopen Settings to restore the default shortcuts.
+    await evaluate("document.querySelector('.activity-bar button[aria-label=Settings]').click()")
+    await until(() => evaluate("!!document.querySelector('.settings-dialog[open]')"), 'settings dialog reopened')
+    await clickButton('.shortcut-settings', 'Reset to defaults')
+    await until(() => evaluate("JSON.parse(localStorage.getItem('gitvela.keymap') || '{}').palette === 'Ctrl+K'"), 'default shortcut restored')
+    await evaluate("document.querySelector('.settings-dialog .dialog-actions button').click()")
+    await until(() => evaluate("!document.querySelector('.settings-dialog')"), 'settings dialog closed after shortcut reset')
+
+    // Reload the WebView and inspect actual session writes, including any
+    // intermediate state that might otherwise be overwritten by the last save.
+    const restoreWorkingDiff = async (view, tab, historyFile, range) => {
+      const session = {
+        path: shortcutRepo, hash: base, file: historyFile, workingFile: file,
+        sidebar: 'changes', view, historyVisible: false, range, smokeMarker: true,
+      }
+      const writes = []
+      const monitor = ({ data }) => {
+        const { method, params } = JSON.parse(data)
+        if (method === 'DOMStorage.domStorageItemUpdated' && params.key === 'gitvela.session') {
+          const saved = JSON.parse(params.newValue)
+          if (!saved.smokeMarker) writes.push(saved)
+        }
+      }
+      socket.addEventListener('message', monitor)
+      try {
+        await evaluate(`(() => {
+          localStorage.setItem('gitvela.session', ${JSON.stringify(JSON.stringify(session))})
+          location.reload()
+        })()`)
+        await until(() => evaluate(`(() => {
+          const tab = document.querySelector('.preview-tabs .editor-tab.active')
+          return tab?.title === 'shortcut-test.txt' && tab.innerText.includes(${JSON.stringify(view)})
+        })()`), 'restored working file and ' + view + ' tab')
+        await until(() => writes.length > 0, 'restored session saved')
+        for (const saved of writes) {
+          assert.equal(saved.hash, base)
+          assert.equal(saved.file, historyFile)
+          assert.equal(saved.workingFile, file)
+          assert.equal(saved.view, view)
+          assert.equal(saved.historyVisible, false)
+          assert.deepEqual(saved.range, range)
+        }
+      } finally {
+        socket.removeEventListener('message', monitor)
+      }
+    }
+
+    assert.deepEqual(await evaluate('window.smokeRejections'), [])
+    await cdp('DOMStorage.enable', {})
+    await restoreWorkingDiff('unstaged', 'Unstaged diff', file)
+    await clickButton('.preview-panel', 'Load full preview (up to 8 MiB)')
+    await until(() => evaluate("document.querySelector('.preview-panel').innerText.includes('too large to render line by line')"), 'large working diff fallback')
+    assert.equal(await evaluate("document.querySelectorAll('.patch span').length"), 0)
+
+    git('add', file)
+    await restoreWorkingDiff('staged', 'Staged diff', 'history.txt', {
+      before: base, after: head, label: 'Saved comparison',
+    })
+
+    // Session state is persisted after opening a repository.
+    await until(() => evaluate("(() => { const saved = JSON.parse(localStorage.getItem('gitvela.session') || 'null'); return !!saved && typeof saved.path === 'string' && saved.path.length > 0 })()"), 'saved session')
+    assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('[role=alert]'), node => node.innerText)"), [])
+  }
+  if (!testM4) assert.deepEqual(await evaluate("window.smokeRejections"), [])
   if (screenshot) {
     const image = await cdp('Page.captureScreenshot', { format: 'png' })
     await writeFile(screenshot, Buffer.from(image.data, 'base64'))
@@ -622,6 +987,19 @@ try {
   if (dailyRemote) console.log('Amend, stash save and pop, and remote push, fetch, and pull passed.')
   if (worktreeTarget) console.log('Worktree creation, switching, and removal passed.')
   if (testMvp) console.log('History search, commit actions, settings, file tree, and diff maximization passed.')
+  if (testM4) console.log('Command palette, configurable shortcuts, compact rows, and session persistence passed.')
 } finally {
-  socket.close()
+  const tempRoot = resolve(tmpdir())
+  try {
+    if (shortcutRepo && resolve(shortcutRepo).startsWith(tempRoot + sep + 'gitvela-shortcuts-')) {
+      // Switch away so the Windows repository watcher releases its handles.
+      await inputValue('[aria-label="Repository path"]', repo)
+      await evaluate(`document.querySelector('[aria-label="Repository path"]').form.requestSubmit()`)
+      await rm(shortcutRepo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+    }
+  } catch (error) {
+    console.warn('Could not remove temporary shortcut fixture:', error.message)
+  } finally {
+    socket.close()
+  }
 }

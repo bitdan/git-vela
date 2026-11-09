@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmationDialog from '../layout/ConfirmationDialog.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
@@ -37,6 +38,10 @@ const destination = computed<Destination | undefined>(() => {
 })
 
 const confirmation = ref<Destination>()
+const pullMode = ref<'ff' | 'merge' | 'rebase'>('ff')
+const pullAutostash = ref(false)
+const fetchOptions = ref<{ prune: boolean; tags: '' | 'all' | 'none' }>({ prune: false, tags: '' })
+const pushOptions = ref({ pushTags: false, setUpstream: false, forceWithLease: false })
 watch(() => props.intent, () => { confirmation.value = undefined })
 watch(selectedRemote, () => { confirmation.value = undefined })
 watch(() => props.head, () => {
@@ -89,14 +94,17 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
   confirmation.value = undefined
   try {
     if (operation === 'fetch') {
-      await api.FetchRemote(props.path, remote)
+      await api.FetchRemote(props.path, remote, fetchOptions.value)
       notice.value = 'Fetched ' + remote + '.'
     } else if (target && operation === 'pull') {
-      await api.PullUpstream(props.path, target.branch, target.remote, target.target)
+      await api.PullUpstream(props.path, target.branch, target.remote, target.target,
+        { mode: pullMode.value, autostash: pullAutostash.value })
       notice.value = 'Pull complete from ' + target.remote + '/' + target.target + '.'
     } else if (target) {
-      await api.PushBranch(props.path, target.branch, target.remote, target.target)
+      await api.PushBranch(props.path, target.branch, target.remote, target.target,
+        { ...pushOptions.value })
       notice.value = 'Push complete to ' + target.remote + '/' + target.target + '.'
+      pushOptions.value = { pushTags: false, setUpstream: false, forceWithLease: false }
     }
   } catch (cause) {
     error.value = String(cause)
@@ -121,19 +129,50 @@ async function run(operation: 'fetch' | 'pull' | 'push') {
           <option v-for="remote in state?.remotes" :key="remote">{{ remote }}</option>
         </select>
       </label>
+      <fieldset v-if="intent === 'fetch'" class="pull-options" :disabled="busy || loading || !!loadError">
+        <legend>Fetch options</legend>
+        <label><input type="checkbox" v-model="fetchOptions.prune" /> Prune remote-tracking branches deleted on the remote</label>
+        <label>Tags
+          <select v-model="fetchOptions.tags">
+            <option value="">Tags pointing to fetched commits</option>
+            <option value="all">All tags</option>
+            <option value="none">No tags</option>
+          </select>
+        </label>
+      </fieldset>
       <button v-if="intent === 'fetch'" :disabled="busy || loading || !!loadError || !selectedRemote" @click="run('fetch')">Fetch</button>
-      <button v-if="intent === 'pull'" :disabled="busy || loading || !!loadError || !upstream" @click="run('pull')">Pull (fast-forward)</button>
+      <fieldset v-if="intent === 'pull'" class="pull-options" :disabled="busy || loading || !upstream">
+        <legend>Pull strategy</legend>
+        <label><input type="radio" value="ff" v-model="pullMode" /> Fast-forward only</label>
+        <label><input type="radio" value="merge" v-model="pullMode" /> Merge</label>
+        <label><input type="radio" value="rebase" v-model="pullMode" /> Rebase</label>
+        <label><input type="checkbox" v-model="pullAutostash" /> Autostash local changes</label>
+      </fieldset>
+      <button v-if="intent === 'pull'" :disabled="busy || loading || !!loadError || !upstream" @click="run('pull')">Pull</button>
       <button v-if="intent === 'push'" :disabled="busy || loading || !!loadError || !destination" :aria-expanded="!!confirmation"
               @click="confirmation = destination">Push…</button>
       <button :disabled="busy || loading" @click="load">Reload targets</button>
     </div>
-    <p v-if="confirmation" class="daily-confirm" role="group" aria-label="Confirm push">
+    <ConfirmationDialog v-if="confirmation" title="Confirm push" :busy="busy" @cancel="confirmation = undefined">
       <span>Push <strong>{{ confirmation.branch }}</strong> to <strong>{{ confirmation.remote }}/{{ confirmation.target }}</strong>?
         <template v-if="!upstream">This sets the branch upstream.</template>
       </span>
-      <button @click="confirmation = undefined">Cancel</button>
-      <button class="primary" :disabled="busy || loading || !!loadError" @click="run('push')">Confirm push</button>
-    </p>
+      <label class="push-option"><input type="checkbox" v-model="pushOptions.pushTags" :disabled="busy" />
+        Push annotated tags reachable from these commits</label>
+      <label v-if="upstream" class="push-option"><input type="checkbox" v-model="pushOptions.setUpstream" :disabled="busy" />
+        Re-point the upstream to {{ confirmation.remote }}/{{ confirmation.target }}</label>
+      <label class="push-option"><input type="checkbox" v-model="pushOptions.forceWithLease" :disabled="busy" />
+        Force overwrite the remote branch (force-with-lease)</label>
+      <p v-if="pushOptions.forceWithLease" class="notice error" role="alert">
+        Force overwrites commits on {{ confirmation.remote }}/{{ confirmation.target }} that this clone has not fetched.
+        Only use it after rewriting local history; the lease is taken against the last fetched state.
+      </p>
+      <template #actions>
+        <button data-cancel :disabled="busy" @click="confirmation = undefined">Cancel</button>
+        <button class="primary" :class="{ 'danger-button': pushOptions.forceWithLease }" :disabled="busy || loading || !!loadError"
+                @click="run('push')">{{ pushOptions.forceWithLease ? 'Force push (lease)' : 'Confirm push' }}</button>
+      </template>
+    </ConfirmationDialog>
     <p v-if="running || loading" class="notice" role="status">{{ running || 'Reading Git remotes…' }}</p>
     <p v-if="error || loadError" class="notice error" role="alert">{{ error || loadError }}</p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>

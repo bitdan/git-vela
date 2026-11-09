@@ -100,6 +100,13 @@ func readHistory(ctx context.Context, dir string, cursor Cursor, filter *History
 	format := "--format=%H%x00%P%x00%an%x00%at%x00%s"
 	args := []string{"log", "--topo-order", "--no-show-signature", "--no-notes", "--encoding=UTF-8", "-z"}
 	if filter != nil {
+		switch filter.Sort {
+		case "", "topological":
+		case "date":
+			args[1] = "--date-order"
+		default:
+			return page, errors.New("invalid history sort")
+		}
 		format = "--format=%H%x00%P%x00%an%x00%ct%x00%s"
 		options, err := filter.options()
 		if err != nil {
@@ -109,7 +116,7 @@ func readHistory(ctx context.Context, dir string, cursor Cursor, filter *History
 		if filter.Branch != "" {
 			revisions = ""
 			for _, ref := range page.Refs {
-				if ref.Name == filter.Branch && (strings.HasPrefix(ref.Name, "refs/heads/") || strings.HasPrefix(ref.Name, "refs/remotes/")) {
+				if ref.Name == filter.Branch && (ref.Name == "HEAD" || strings.HasPrefix(ref.Name, "refs/heads/") || strings.HasPrefix(ref.Name, "refs/remotes/") || strings.HasPrefix(ref.Name, "refs/tags/")) {
 					revisions = ref.Hash + "\n"
 					break
 				}
@@ -130,6 +137,13 @@ func readHistory(ctx context.Context, dir string, cursor Cursor, filter *History
 		return page, nil
 	}
 	args = append(args, format, "--skip="+strconv.Itoa(cursor.Offset), "-n", strconv.Itoa(pageSize+1), "--stdin", "--")
+	if filter != nil && filter.Path != "" {
+		pathspec, err := filter.pathspec()
+		if err != nil {
+			return page, err
+		}
+		args = append(args, pathspec)
+	}
 	data, err = run(ctx, dir, []byte(revisions), 8<<20, args...)
 	if err != nil {
 		return page, err
@@ -139,7 +153,7 @@ func readHistory(ctx context.Context, dir string, cursor Cursor, filter *History
 		return page, err
 	}
 	page.Next.Offset = cursor.Offset + len(page.Commits)
-	if filter == nil {
+	if filter == nil || filter.graph() {
 		page.Next.Lanes = layout(page.Commits, cursor.Lanes)
 	}
 	return page, nil

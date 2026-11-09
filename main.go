@@ -11,11 +11,15 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed build/appicon.png
+var appIcon []byte
+
 var windowsOptions application.WindowsOptions
 
 func main() {
 	desktop := application.New(application.Options{
 		Name:        "GitVela",
+		Icon:        appIcon,
 		Description: "Browse local Git history and compare changes",
 		Services:    []application.Service{application.NewService(&app.RepositoryService{})},
 		Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(assets)},

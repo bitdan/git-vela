@@ -3,18 +3,18 @@ import { useTemplateRef, watchPostEffect } from 'vue'
 import { usePreferences } from '../../stores/preferences'
 import type { GraphRow } from '../../../bindings/gitvela/internal/git'
 
-const props = defineProps<{ row: GraphRow; width: number }>()
+const props = defineProps<{ row: GraphRow; width: number; height: number }>()
 const canvas = useTemplateRef<HTMLCanvasElement>('canvas')
 const preferences = usePreferences()
 const lightPalette = ['#326cc2', '#27866b', '#805db8', '#ae6a2c', '#ab5279', '#397f9d', '#618532']
 const darkPalette = ['#86b0f1', '#71bfa7', '#b79be0', '#d4a067', '#db91ad', '#71b4cb', '#a7c375']
-const height = 34
 const x = (lane: number) => lane * 13 + 12
 
 watchPostEffect(() => {
   const element = canvas.value
   const ctx = element?.getContext('2d')
   if (!element || !ctx) return
+  const height = props.height
   const ratio = window.devicePixelRatio || 1
   element.width = Math.ceil(props.width * ratio)
   element.height = Math.ceil(height * ratio)
@@ -42,5 +42,5 @@ watchPostEffect(() => {
 </script>
 
 <template>
-  <canvas ref="canvas" aria-hidden="true" :style="{ width: width + 'px', height: '34px' }" />
+  <canvas ref="canvas" aria-hidden="true" :style="{ width: width + 'px', height: height + 'px' }" />
 </template>

@@ -43,7 +43,13 @@ func OpenTextFile(ctx context.Context, dir, path string) (TextFile, error) {
 	return file, err
 }
 
-func SaveTextFile(ctx context.Context, dir, path, revision, content string) (string, error) {
+// SaveTextFile writes content with the safe-revision protocol. An empty
+// lineEnding keeps the file's current endings; "LF" or "CRLF" converts the
+// stored file on save (the editor edits normalized LF text either way).
+func SaveTextFile(ctx context.Context, dir, path, revision, content, lineEnding string) (string, error) {
+	if lineEnding != "" && lineEnding != "LF" && lineEnding != "CRLF" {
+		return "", errors.New("unsupported line ending; use LF or CRLF")
+	}
 	if len(content) > previewBytes || strings.Count(content, "\n") > previewLines {
 		return "", errors.New("text exceeds the editor limit")
 	}
@@ -66,11 +72,15 @@ func SaveTextFile(ctx context.Context, dir, path, revision, content string) (str
 	if info.Mode().Perm()&0222 == 0 {
 		return "", errors.New("the working file is read-only")
 	}
-	if content == file.Content {
+	effective := file.LineEnding
+	if lineEnding != "" {
+		effective = lineEnding
+	}
+	if content == file.Content && effective == file.LineEnding {
 		return revision, nil
 	}
 
-	if file.LineEnding == "CRLF" {
+	if effective == "CRLF" {
 		content = strings.ReplaceAll(content, "\n", "\r\n")
 	}
 	if file.BOM {

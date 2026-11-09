@@ -7,11 +7,13 @@
 		"0409": {
 			"FileVersion": "0.1.0",
 			"ProductVersion": "0.1.0",
-			"CompanyName": "My Company",
-			"FileDescription": "A gitvela application",
-			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "GitVela",
-			"Comments": "This is a comment"
+			"CompanyName": "GitVela",
+			"FileDescription": "git-vela",
+			"LegalCopyright": "(c) 2026 GitVela",
+			"ProductName": "git-vela",
+			"OriginalFilename": "git-vela.exe",
+			"InternalName": "git-vela",
+			"Comments": "Browse commits, changed files and diffs in a local Git repository"
 		}
 	}
 }

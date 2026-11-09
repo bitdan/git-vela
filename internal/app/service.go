@@ -96,12 +96,21 @@ func (*RepositoryService) Diff(ctx context.Context, path, commit string, parent,
 	return discardCancelled(git.Diff(ctx, path, commit, parent, git.Change{Index: file}))
 }
 
+// DiffExpanded is only called after the user confirms loading a large preview.
+func (*RepositoryService) DiffExpanded(ctx context.Context, path, commit string, parent, file int) (git.Comparison, error) {
+	return discardCancelled(git.DiffExpanded(ctx, path, commit, parent, git.Change{Index: file}))
+}
+
 func (*RepositoryService) WorkingChanges(ctx context.Context, path string) ([]git.WorkingFile, error) {
 	return discardCancelled(git.WorkingChanges(ctx, path))
 }
 
 func (*RepositoryService) WorkingPreview(path, file string) (git.FilePreview, error) {
 	return git.WorkingPreview(path, file)
+}
+
+func (*RepositoryService) WorkingPreviewExpanded(path, file string) (git.FilePreview, error) {
+	return git.WorkingPreviewExpanded(path, file)
 }
 
 func (s *RepositoryService) SetStaged(ctx context.Context, path, file string, staged bool) error {
@@ -115,6 +124,10 @@ func (s *RepositoryService) SetStaged(ctx context.Context, path, file string, st
 
 func (*RepositoryService) WorkingDiff(ctx context.Context, path, file string, staged bool) (git.FilePreview, error) {
 	return discardCancelled(git.WorkingDiff(ctx, path, file, staged))
+}
+
+func (*RepositoryService) WorkingDiffExpanded(ctx context.Context, path, file string, staged bool) (git.FilePreview, error) {
+	return discardCancelled(git.WorkingDiffExpanded(ctx, path, file, staged))
 }
 
 func (s *RepositoryService) CommitIndex(ctx context.Context, path, message string) error {
@@ -192,6 +205,10 @@ func (*RepositoryService) CommitMessage(ctx context.Context, path, hash string) 
 	return discardCancelled(git.ReadCommitMessage(ctx, path, hash))
 }
 
+func (*RepositoryService) FirstParent(ctx context.Context, path, hash string) (string, error) {
+	return discardCancelled(git.FirstParent(ctx, path, hash))
+}
+
 func (s *RepositoryService) write(ctx context.Context, action func() error) error {
 	s.indexWrite.Lock()
 	defer s.indexWrite.Unlock()
@@ -225,16 +242,40 @@ func (*RepositoryService) SyncState(ctx context.Context, path string) (git.SyncS
 	return discardCancelled(git.ReadSyncState(ctx, path))
 }
 
-func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string) error {
-	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote) })
+func (*RepositoryService) CheckRepositoryPath(path string) git.RepositoryAvailability {
+	return git.CheckRepositoryPath(path)
 }
 
-func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string) error {
-	return s.write(ctx, func() error { return git.PullUpstream(ctx, path, branch, remote, target) })
+func (s *RepositoryService) FetchRemote(ctx context.Context, path, remote string, options git.FetchOptions) error {
+	return s.write(ctx, func() error { return git.FetchRemote(ctx, path, remote, options) })
 }
 
-func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string) error {
-	return s.write(ctx, func() error { return git.PushBranch(ctx, path, branch, remote, target) })
+func (s *RepositoryService) PullUpstream(ctx context.Context, path, branch, remote, target string, options git.PullOptions) error {
+	return s.write(ctx, func() error { return git.PullUpstream(ctx, path, branch, remote, target, options) })
+}
+
+func (s *RepositoryService) PushBranch(ctx context.Context, path, branch, remote, target string, options git.PushOptions) error {
+	return s.write(ctx, func() error { return git.PushBranch(ctx, path, branch, remote, target, options) })
+}
+
+func (*RepositoryService) BranchSync(ctx context.Context, path string) ([]git.BranchSync, error) {
+	return discardCancelled(git.BranchSyncCounts(ctx, path))
+}
+
+func (s *RepositoryService) CreateTag(ctx context.Context, path, name, commit, message string) error {
+	return s.write(ctx, func() error { return git.CreateTag(ctx, path, name, commit, message) })
+}
+
+func (s *RepositoryService) DeleteTag(ctx context.Context, path, name string) error {
+	return s.write(ctx, func() error { return git.DeleteTag(ctx, path, name) })
+}
+
+func (s *RepositoryService) PushTag(ctx context.Context, path, remote, name string) error {
+	return s.write(ctx, func() error { return git.PushTag(ctx, path, remote, name) })
+}
+
+func (s *RepositoryService) CheckoutTag(ctx context.Context, path, name string) error {
+	return s.write(ctx, func() error { return git.CheckoutTag(ctx, path, name) })
 }
 
 func (s *RepositoryService) Initialize(ctx context.Context, path string) (git.Repository, error) {
@@ -245,6 +286,16 @@ func (s *RepositoryService) Initialize(ctx context.Context, path string) (git.Re
 		return err
 	})
 	return repo, err
+}
+
+// Clone copies a repository from a URL or path into dir and opens it. The
+// network operation runs outside the repository write lock: it touches only
+// the new target directory.
+func (*RepositoryService) Clone(ctx context.Context, address, dir, branch string) (git.Repository, error) {
+	if err := git.Clone(ctx, address, dir, branch); err != nil {
+		return git.Repository{}, err
+	}
+	return git.Open(ctx, dir)
 }
 
 func (s *RepositoryService) StageAll(ctx context.Context, path string) error {
@@ -289,14 +340,24 @@ func (*RepositoryService) OpenTextFile(ctx context.Context, path, file string) (
 	return discardCancelled(git.OpenTextFile(ctx, path, file))
 }
 
-func (s *RepositoryService) SaveTextFile(ctx context.Context, path, file, revision, content string) (string, error) {
+func (s *RepositoryService) SaveTextFile(ctx context.Context, path, file, revision, content, lineEnding string) (string, error) {
 	var updated string
 	err := s.write(ctx, func() error {
 		var err error
-		updated, err = git.SaveTextFile(ctx, path, file, revision, content)
+		updated, err = git.SaveTextFile(ctx, path, file, revision, content, lineEnding)
 		return err
 	})
 	return updated, err
+}
+
+func (s *RepositoryService) AddToGitignore(ctx context.Context, path, file string) (bool, error) {
+	var changed bool
+	err := s.write(ctx, func() error {
+		var err error
+		changed, err = git.AddToGitignore(ctx, path, file)
+		return err
+	})
+	return changed, err
 }
 
 func (*RepositoryService) FileHistory(ctx context.Context, path, file string) (git.FileHistoryPage, error) {
@@ -315,6 +376,10 @@ func (*RepositoryService) CompareDiff(ctx context.Context, path, before, after s
 	return discardCancelled(git.CompareDiff(ctx, path, before, after, index))
 }
 
+func (*RepositoryService) CompareDiffExpanded(ctx context.Context, path, before, after string, index int) (git.Comparison, error) {
+	return discardCancelled(git.CompareDiffExpanded(ctx, path, before, after, index))
+}
+
 func (*RepositoryService) ReadHead(ctx context.Context, path string) (git.HeadState, error) {
 	return discardCancelled(git.ReadHead(ctx, path))
 }
@@ -323,8 +388,8 @@ func (*RepositoryService) OperationState(ctx context.Context, path string) (git.
 	return discardCancelled(git.ReadOperationState(ctx, path))
 }
 
-func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, action, target string, expected git.HeadState, mode string) error {
-	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, target, expected, mode) })
+func (s *RepositoryService) ApplyHistoryOperation(ctx context.Context, path, action string, targets []string, expected git.HeadState, mode string) error {
+	return s.write(ctx, func() error { return git.ApplyHistoryOperation(ctx, path, action, targets, expected, mode) })
 }
 
 func (s *RepositoryService) FinishHistoryOperation(ctx context.Context, path, kind string, abort bool) error {

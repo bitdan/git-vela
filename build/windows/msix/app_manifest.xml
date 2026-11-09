@@ -29,7 +29,7 @@
   </Resources>
   
   <Applications>
-    <Application Id="com.example.gitvela" Executable="gitvela.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="com.example.gitvela" Executable="git-vela.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="GitVela"
         Description="A gitvela application"
@@ -41,7 +41,7 @@
       </uap:VisualElements>
       
       <Extensions>
-        <desktop:Extension Category="windows.fullTrustProcess" Executable="gitvela.exe" />
+        <desktop:Extension Category="windows.fullTrustProcess" Executable="git-vela.exe" />
         
         
       </Extensions>

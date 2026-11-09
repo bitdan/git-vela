@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ConfirmationDialog from '../layout/ConfirmationDialog.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Browser, Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
@@ -16,6 +17,8 @@ const notice = ref('')
 const form = ref<'add' | 'edit' | 'remove'>()
 const remoteName = ref('')
 const address = ref('')
+const originalAddress = ref('')
+const fetchRemote = ref(true)
 const account = ref('')
 const repoName = ref(props.name.replace(/[^a-zA-Z0-9_.-]/g, '-'))
 const privateRepo = ref(true)
@@ -57,8 +60,10 @@ onUnmounted(() => {
 
 function openForm(action?: typeof form.value, remote?: RemoteInfo) {
   form.value = action
-  remoteName.value = remote?.name ?? ''
-  address.value = ''
+  remoteName.value = remote?.name ?? (action === 'add' && !remotes.value.some(item => item.name === 'origin') ? 'origin' : '')
+  originalAddress.value = action === 'edit' ? remote?.fetchUrl.split('\n')[0] ?? '' : ''
+  address.value = originalAddress.value
+  fetchRemote.value = true
   error.value = ''
   notice.value = ''
 }
@@ -68,15 +73,27 @@ async function changeRemote() {
   const name = remoteName.value.trim()
   const url = address.value.trim()
   if (busy.value || !action || !name || (action !== 'remove' && !url)) return
+  const shouldFetch = action !== 'remove' && fetchRemote.value
+  // The list shows sanitized URLs. Preserve the stored URL when the field was left as shown.
+  const urlChanged = action === 'edit' && url !== originalAddress.value
   busy.value = true
   error.value = ''
   notice.value = ''
   try {
     if (action === 'add') await api.AddRemote(props.path, name, url)
-    else if (action === 'edit') await api.SetRemoteURL(props.path, name, url)
-    else await api.RemoveRemote(props.path, name)
+    else if (action === 'remove') await api.RemoveRemote(props.path, name)
+    else if (urlChanged) await api.SetRemoteURL(props.path, name, url)
+
     openForm()
-    notice.value = { add: 'Added ', edit: 'Updated ', remove: 'Removed ' }[action] + name + '.'
+    notice.value = { add: 'Added ', edit: urlChanged ? 'Updated ' : 'Kept ', remove: 'Removed ' }[action] + name + '.'
+    if (shouldFetch) {
+      try {
+        await api.FetchRemote(props.path, name, { prune: false, tags: '' })
+        notice.value += ' Successfully fetched ' + name + '.'
+      } catch (cause) {
+        error.value = 'Fetch failed for ' + name + ': ' + String(cause)
+      }
+    }
     await Promise.all([load(), props.refresh()])
   } catch (cause) {
     error.value = String(cause)
@@ -144,11 +161,13 @@ async function openResult(url: string) {
         </label>
         <button :disabled="busy || !canPublish || !account || !repoName.trim()" @click="confirming = true">Review publication</button>
       </div>
-      <p v-if="confirming" class="daily-confirm" role="group" aria-label="Confirm GitHub publication">
-        <span>Create <strong>{{ account }}/{{ repoName.trim() }}</strong> as {{ privateRepo ? 'private' : 'public' }} and push the committed history of <strong>{{ branch }}</strong>?</span>
-        <button @click="confirming = false">Cancel</button>
-        <button class="primary" :disabled="busy || !canPublish" @click="publishProject">Create and push</button>
-      </p>
+      <ConfirmationDialog v-if="confirming" title="Confirm GitHub publication" :busy="busy" @cancel="confirming = false">
+        <p>Create <strong>{{ account }}/{{ repoName.trim() }}</strong> as {{ privateRepo ? 'private' : 'public' }} and push the committed history of <strong>{{ branch }}</strong>?</p>
+        <template #actions>
+          <button data-cancel :disabled="busy" @click="confirming = false">Cancel</button>
+          <button class="primary" :disabled="busy || !canPublish" @click="publishProject">Create and push</button>
+        </template>
+      </ConfirmationDialog>
       <p v-if="result" class="notice" role="status">
         {{ result.pushed ? 'Published to GitHub.' : result.remoteAdded ? 'GitHub repository created and origin added.' : 'GitHub repository created.' }}
         <a :href="result.url" @click.prevent="openResult(result.url)">{{ result.url }}</a>
@@ -162,21 +181,33 @@ async function openResult(url: string) {
     </template>
     <template v-else>
       <div class="daily-controls">
-        <h2>Manage remotes</h2>
         <button :disabled="busy" @click="openForm('add')">Add remote…</button>
         <button :disabled="busy || loading" @click="load">Reload remotes</button>
       </div>
-      <form v-if="form === 'add' || form === 'edit'" class="daily-controls" @submit.prevent="changeRemote">
-        <label>Name <input v-model="remoteName" :disabled="busy || form === 'edit'" placeholder="origin" /></label>
-        <label>Fetch URL <input v-model="address" :disabled="busy" placeholder="https://github.com/owner/project.git" /></label>
-        <button type="button" :disabled="busy" @click="openForm()">Cancel</button>
-        <button type="submit" :disabled="busy || !remoteName.trim() || !address.trim()">{{ form === 'add' ? 'Add' : 'Save URL' }}</button>
-      </form>
-      <p v-else-if="form === 'remove'" class="daily-confirm" role="group" aria-label="Confirm remote removal">
-        <span>Remove the local configuration and tracking refs for <strong>{{ remoteName }}</strong>?</span>
-        <button :disabled="busy" @click="openForm()">Cancel</button>
-        <button class="danger-button" :disabled="busy" @click="changeRemote">Remove remote</button>
-      </p>
+      <ConfirmationDialog v-if="form === 'add' || form === 'edit'" class="remote-definition-dialog"
+                          :title="form === 'add' ? 'Define Remote' : 'Edit Remote'" :busy="busy" @cancel="openForm()">
+        <form id="remote-definition" class="remote-definition" @submit.prevent="changeRemote">
+          <label>Name: <input v-model="remoteName" name="name" :disabled="busy" :readonly="form === 'edit'"
+                             placeholder="origin" spellcheck="false" /></label>
+          <label>URL: <input v-model="address" name="url" data-initial-focus :disabled="busy"
+                            placeholder="https://github.com/owner/project.git" spellcheck="false" /></label>
+          <label class="remote-fetch"><input v-model="fetchRemote" type="checkbox" :disabled="busy" /> Fetch remote</label>
+          <p v-if="error" class="notice error" role="alert">{{ error }}</p>
+        </form>
+        <template #actions>
+          <button class="primary" type="submit" form="remote-definition"
+                  :disabled="busy || !remoteName.trim() || !address.trim()">OK</button>
+          <button type="button" data-cancel :disabled="busy" @click="openForm()">Cancel</button>
+        </template>
+      </ConfirmationDialog>
+      <ConfirmationDialog v-if="form === 'remove'" title="Confirm remote removal" :busy="busy" @cancel="openForm()">
+        <p>Remove the local configuration and tracking refs for <strong>{{ remoteName }}</strong>?</p>
+        <p v-if="error" class="notice error" role="alert">{{ error }}</p>
+        <template #actions>
+          <button data-cancel :disabled="busy" @click="openForm()">Cancel</button>
+          <button class="danger-button" :disabled="busy" @click="changeRemote">Remove remote</button>
+        </template>
+      </ConfirmationDialog>
       <p v-if="!remotes.length && !loading && !loadError" class="notice">No configured remotes.</p>
       <div v-for="remote in remotes" :key="remote.name" class="remote-row">
         <strong>{{ remote.name }}</strong>
@@ -187,7 +218,7 @@ async function openResult(url: string) {
       </div>
     </template>
     <p v-if="busy || loading" class="notice" role="status">{{ busy ? 'Running Git…' : 'Reading remotes…' }}</p>
-    <p v-if="error || loadError" class="notice error" role="alert">{{ error || loadError }}</p>
+    <p v-if="(!form && error) || loadError" class="notice error" role="alert">{{ error || loadError }}</p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
   </section>
 </template>

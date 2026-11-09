@@ -1,21 +1,73 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, shallowRef, useTemplateRef, watch } from 'vue'
 import { Clipboard } from '@wailsio/runtime'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
 import type { Commit, Cursor, HistoryFilter } from '../../../bindings/gitvela/internal/git'
 import { LatestRequest } from '../../stores/latestRequest'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useWorkspace } from '../../stores/workspace'
+import { usePreferences } from '../../stores/preferences'
+import { useKeymap } from '../../stores/keymap'
+import ContextActions from '../layout/ContextActions.vue'
+import { contextAnchor, type ContextAnchor } from '../layout/contextAnchor'
 import GraphCell from './GraphCell.vue'
+import { cherryPickOrder, CommitSelection, comparePair, hasMergeCommit } from './commitSelection'
 
 const store = useWorkspace()
-const props = defineProps<{ pinned?: string; busy?: boolean }>()
-const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; pin: [commit: Commit]; compare: [commit: Commit] }>()
+const preferences = usePreferences()
+const keymap = useKeymap()
+const props = defineProps<{ pinned?: string; busy?: boolean; restoring?: boolean }>()
+const emit = defineEmits<{ select: []; createBranch: []; operation: [action: 'cherry-pick' | 'revert' | 'reset', commit: Commit]; cherryPickMany: [commits: Commit[]]; squashInto: [commit: Commit, action: 'squash' | 'fixup']; pin: [commit: Commit]; compare: [commit: Commit]; compareCommits: [before: Commit, after: Commit]; refresh: [] }>()
 const scroll = useTemplateRef<HTMLElement>('scroll')
 const emptyFilter = (): HistoryFilter => ({ message: '', author: '', branch: '', from: '', through: '', hash: '' })
 const draft = ref(emptyFilter())
-const hashMode = ref(false)
-const showSearch = ref(false)
+const queryInput = useTemplateRef<HTMLInputElement>('query-input')
+const tool = shallowRef<{ kind: 'user' | 'date' | 'paths' | 'sort' | 'view'; anchor: ContextAnchor }>()
+const datePreset = ref(0)
+const popupDraft = ref({ author: '', path: '', from: '', through: '' })
+const recentAuthors = ref<string[]>([])
+const authors = computed(() => [...new Set([...recentAuthors.value, ...store.commits.map(commit => commit.author)])].filter(Boolean).slice(0, 12))
+const showTags = ref(true)
+const compactRefs = ref(false)
+const highlightMerges = ref(false)
+const showHash = ref(true)
+const showAuthor = ref(true)
+const showDate = ref(true)
+const refsOnLeft = ref(true)
+const filteredGraphWidth = ref(0)
+const branchLabel = (name: string) => name.replace(/^refs\/(heads|remotes|tags)\//, '')
+
+function openTool(kind: NonNullable<typeof tool.value>['kind'], event: MouseEvent) {
+  menu.value = undefined
+  popupDraft.value = { author: draft.value.author, path: draft.value.path ?? '', from: draft.value.from, through: draft.value.through }
+  if (tool.value?.kind === kind) tool.value = undefined
+  else tool.value = { kind, anchor: contextAnchor(event, false) }
+}
+
+function applyTool() {
+  tool.value = undefined
+  const author = draft.value.author.trim()
+  if (author) recentAuthors.value = [author, ...recentAuthors.value.filter(item => item !== author)].slice(0, 12)
+  startSearch()
+}
+
+function setDatePreset(days: number) {
+  datePreset.value = days
+  draft.value.from = ''
+  draft.value.through = ''
+  applyTool()
+}
+
+function visibleRefs(commit: Commit) {
+  const refs = showTags.value ? commit.refs : commit.refs?.filter(ref => !ref.startsWith('refs/tags/'))
+  return compactRefs.value ? refs?.slice(0, 1) : refs
+}
+
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+function queueSearch() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(startSearch, 250)
+}
 const filter = shallowRef<HistoryFilter>()
 const matches = shallowRef<Commit[]>([])
 const cursor = shallowRef<Cursor>()
@@ -25,35 +77,71 @@ const searchError = ref('')
 const requests = new LatestRequest()
 let historyScroll = 0
 const menu = ref<Commit>()
+const menuAnchor = shallowRef<ContextAnchor>()
 const copyStatus = ref('')
-const menuButtons = useTemplateRef<HTMLElement>('commit-actions')
+/** IDEA-style multi-selection state (T06); `store.selected` stays the focused
+ *  row driving Changed Files and Commit Details. */
+const selection = reactive(new CommitSelection())
+const selectedPair = computed(() => comparePair(commits.value, selection.hashes))
+/** Selected rows in history order, oldest first: the order Git replays a
+ *  multi-commit cherry-pick in, and the order the confirmation dialog lists. */
+const cherryPickTargets = computed(() => cherryPickOrder(commits.value, selection.hashes))
+const cherryPickBlocked = computed(() => hasMergeCommit(cherryPickTargets.value))
+const isActive = (commit: Commit) =>
+  selection.size ? selection.has(commit.hash) : store.selected?.hash === commit.hash
 const commits = computed(() => filter.value ? matches.value : store.commits)
-const graphPixels = computed(() => filter.value ? 8 : Math.max(52, store.graphWidth * 13 + 14))
-const columns = computed(() => ({ '--graph-width': graphPixels.value + 'px' }))
+const graphVisible = computed(() => !filter.value || filteredGraphWidth.value > 0)
+const graphPixels = computed(() => graphVisible.value
+  ? Math.max(52, (filter.value ? filteredGraphWidth.value : store.graphWidth) * 13 + 14) : 8)
+const columns = computed(() => ({
+  '--log-columns': [graphPixels.value + 'px', 'minmax(155px, 1fr)',
+    ...(showAuthor.value ? ['110px'] : []), ...(showDate.value ? ['124px'] : []), ...(showHash.value ? ['72px'] : []),
+  ].join(' '),
+  '--log-min-width': (graphPixels.value + 175 + (showAuthor.value ? 116 : 0) +
+    (showDate.value ? 130 : 0) + (showHash.value ? 78 : 0)) + 'px',
+}))
 const virtual = useVirtualizer(computed(() => ({
   count: commits.value.length,
   getScrollElement: () => scroll.value,
-  estimateSize: () => 34,
+  estimateSize: () => preferences.rowHeight,
   overscan: 12,
 })))
 const rows = computed(() => virtual.value.getVirtualItems().flatMap(item => {
   const commit = commits.value[item.index]
   return commit ? [{ item, commit }] : []
 }))
-const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+/** Compact "2026/11/8 17:03" cell format keeps the Date column readable
+ *  while showing the commit time; the tooltip carries the full locale form. */
+function formatCommitDate(seconds: number) {
+  const value = new Date(seconds * 1000)
+  const pad = (input: number) => String(input).padStart(2, '0')
+  return value.getFullYear() + '/' + (value.getMonth() + 1) + '/' + value.getDate() + ' ' + pad(value.getHours()) + ':' + pad(value.getMinutes())
+}
 const tooltip = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-watch(() => rows.value.at(-1)?.item.index, index => {
-  if (!filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
+watch([() => rows.value.at(-1)?.item.index, () => props.restoring], ([index, restoring]) => {
+  if (!restoring && !filter.value && index !== undefined && index >= store.commits.length - 20 && !store.logError) void store.loadPage()
 })
 
-function select(index: number) {
+function select(index: number, reveal = true, event?: MouseEvent) {
   const commit = commits.value[index]
   if (!commit) return
   menu.value = undefined
-  void nextTick(() => virtual.value.scrollToIndex(index, { align: 'auto' }))
+  if (reveal) void nextTick(() => virtual.value.scrollToIndex(index, { align: 'auto' }))
   emit('select')
-  void store.selectCommit(commit)
+  if (event?.shiftKey) {
+    selection.extend(commits.value, index)
+    void store.selectCommit(commit)
+  } else if (event?.ctrlKey || event?.metaKey) {
+    if (!selection.toggle(commits.value, index)) {
+      // Deselecting the focused row: follow the remaining selection like IDEA.
+      const next = commits.value.find(item => selection.has(item.hash))
+      if (next) void store.selectCommit(next)
+    }
+  } else {
+    selection.reset(commits.value, index)
+    void store.selectCommit(commit)
+  }
 }
 
 function jump(hash: string) {
@@ -66,11 +154,32 @@ function jump(hash: string) {
   return false
 }
 
+function step(direction: number, extend = false) {
+  if (!commits.value.length) return
+  const index = commits.value.findIndex(item => item.hash === store.selected?.hash)
+  const base = index < 0 ? (direction > 0 ? -1 : commits.value.length) : index
+  const next = Math.max(0, Math.min(commits.value.length - 1, base + direction))
+  if (!extend) {
+    select(next)
+    return
+  }
+  if (index < 0) return
+  selection.extend(commits.value, next)
+  void store.selectCommit(commits.value[next]!)
+}
+
 function navigate(event: KeyboardEvent, direction: number) {
+  // Modifier combos such as Alt+Up/Down belong to the global dispatcher;
+  // handling them here too would dispatch one keypress twice. Shift+Up/Down
+  // extends the multi-selection instead of moving a lone focus (T06).
+  if (event.altKey || event.ctrlKey || event.metaKey) return
   if (!commits.value.length) return
   event.preventDefault()
-  const index = commits.value.findIndex(item => item.hash === store.selected?.hash)
-  select(Math.max(0, Math.min(commits.value.length - 1, index + direction)))
+  step(direction, event.shiftKey)
+}
+
+function openSearch() {
+  void nextTick(() => queryInput.value?.focus())
 }
 
 function dateBoundary(day: string, end: boolean) {
@@ -80,17 +189,24 @@ function dateBoundary(day: string, end: boolean) {
 }
 
 function startSearch() {
+  clearTimeout(searchTimer)
   const input = draft.value
-  const query = hashMode.value
-    ? { ...emptyFilter(), hash: input.hash.trim() }
-    : { ...emptyFilter(), message: input.message.trim(), author: input.author.trim(),
-        branch: input.branch, from: dateBoundary(input.from, false), through: dateBoundary(input.through, true) }
-  if (!hashMode.value && ((input.from && !query.from) || (input.through && !query.through))) {
-    searchError.value = 'Enter a valid date range.'
-    return
+  const query: HistoryFilter = {
+    ...input,
+    message: input.message.trim(), author: input.author.trim(), path: input.path?.trim(),
+    from: datePreset.value ? new Date(Date.now() - datePreset.value * 86400000).toISOString() : dateBoundary(input.from, false),
+    through: dateBoundary(input.through, true),
   }
-  if (!Object.values(query).some(Boolean)) {
+  if (!query.regex && /^[a-f0-9]{7,64}$/i.test(query.message) &&
+      !(query.author || query.branch || query.from || query.through || query.path || query.firstParent || query.noMerges)) {
+    query.hash = query.message
+    query.message = ''
+  }
+  if (!(query.hash || query.message || query.author || query.branch || query.path || query.from || query.through ||
+      query.sort || query.firstParent || query.noMerges)) {
+    const { regex, matchCase } = input
     clearSearch()
+    Object.assign(draft.value, { regex, matchCase })
     return
   }
   if (!filter.value) historyScroll = scroll.value?.scrollTop ?? 0
@@ -101,9 +217,11 @@ function startSearch() {
 function restartSearch() {
   requests.clear()
   matches.value = []
+  filteredGraphWidth.value = 0
   cursor.value = undefined
   searchMore.value = false
   menu.value = undefined
+  selection.clear()
   if (scroll.value) scroll.value.scrollTop = 0
   void loadMatches()
 }
@@ -120,6 +238,7 @@ async function loadMatches() {
     const page = await call
     if (!current()) return
     matches.value = [...matches.value, ...(page.commits ?? [])]
+    filteredGraphWidth.value = Math.max(filteredGraphWidth.value, ...(page.commits ?? []).map(commit => commit.graph.width))
     cursor.value = page.next
     searchMore.value = page.more
   } catch (error) {
@@ -131,44 +250,50 @@ async function loadMatches() {
 }
 
 function clearSearch(restoreScroll = true) {
+  clearTimeout(searchTimer)
   const hadSearch = !!filter.value
+  draft.value = emptyFilter()
+  datePreset.value = 0
+  tool.value = undefined
   requests.clear()
   filter.value = undefined
   searching.value = false
   searchError.value = ''
   matches.value = []
   menu.value = undefined
+  selection.clear()
   if (hadSearch && restoreScroll) {
     void nextTick(() => { if (scroll.value) scroll.value.scrollTop = historyScroll })
   }
 }
 
-function closeSearch() {
-  clearSearch()
-  showSearch.value = false
-}
-
 watch(() => store.repository, (repo, previous) => {
   menu.value = undefined
   copyStatus.value = ''
+  selection.clear()
   if (repo?.path !== previous?.path) {
     clearSearch(false)
-    draft.value = emptyFilter()
-    hashMode.value = false
+    recentAuthors.value = []
     if (scroll.value) scroll.value.scrollTop = 0
   } else if (filter.value) {
     restartSearch()
   }
 })
-onUnmounted(() => requests.clear())
+onUnmounted(() => {
+  clearTimeout(searchTimer)
+  requests.clear()
+})
 
-function showCommitActions(index: number) {
+function showCommitActions(index: number, event: MouseEvent | KeyboardEvent) {
   const commit = commits.value[index]
   if (!commit) return
-  select(index)
+  tool.value = undefined
+  // Right-clicking an already selected row keeps the multi-selection intact,
+  // so "Compare selected" stays available; an unselected row starts fresh.
+  if (!isActive(commit)) select(index, false)
   menu.value = commit
   copyStatus.value = ''
-  void nextTick(() => menuButtons.value?.querySelector('button')?.focus())
+  menuAnchor.value = contextAnchor(event)
 }
 
 function closeCommitActions() {
@@ -190,82 +315,157 @@ async function copyCommit(commit: Commit, message: boolean) {
   }
 }
 
-defineExpose({ jump })
+defineExpose({ jump, step, openSearch })
 </script>
 
 <template>
   <section class="panel log-panel" aria-label="Git Log">
-    <header class="panel-header">
-      <div><span class="eyebrow">HISTORY</span><h2>Git Log</h2></div>
-      <div class="log-tools">
-        <span class="muted">{{ commits.length.toLocaleString() }} {{ filter ? 'matches loaded' : 'loaded' }}</span>
-        <button :aria-expanded="showSearch" @click="showSearch ? closeSearch() : showSearch = true">Search…</button>
+    <header class="log-toolbar" aria-label="Git Log filters">
+      <form class="log-query" role="search" @submit.prevent="startSearch">
+        <input ref="query-input" v-model="draft.message" aria-label="Text or hash" placeholder="Text or hash"
+               spellcheck="false" :title="'Search history (' + (keymap.bindings.searchHistory || 'unbound') + ')'"
+               @input="queueSearch" />
+        <button type="button" title="Regular expression" aria-label="Regular expression" :aria-pressed="!!draft.regex"
+                @click="draft.regex = !draft.regex; startSearch()">.*</button>
+        <button type="button" title="Match case" aria-label="Match case" :aria-pressed="!!draft.matchCase"
+                @click="draft.matchCase = !draft.matchCase; startSearch()">Cc</button>
+      </form>
+      <select v-model="draft.branch" aria-label="Branch" :title="draft.branch ? branchLabel(draft.branch) : 'Branch'"
+              :class="{ 'filter-active': draft.branch }" @change="startSearch">
+        <option value="">Branch</option>
+        <option v-if="store.headHash" value="HEAD">HEAD</option>
+        <optgroup label="Local">
+          <option v-for="branch in store.branchRefs.filter(ref => ref.name.startsWith('refs/heads/'))"
+                  :key="branch.name" :value="branch.name">{{ branchLabel(branch.name) }}</option>
+        </optgroup>
+        <optgroup label="Remote">
+          <option v-for="branch in store.branchRefs.filter(ref => ref.name.startsWith('refs/remotes/'))"
+                  :key="branch.name" :value="branch.name">{{ branchLabel(branch.name) }}</option>
+        </optgroup>
+        <optgroup v-if="store.tagRefs.length" label="Tags">
+          <option v-for="tag in store.tagRefs" :key="tag.name" :value="tag.name">{{ branchLabel(tag.name) }}</option>
+        </optgroup>
+      </select>
+      <button :class="{ 'filter-active': filter?.author }" :title="filter?.author || 'User'"
+              :aria-expanded="tool?.kind === 'user'" @click="openTool('user', $event)">User ⌄</button>
+      <button :class="{ 'filter-active': filter?.from || filter?.through }" :aria-expanded="tool?.kind === 'date'"
+              @click="openTool('date', $event)">Date ⌄</button>
+      <button :class="{ 'filter-active': filter?.path }" :title="filter?.path || 'Paths'"
+              :aria-expanded="tool?.kind === 'paths'" @click="openTool('paths', $event)">Paths ⌄</button>
+      <button aria-label="Sort and history options" title="Sort and history options"
+              :class="{ 'filter-active': filter?.sort || filter?.firstParent || filter?.noMerges }"
+              :aria-expanded="tool?.kind === 'sort'" @click="openTool('sort', $event)">⇅</button>
+      <div class="log-toolbar-end">
+        <button v-if="filter" title="Clear filters" aria-label="Clear filters" @click="clearSearch()">×</button>
+        <button aria-label="Refresh history" title="Refresh history" :disabled="store.opening" @click="emit('refresh')">↻</button>
+        <button aria-label="History display options" title="History display options"
+                :aria-expanded="tool?.kind === 'view'" @click="openTool('view', $event)">◉</button>
       </div>
     </header>
-    <form v-if="showSearch" class="history-search" @submit.prevent="startSearch">
-      <label>Search by
-        <select v-model="hashMode">
-          <option :value="false">History filters</option>
-          <option :value="true">Commit hash</option>
-        </select>
-      </label>
-      <label v-if="hashMode">Commit hash <input v-model="draft.hash" spellcheck="false" placeholder="7 or more hex digits" /></label>
-      <template v-else>
-        <label>Message <input v-model="draft.message" placeholder="Text in commit message" /></label>
-        <label>Author <input v-model="draft.author" placeholder="Name or email" /></label>
-        <label>Branch
-          <select v-model="draft.branch">
-            <option value="">All branches and tags</option>
-            <option v-for="branch in store.branchRefs" :key="branch.name" :value="branch.name">
-              {{ branch.name.replace(/^refs\/(heads|remotes)\//, '') }}
-            </option>
-          </select>
-        </label>
-        <label>Committed from <input v-model="draft.from" type="date" /></label>
-        <label>Committed through <input v-model="draft.through" type="date" /></label>
+    <ContextActions v-if="tool" :anchor="tool.anchor" :label="tool.kind + ' options'" @close="tool = undefined">
+      <template v-if="tool.kind === 'user'">
+        <form class="log-filter-form" @submit.prevent="draft.author = popupDraft.author; applyTool()">
+          <label>Name or email<input v-model="popupDraft.author" data-initial-focus /></label>
+          <button type="submit">Apply</button>
+        </form>
+        <button @click="draft.author = ''; applyTool()">All users</button>
+        <hr v-if="authors.length" />
+        <button v-for="author in authors" :key="author" @click="draft.author = author; applyTool()">{{ author }}</button>
       </template>
-      <div class="search">
-        <button type="submit">Search</button>
-        <button v-if="filter" type="button" @click="clearSearch()">Back to graph</button>
-      </div>
-    </form>
-    <div v-if="menu" ref="commit-actions" class="commit-actions" role="group" aria-label="Commit actions" @keydown.esc.stop="closeCommitActions">
+      <template v-else-if="tool.kind === 'date'">
+        <button @click="setDatePreset(0)">Any date</button>
+        <button @click="setDatePreset(1)">Last 24 hours</button>
+        <button @click="setDatePreset(7)">Last 7 days</button>
+        <hr />
+        <form class="log-filter-form" @submit.prevent="datePreset = 0; draft.from = popupDraft.from; draft.through = popupDraft.through; applyTool()">
+          <label>Committed from<input v-model="popupDraft.from" type="date" /></label>
+          <label>Committed through<input v-model="popupDraft.through" type="date" /></label>
+          <button type="submit">Apply date range</button>
+        </form>
+      </template>
+      <template v-else-if="tool.kind === 'paths'">
+        <form class="log-filter-form" @submit.prevent="draft.path = popupDraft.path; applyTool()">
+          <label>Repository-relative path<input v-model="popupDraft.path" data-initial-focus placeholder="File or folder" /></label>
+          <button type="submit">Apply</button>
+        </form>
+        <button @click="draft.path = ''; applyTool()">All paths</button>
+      </template>
+      <template v-else-if="tool.kind === 'sort'">
+        <strong>Sort</strong>
+        <button :aria-pressed="draft.sort === 'date'" @click="draft.sort = 'date'; applyTool()">By Commit Date</button>
+        <button :aria-pressed="!draft.sort" @click="draft.sort = ''; applyTool()">Topologically</button>
+        <hr />
+        <strong>Options</strong>
+        <button :aria-pressed="!!draft.firstParent" @click="draft.firstParent = !draft.firstParent; applyTool()">First Parent</button>
+        <button :aria-pressed="!!draft.noMerges" @click="draft.noMerges = !draft.noMerges; applyTool()">No Merges</button>
+      </template>
+      <template v-else>
+        <strong>Show</strong>
+        <button :aria-pressed="compactRefs" @click="compactRefs = !compactRefs">Compact References View</button>
+        <button :aria-pressed="showTags" @click="showTags = !showTags">Tag Names</button>
+        <button :aria-pressed="refsOnLeft" @click="refsOnLeft = !refsOnLeft">References on the Left</button>
+        <hr />
+        <strong>Columns</strong>
+        <button :aria-pressed="showAuthor" @click="showAuthor = !showAuthor">Author</button>
+        <button :aria-pressed="showDate" @click="showDate = !showDate">Date</button>
+        <button :aria-pressed="showHash" @click="showHash = !showHash">Hash</button>
+        <hr />
+        <button :aria-pressed="highlightMerges" @click="highlightMerges = !highlightMerges">Highlight Merge Commits</button>
+      </template>
+    </ContextActions>
+    <ContextActions v-if="menu && menuAnchor" :anchor="menuAnchor" label="Commit actions" @close="menu = undefined">
+      <button v-if="selectedPair" :disabled="store.opening"
+              @click="emit('compareCommits', selectedPair.before, selectedPair.after); closeCommitActions()">
+        Compare selected ({{ selectedPair.before.hash.slice(0, 8) }} → {{ selectedPair.after.hash.slice(0, 8) }})
+      </button>
       <button @click="copyCommit(menu, false)">Copy hash</button>
       <button @click="copyCommit(menu, true)">Copy message</button>
+      <hr />
       <button @click="menu = undefined; emit('createBranch')">Create branch…</button>
       <button @click="emit('pin', menu); closeCommitActions()">{{ props.pinned === menu.hash ? 'Clear comparison base' : 'Use as comparison base' }}</button>
       <button :disabled="store.opening || props.pinned === menu.hash" @click="emit('compare', menu); closeCommitActions()">
         {{ props.pinned ? 'Compare with base' : 'Compare with HEAD' }}
       </button>
-      <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
-      <button :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
-      <button :disabled="props.busy" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
-      <button @click="closeCommitActions">Close</button>
-    </div>
+      <hr />
+      <!-- Write operations stay disabled on a multi-selection (T06): a range
+           selection must never silently become the target of a rewrite.
+           Cherry-pick is the one exception: it replays the selected commits in
+           history order and says so in the confirmation dialog. -->
+      <button v-if="selection.size <= 1" :disabled="props.busy || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'cherry-pick', menu); closeCommitActions()">Cherry-pick…</button>
+      <button v-else :disabled="props.busy || !cherryPickTargets.length || cherryPickBlocked"
+              :title="cherryPickBlocked ? 'Merge commits need a mainline choice' : undefined"
+              @click="emit('cherryPickMany', cherryPickTargets); closeCommitActions()">
+        Cherry-pick {{ cherryPickTargets.length }} selected…
+      </button>
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) > 1" @click="emit('operation', 'revert', menu); closeCommitActions()">Revert…</button>
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) !== 1" @click="emit('squashInto', menu, 'squash'); closeCommitActions()">Squash into parent…</button>
+      <button :disabled="props.busy || selection.size > 1 || (menu.parents?.length ?? 0) !== 1" @click="emit('squashInto', menu, 'fixup'); closeCommitActions()">Fixup into parent…</button>
+      <button :disabled="props.busy || selection.size > 1" @click="emit('operation', 'reset', menu); closeCommitActions()">Reset to here…</button>
+    </ContextActions>
     <p v-if="copyStatus" class="notice" role="status">{{ copyStatus }}</p>
     <p v-if="searchError" class="notice error" role="alert">{{ searchError }}</p>
     <p v-if="!filter && store.logError" class="notice error" role="alert">{{ store.logError }}</p>
-    <div ref="scroll" class="log-scroll" :class="{ 'search-results': filter }" :style="columns" tabindex="0" aria-label="Commit history"
-         @keydown.up="navigate($event, -1)" @keydown.down="navigate($event, 1)">
-      <div class="log-grid log-heading"><span>{{ filter ? '' : 'Graph' }}</span><span>Commit message</span><span>Author</span><span>{{ filter ? 'Commit date' : 'Date' }}</span><span>Hash</span></div>
+    <div ref="scroll" class="log-scroll" :class="{ 'search-results': !graphVisible }" :style="columns" tabindex="0" aria-label="Commit history"
+         @scroll.passive="menu = undefined" @keydown.up="navigate($event, -1)" @keydown.down="navigate($event, 1)">
+      <div class="log-grid log-heading"><span>{{ graphVisible ? 'Graph' : '' }}</span><span>Commit message</span><span v-if="showAuthor">Author</span><span v-if="showDate">{{ filter ? 'Commit date' : 'Date' }}</span><span v-if="showHash">Hash</span></div>
       <div class="virtual-content" :style="{ height: virtual.getTotalSize() + 'px' }">
         <button v-for="{ item, commit } in rows" :key="commit.hash"
-                class="log-grid commit-row" :class="{ active: store.selected?.hash === commit.hash }"
-                :aria-pressed="store.selected?.hash === commit.hash"
-                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index)"
-                @contextmenu.prevent="showCommitActions(item.index)"
-                @keydown.shift.f10.prevent="showCommitActions(item.index)">
-          <span v-if="filter" aria-hidden="true"></span>
-          <GraphCell v-else :row="commit.graph" :width="graphPixels" />
-          <span class="commit-title" :title="commit.subject">
-            <span v-for="label in commit.refs" :key="label" class="chip" :title="label">
+                class="log-grid commit-row" :class="{ active: isActive(commit), 'highlight-merge': highlightMerges && (commit.parents?.length ?? 0) > 1 }"
+                :aria-pressed="isActive(commit)"
+                :style="{ transform: 'translateY(' + item.start + 'px)' }" @click="select(item.index, true, $event)"
+                @contextmenu.prevent="showCommitActions(item.index, $event)"
+                @keydown.shift.f10.prevent="showCommitActions(item.index, $event)">
+          <span v-if="!graphVisible" aria-hidden="true"></span>
+          <GraphCell v-else :row="commit.graph" :width="graphPixels" :height="preferences.rowHeight" />
+          <span class="commit-title" :class="{ 'refs-right': !refsOnLeft }" :title="commit.subject">
+            <span v-for="label in visibleRefs(commit)" :key="label" class="chip" :title="label">
               {{ label.replace(/^refs\/(heads|remotes|tags)\//, '') }}
             </span>
-            <span class="ellipsis">{{ commit.subject || '(no subject)' }}</span>
+            <span class="ellipsis commit-subject">{{ commit.subject || '(no subject)' }}</span>
           </span>
-          <span class="ellipsis muted">{{ commit.author }}</span>
-          <time class="muted" :title="tooltip.format(commit.time * 1000)">{{ date.format(commit.time * 1000) }}</time>
-          <code class="muted" :title="commit.hash">{{ commit.hash.slice(0, 8) }}</code>
+          <span v-if="showAuthor" class="ellipsis muted">{{ commit.author }}</span>
+          <time v-if="showDate" class="muted" :title="tooltip.format(commit.time * 1000)">{{ formatCommitDate(commit.time) }}</time>
+          <code v-if="showHash" class="muted" :title="commit.hash">{{ commit.hash.slice(0, 8) }}</code>
         </button>
       </div>
       <template v-if="filter">

@@ -21,6 +21,13 @@
 - Use Node 24. Run `npm --prefix frontend run typecheck`, `npm --prefix frontend test`, and `go test ./...`. Run Git-heavy suites sequentially on Windows.
 - Use the desktop smoke procedure in `README.md`. For a confirmation flow, check the modal, initial focus, cancellation without mutation, and successful explicit confirmation on a temporary target.
 
+
+## Source of Truth
+
+Before modifying GitVela UI, architecture, or Git behavior, read docs/GITVELA_SPEC.md.
+
+Treat it as the authoritative product specification. Existing code and tests are not proof of IDEA parity.
+
 ## Upstream reference
 
 - [Wails v3.1.0 repository guidance](https://github.com/wailsapp/wails/blob/v3.1.0/AGENTS.md)

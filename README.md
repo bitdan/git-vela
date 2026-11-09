@@ -30,7 +30,7 @@ Press **Ctrl+K** to open the command palette and run Git operations, switch work
 
 A preview stops at 512 KiB or 12,000 lines by default. **Load full preview** raises the limit to 8 MiB or 120,000 lines for that one file. PNG, JPEG, GIF, WebP and BMP changes render as Before / After images; other binary content still falls back to a notice.
 
-See [GitVela.md](GitVela.md) for the architecture, roadmap and the 2026-11-06 implementation audit.
+See [GitVela Specification](docs/GITVELA_SPEC.md)for product requirements, architecture, and interaction standards.
 
 ## Windows development
 

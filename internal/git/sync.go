@@ -119,6 +119,9 @@ type PushOptions struct {
 	// Protected branch patterns (exact names or shell wildcards such as
 	// release/*) refuse a force push even after the confirmation dialog.
 	Protected []string `json:"protected"`
+	// ExpectedTip, when set, is the branch tip the Push dialog reviewed; a
+	// branch that moved since then is refused instead of pushed.
+	ExpectedTip string `json:"expectedTip"`
 }
 
 // protectedBranch reports the pattern that matches a branch name, if any.
@@ -159,8 +162,12 @@ func pushBranch(ctx context.Context, dir, branch, remote, target, expectedAddres
 			return err
 		}
 	}
-	if _, err := revision(ctx, dir, "refs/heads/"+branch); err != nil {
+	tip, err := revision(ctx, dir, "refs/heads/"+branch)
+	if err != nil {
 		return errors.New("the branch has no commits to push")
+	}
+	if options.ExpectedTip != "" && options.ExpectedTip != tip {
+		return errors.New("the branch moved after the push was reviewed; review the outgoing commits again")
 	}
 	if target == "" || strings.HasPrefix(target, "-") || checkBranchName(ctx, dir, target) != nil {
 		return errors.New("enter a valid remote branch name")

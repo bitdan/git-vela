@@ -214,6 +214,13 @@ export function OperationState(path: string): $CancellablePromise<git$0.Operatio
     return $Call.ByID(1179304294, path);
 }
 
+/**
+ * OutgoingCommits lists what pushing branch to remote/target would publish.
+ */
+export function OutgoingCommits(path: string, branch: string, remote: string, target: string): $CancellablePromise<git$0.Outgoing> {
+    return $Call.ByID(2521096708, path, branch, remote, target);
+}
+
 export function PrepareAmend(path: string): $CancellablePromise<git$0.AmendTarget> {
     return $Call.ByID(2406328658, path);
 }

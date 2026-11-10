@@ -185,6 +185,25 @@ export interface OperationState {
     "conflicts": string[] | null;
 }
 
+/**
+ * Outgoing lists the commits a push would publish, for the Push dialog.
+ */
+export interface Outgoing {
+    /**
+     * Tip is the local branch tip the list was read from; PushOptions.ExpectedTip
+     * passes it back so a branch that moved after the review is not pushed.
+     */
+    "tip": string;
+
+    /**
+     * NewBranch is set when remote/target has no remote-tracking ref, so the
+     * list holds commits not on any branch of that remote.
+     */
+    "newBranch": boolean;
+    "commits": Commit[] | null;
+    "more": boolean;
+}
+
 export interface Page {
     "commits": Commit[] | null;
     "refs": Ref[] | null;
@@ -241,6 +260,12 @@ export interface PushOptions {
      * release/*) refuse a force push even after the confirmation dialog.
      */
     "protected": string[] | null;
+
+    /**
+     * ExpectedTip, when set, is the branch tip the Push dialog reviewed; a
+     * branch that moved since then is refused instead of pushed.
+     */
+    "expectedTip": string;
 }
 
 export interface RebaseStep {

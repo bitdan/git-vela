@@ -4,12 +4,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Events } from '@wailsio/runtime'
 import { GitvelaRepositoryChanged } from '../../../bindings/events'
 import { RepositoryService as api } from '../../../bindings/gitvela/internal/app'
-import type { BranchTracking, SyncState } from '../../../bindings/gitvela/internal/git'
+import type { BranchTracking, Outgoing, SyncState } from '../../../bindings/gitvela/internal/git'
 import { LatestRequest, cancellableAll } from '../../stores/latestRequest'
 import { usePreferences } from '../../stores/preferences'
 import { matchesProtectedBranch } from './protectedBranches'
 import { currentBranch, describeUpdate, parseRemoteRef } from '../../features/sync/branchActions'
 import { pullModes, type PullMode } from '../../features/sync/pullOptions'
+import { canConfirmPush, outgoingSummary, shortHash } from '../../features/sync/pushPreview'
 
 /** Fetch, Pull and Push dialogs. Each intent names its own target:
  *  - Fetch: a remote (or all); never touches HEAD or the working tree.
@@ -81,6 +82,32 @@ const pushOptions = ref({ pushTags: false, setUpstream: false, forceWithLease: f
  *  only explains why the force option is unavailable. */
 const targetProtected = computed(() => !!confirmation.value &&
   matchesProtectedBranch(preferences.protectedPatterns, confirmation.value.target))
+
+/** Commits the push would publish, read when the dialog opens (IDEA push
+ *  dialog). The reviewed tip goes back to the backend with the push. */
+const outgoing = ref<Outgoing>()
+const outgoingError = ref('')
+const outgoingRequests = new LatestRequest()
+const pushAllowed = computed(() => !outgoingError.value && canConfirmPush(outgoing.value, pushOptions.value.forceWithLease))
+watch(confirmation, target => {
+  outgoing.value = undefined
+  outgoingError.value = ''
+  outgoingRequests.clear()
+  if (target) void loadOutgoing(target)
+})
+
+async function loadOutgoing(target: Destination) {
+  const call = api.OutgoingCommits(props.path, target.branch, target.remote, target.target)
+  const current = outgoingRequests.replace(call)
+  try {
+    const result = await call
+    if (current()) outgoing.value = result
+  } catch (cause) {
+    if (current()) outgoingError.value = String(cause)
+  } finally {
+    outgoingRequests.finish(call)
+  }
+}
 watch(() => [props.intent, props.branch], () => {
   confirmation.value = undefined
   void load()
@@ -142,6 +169,7 @@ onMounted(() => {
 onUnmounted(() => {
   unsubscribe?.()
   requests.clear()
+  outgoingRequests.clear()
 })
 
 async function exclusive(label: string, action: () => Promise<string>) {
@@ -198,10 +226,11 @@ function pull() {
 
 function push() {
   const target = confirmation.value
-  if (!target) return
+  const reviewed = outgoing.value
+  if (!target || !reviewed || !pushAllowed.value) return
   void exclusive('Pushing…', async () => {
     await api.PushBranch(props.path, target.branch, target.remote, target.target,
-      { ...pushOptions.value, protected: preferences.protectedPatterns })
+      { ...pushOptions.value, protected: preferences.protectedPatterns, expectedTip: reviewed.tip })
     pushOptions.value = { pushTags: false, setUpstream: false, forceWithLease: false }
     return 'Push complete to ' + target.remote + '/' + target.target + '.'
   })
@@ -255,6 +284,21 @@ function push() {
       <span>Push <strong>{{ confirmation.branch }}</strong> to <strong>{{ confirmation.remote }}/{{ confirmation.target }}</strong>?
         <template v-if="!upstream">This sets the branch upstream.</template>
       </span>
+      <p v-if="outgoingError" class="notice error" role="alert">{{ outgoingError }}</p>
+      <p v-else-if="!outgoing" class="notice" role="status">Reading outgoing commits…</p>
+      <template v-else>
+        <p class="m-0" data-outgoing-summary>{{ outgoingSummary(outgoing, confirmation) }}</p>
+        <ul v-if="outgoing.commits?.length" aria-label="Outgoing commits"
+            class="m-0 max-h-48 list-none overflow-auto border border-line bg-field p-0">
+          <li v-for="item in outgoing.commits" :key="item.hash" :title="item.hash"
+              class="flex gap-2 px-2 py-0.5 whitespace-nowrap">
+            <code class="text-muted">{{ shortHash(item.hash) }}</code>
+            <span class="min-w-0 flex-1 truncate">{{ item.subject }}</span>
+            <span class="text-muted">{{ item.author }}</span>
+          </li>
+        </ul>
+        <p class="m-0 text-muted">Based on the last fetch of {{ confirmation.remote }}.</p>
+      </template>
       <label class="push-option"><input type="checkbox" v-model="pushOptions.pushTags" :disabled="busy" />
         Push annotated tags reachable from these commits</label>
       <label v-if="upstream" class="push-option"><input type="checkbox" v-model="pushOptions.setUpstream" :disabled="busy" />
@@ -271,7 +315,7 @@ function push() {
       </p>
       <template #actions>
         <button data-cancel :disabled="busy" @click="confirmation = undefined">Cancel</button>
-        <button class="primary" :class="{ 'danger-button': pushOptions.forceWithLease }" :disabled="busy || loading || !!loadError"
+        <button class="primary" :class="{ 'danger-button': pushOptions.forceWithLease }" :disabled="busy || loading || !!loadError || !pushAllowed"
                 @click="push">{{ pushOptions.forceWithLease ? 'Force push (lease)' : 'Confirm push' }}</button>
       </template>
     </ConfirmationDialog>

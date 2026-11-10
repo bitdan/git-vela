@@ -300,6 +300,11 @@ func (*RepositoryService) BranchTracking(ctx context.Context, path, branch strin
 	return discardCancelled(git.ReadBranchTracking(ctx, path, branch))
 }
 
+// OutgoingCommits lists what pushing branch to remote/target would publish.
+func (*RepositoryService) OutgoingCommits(ctx context.Context, path, branch, remote, target string) (git.Outgoing, error) {
+	return discardCancelled(git.OutgoingCommits(ctx, path, branch, remote, target))
+}
+
 // UpdateBranch runs the branch "Update" action on an explicit local branch.
 func (s *RepositoryService) UpdateBranch(ctx context.Context, path, branch, method string) (git.UpdateResult, error) {
 	return writeValue(s, ctx, func() (git.UpdateResult, error) { return git.UpdateBranch(ctx, path, branch, method) })

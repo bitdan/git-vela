@@ -520,6 +520,10 @@ try {
     await until(() => evaluate(`!document.querySelector('dialog[aria-label="Confirm push"]')`), 'Escape cancels the modal')
     assert.equal(git(dailyRemote, 'for-each-ref', '--format=%(refname)', 'refs/heads'), '')
     await click('[aria-label="Remote synchronization"]', 'Push…')
+    // The review lists the outgoing commits (IDEA push dialog) before Confirm is enabled.
+    await until(() => evaluate(`[...document.querySelectorAll('[aria-label="Outgoing commits"] li')]
+      .some(item => item.innerText.includes('Commit and push review'))`), 'push review lists the outgoing commit')
+    await text('[data-outgoing-summary]', 'this creates m2-smoke/' + dailyBranch)
     await click('[aria-label="Confirm push"]', 'Confirm push')
     await text('[aria-label="Remote synchronization"] [role=status]', 'Push complete')
     assert.equal(git(repo, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'm2-smoke/' + dailyBranch)
